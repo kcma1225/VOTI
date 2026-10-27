@@ -102,10 +102,10 @@ export default function Overview() {
             <Card>
               <CardHeader title={t('collect.overview.workersTitle')} description={t('collect.overview.workersDesc')} icon={<Server />} />
               <CardBody className="space-y-4">
-                <div className="grid grid-cols-4 gap-2">
-                  {(['fetch', 'audio', 'ml', 'export'] as const).map((q) => (
+                <div className="grid grid-cols-3 gap-2">
+                  {(['scan', 'detail', 'download', 'audio', 'ml', 'export'] as const).map((q) => (
                     <div key={q} className="rounded-lg border border-border bg-surface-2/60 px-2 py-2.5 text-center">
-                      <div className="text-lg font-semibold leading-6">{fmtInt(d.queue_depth[q])}</div>
+                      <div className="text-lg font-semibold leading-6">{fmtInt(d.queue_depth[q] ?? 0)}</div>
                       <div className="truncate text-[11px] text-fg-3">{queueLabel[q]}</div>
                     </div>
                   ))}

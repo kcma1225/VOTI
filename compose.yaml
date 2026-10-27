@@ -112,9 +112,18 @@ services:
       retries: 5
       start_period: 20s
 
-  worker-fetch:
+  # YouTube work is split so scans, caption details and downloads never wait on each other.
+  worker-scan:
     <<: *backend
-    command: ["python", "-m", "voti.workers.run", "--queues", "fetch"]
+    command: ["python", "-m", "voti.workers.run", "--queues", "scan,detail"]
+    deploy:
+      replicas: ${SCAN_WORKERS:-3}
+
+  worker-download:
+    <<: *backend
+    command: ["python", "-m", "voti.workers.run", "--queues", "download"]
+    deploy:
+      replicas: ${DOWNLOAD_WORKERS:-2}
 
   worker-audio:
     <<: *backend

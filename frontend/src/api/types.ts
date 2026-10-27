@@ -68,7 +68,7 @@ export interface Settings {
 
 // ─────────────── jobs ───────────────
 export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'blocked' | 'cancelled' | 'interrupted'
-export type QueueName = 'fetch' | 'audio' | 'ml' | 'export'
+export type QueueName = 'scan' | 'detail' | 'download' | 'audio' | 'ml' | 'export'
 export type JobKind =
   | 'source.resolve'
   | 'channel.list'

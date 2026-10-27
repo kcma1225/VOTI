@@ -98,7 +98,7 @@ def test_shutdown_requeues_download_media_to_queued(q, db):  # noqa: ANN001
             time.sleep(0.02)
     q.HANDLERS["media.download"] = h
     jid = _job(db, "media.download", media_id=m.id)
-    w = q.Worker(["fetch"], name="testhost:2", exit_on_force=False)
+    w = q.Worker(["scan"], name="testhost:2", exit_on_force=False)
     threading.Timer(0.2, w.request_stop).start()
     q.run_one(str(jid), w.name, _owner=w)
     assert _get(jid).status == "queued"

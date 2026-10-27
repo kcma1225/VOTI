@@ -46,6 +46,11 @@ def get_session() -> Iterator[Session]:
 # existing table, so every column added to a model after the first deployment is listed here too. Each
 # statement must be idempotent (IF NOT EXISTS) and cheap (no table rewrite: nullable columns without default).
 MIGRATIONS: tuple[str, ...] = (
+    # 2026-10-27: the single "fetch" queue was split so channel scans, caption details and downloads run in
+    # parallel and one huge channel can't block the rest.
+    "UPDATE jobs SET queue = 'scan' WHERE queue = 'fetch' AND kind IN ('source.resolve', 'channel.list', 'playlist.list')",
+    "UPDATE jobs SET queue = 'detail' WHERE queue = 'fetch' AND kind = 'media.detail'",
+    "UPDATE jobs SET queue = 'download' WHERE queue = 'fetch' AND kind = 'media.download'",
     "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS run_after TIMESTAMPTZ",
     "CREATE INDEX IF NOT EXISTS jobs_running_heartbeat ON jobs (heartbeat_at) WHERE status = 'running'",
     "ALTER TABLE media ADD COLUMN IF NOT EXISTS discovered_at TIMESTAMPTZ",

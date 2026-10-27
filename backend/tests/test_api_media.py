@@ -119,7 +119,7 @@ def test_download_explicit_ids(annotator_client, corpus, db):
     jobs = db.scalars(select(Job).where(Job.kind == "media.download")).all()
     assert {j.media_id for j in jobs} == {m["manual"].id, m["unknown"].id}
     assert jobs[0].payload == {"caption_langs": ["zh-TW"], "include_auto": False}
-    assert jobs[0].queue == "fetch"
+    assert jobs[0].queue == "download"
     # include_auto lets auto-only through
     r = annotator_client.post("/api/media/download", json={"media_ids": [str(m["auto_only"].id)],
                                                            "include_auto": True})

@@ -261,6 +261,9 @@ def download(body: DownloadIn, user: User = Depends(current_user), s: Session = 
         if m.status in NOT_DOWNLOADABLE:
             reasons["already_downloaded"] = reasons.get("already_downloaded", 0) + 1
             continue
+        if m.failure_code == "members_only" or (m.availability or "") in ("subscriber_only", "premium_only"):
+            reasons["members_only"] = reasons.get("members_only", 0) + 1
+            continue
         if _usable_captions(m, body.caption_langs, body.include_auto) is False:
             reasons["no_usable_captions"] = reasons.get("no_usable_captions", 0) + 1
             continue

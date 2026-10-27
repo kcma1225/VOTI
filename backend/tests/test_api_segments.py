@@ -310,7 +310,7 @@ def test_stats_and_quality(annotator_client, factory, db):
     assert st["media"]["ready"] == 1 and st["media"]["failed"] == 1 and st["media"]["listed"] == 2
     assert st["hours"]["speech"] == 0.5 and st["hours"]["reviewed"] == 0.01
     assert st["segments"] == {"total": 1, "passed": 1, "needs_fix": 0}
-    assert set(st["queue_depth"]) == {"fetch", "audio", "ml", "export"}
+    assert set(st["queue_depth"]) == {"scan", "detail", "download", "audio", "ml", "export"}
     q = annotator_client.get("/api/quality/summary").json()
     assert q["sample_rates"] == {"48000": 1} and q["codecs"] == {"opus": 1} and q["upsampled_suspect"] == 1
     assert sum(b["count"] for b in q["histograms"]["snr"]) == 1
@@ -330,7 +330,7 @@ def test_settings(admin_client, db):
     s = r.json()
     assert s["youtube"]["sleep_between_downloads_sec"] == 5 and s["cookies"]["present"] is False
     r = admin_client.put("/api/settings/youtube", json={"rate_limit_kbps": 500})
-    assert r.status_code == 200 and r.json()["rate_limit_kbps"] == 500 and r.json()["max_concurrent_downloads"] == 1
+    assert r.status_code == 200 and r.json()["rate_limit_kbps"] == 500 and r.json()["max_concurrent_downloads"] == 2
     assert admin_client.get("/api/settings").json()["youtube"]["rate_limit_kbps"] == 500
     assert admin_client.put("/api/settings/youtube", json={"rate_limit_kbps": -1}).status_code == 422
     assert admin_client.put("/api/settings/youtube", json={"unknown_key": 1}).status_code == 422

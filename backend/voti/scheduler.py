@@ -1,10 +1,10 @@
-"""Periodic maintenance run by the fetch worker (voti.workers.run registers `tick` as a Worker tick).
+"""Periodic maintenance run by the scan workers (voti.workers.run registers `tick` as a Worker tick).
 
-Every tick (≈ every 30 s on each fetch worker; a Redis lock makes only one worker act per TICK_LOCK_SEC):
+Every tick (≈ every 30 s on each scan worker; a Redis lock makes only one worker act per TICK_LOCK_SEC):
   * scheduled channel refresh — channels whose last listing (or last listing attempt) is older than
     `youtube.auto_refresh_hours` (default 24; 0 disables) get a `channel.list` job with payload
     {"scheduled": true}. Staggered: at most MAX_PER_TICK new jobs per tick and never more than
-    MAX_SCHEDULED_QUEUED scheduled listings waiting in the fetch queue, oldest due first. A refresh marks the
+    MAX_SCHEDULED_QUEUED scheduled listings waiting in the scan queue, oldest due first. A refresh marks the
     videos it finds as new (Media.discovered_at; voti.sources.handlers.channel_list) and the existing
     listing → detail chain fetches their caption info; they are never downloaded automatically.
   * list_status reconciliation — a channel left `queued` / `listing` without an active listing job (crash,

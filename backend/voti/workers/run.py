@@ -1,7 +1,7 @@
-"""Worker entry point: `python -m voti.workers.run --queues fetch,audio`.
+"""Worker entry point: `python -m voti.workers.run --queues scan,detail`.
 
 Handler modules are imported individually and guarded, so a worker without optional dependencies
-(e.g. no torch on a fetch-only box) still serves the queues whose handlers did load.
+(e.g. no torch on a scan-only box) still serves the queues whose handlers did load.
 
 Startup: schema migrations (voti.db.init_db, idempotent), bucket check, then voti.queue.Worker, which first
 recovers this host's interrupted jobs and re-pushes queued jobs Redis lost. Fetch workers also run
@@ -22,8 +22,8 @@ HANDLER_MODULES = ["voti.sources.handlers", "voti.pipeline.handlers", "voti.pipe
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="voti.workers.run")
-    ap.add_argument("--queues", default=os.environ.get("VOTI_QUEUES", "fetch,audio,ml,export"),
-                    help="comma separated: fetch,audio,ml,export")
+    ap.add_argument("--queues", default=os.environ.get("VOTI_QUEUES", "scan,detail,download,audio,ml,export"),
+                    help="comma separated: scan,detail,download,audio,ml,export")
     ap.add_argument("--log-level", default=os.environ.get("LOG_LEVEL", "INFO"))
     args = ap.parse_args(argv)
     logging.basicConfig(level=args.log_level.upper(), stream=sys.stdout,
@@ -59,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as e:  # noqa: BLE001
         log.warning("bucket check failed: %s", e)
     ticks = []
-    if "fetch" in queues:  # scheduled channel refresh + state reconciliation (Redis-locked: one worker acts)
+    if "scan" in queues:  # scheduled channel refresh + state reconciliation (Redis-locked: one worker acts)
         from voti.scheduler import tick
         ticks.append(tick)
     worker = queue.Worker(queues, ticks=ticks)

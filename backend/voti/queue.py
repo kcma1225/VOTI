@@ -1,7 +1,7 @@
 """Job queue: Postgres `jobs` is the source of truth, Redis lists carry job ids for fast wake-up.
 
 Producer:  enqueue(s, kind, media_id=..., payload=...)  → Job (deduplicated per kind+media while active)
-Worker:    python -m voti.workers.run --queues fetch,audio
+Worker:    python -m voti.workers.run --queues scan,detail
 Handler:   @handler("media.download") def run(ctx: JobContext) -> dict | None
 
 Inside a handler use ctx.progress(fraction, phase, message) — it also raises Cancelled when the user
@@ -10,7 +10,9 @@ JobError(code, message, blocked=True/False, retryable=True/False) for classified
 A handler may call ctx.then(kind, payload) to enqueue follow-up jobs when it completes successfully.
 
 Queues
-  fetch : youtube listing / detail / download (rate limited, few workers)
+  scan    : URL resolve, channel / playlist listing (several workers so one huge channel never blocks others)
+  detail  : per-video metadata + caption availability (batched per channel, round-robin across channels)
+  download: audio + caption downloads (own workers, so downloads run while channels are being scanned)
   audio : normalize, probe, bandwidth, loudness, silero VAD, segmentation, text conversion (CPU)
   ml    : brouhaha+dnsmos quality, diarization, alignment, embedding, vox-profile, fingerprint dedup, clustering
           (GPU if any)
@@ -59,11 +61,11 @@ log = logging.getLogger("voti.queue")
 
 # kind → queue. Every job kind used anywhere must be registered here.
 KINDS: dict[str, str] = {
-    "source.resolve": "fetch",        # payload {url}: classify URL; create channel/playlist/media rows; chain listing
-    "channel.list": "fetch",          # channel_id: list videos + shorts tabs (flat), upsert media rows
-    "playlist.list": "fetch",         # payload {playlist_id}
-    "media.detail": "fetch",          # media_id: full metadata + caption availability (+ info.json asset)
-    "media.download": "fetch",        # media_id, payload {caption_langs:[...], include_auto:bool}
+    "source.resolve": "scan",        # payload {url}: classify URL; create channel/playlist/media rows; chain listing
+    "channel.list": "scan",          # channel_id: list videos + shorts tabs (flat), upsert media rows
+    "playlist.list": "scan",         # payload {playlist_id}
+    "media.detail": "detail",          # media_id: full metadata + caption availability (+ info.json asset)
+    "media.download": "download",        # media_id, payload {caption_langs:[...], include_auto:bool}
     "media.normalize": "audio",       # → normalized.wav, ffprobe, bandwidth, loudness, clipping
     "media.quality": "ml",            # brouhaha (legacy-ml) + silero + dnsmos → media_quality, speech_regions
     "media.diarize": "ml",            # pyannote → diarization_turns
@@ -92,7 +94,7 @@ def is_side_job(kind: str, payload: dict | None) -> bool:
     return kind in SIDE_KINDS or (kind == "media.align" and (payload or {}).get("chain") is False)
 
 # Failure codes that mean "not eligible" rather than "broken": media becomes `skipped`.
-SKIP_CODES = {"no_usable_captions"}
+SKIP_CODES = {"no_usable_captions", "members_only"}
 
 # ── recovery timings ──
 HEARTBEAT_SEC = 15.0                          # worker key + jobs.heartbeat_at refresh

@@ -871,7 +871,7 @@ const STEP_DUR: Record<string, number> = {
   'channel.list': 20_000, 'media.detail': 4_000, 'speakers.cluster': 12_000, 'dataset.export': 9_000, 'channel.dedup': 15_000,
 }
 const QUEUE: Record<string, T.QueueName> = {
-  'source.resolve': 'fetch', 'channel.list': 'fetch', 'playlist.list': 'fetch', 'media.detail': 'fetch', 'media.download': 'fetch',
+  'source.resolve': 'scan', 'channel.list': 'scan', 'playlist.list': 'scan', 'media.detail': 'detail', 'media.download': 'download',
   'media.normalize': 'audio', 'media.segment': 'audio', 'media.quality': 'ml', 'media.diarize': 'ml', 'media.embed': 'ml',
   'media.profile': 'ml', 'media.fingerprint': 'ml', 'channel.dedup': 'ml', 'speakers.cluster': 'ml', 'dataset.export': 'export',
   'media.convert_text': 'audio', 'media.align': 'ml',
@@ -885,7 +885,7 @@ export function newJob(db: DB, kind: T.JobKind, o: Partial<T.Job> & { _dur?: num
   const job: T.Job & { _dur?: number } = {
     id: r.uuid(),
     kind,
-    queue: QUEUE[kind] ?? 'fetch',
+    queue: QUEUE[kind] ?? 'scan',
     status: 'queued',
     progress: 0,
     phase: '',

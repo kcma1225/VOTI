@@ -261,7 +261,7 @@ export default function MediaDetail() {
         <div className="min-w-0 flex-1">
           <h1 className="text-xl font-semibold leading-7 tracking-tight break-cjk sm:text-[22px] sm:leading-8">{m.title}</h1>
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px] text-fg-3">
-            <MediaStatusBadge status={m.status} stage={m.stage} />
+            <MediaStatusBadge status={m.status} stage={m.stage} failureCode={m.failure_code} />
             <span>{fmtDate(m.published_at)}</span>
             <span>{t('process.media.views', fmtCompact(m.view_count))}</span>
             <span>{licenseLabel[m.license ?? 'youtube']}</span>

@@ -14,7 +14,7 @@ media.detail modes (payload / ids)
   channel_id set, no media_id          → the next `batch_size` un-detailed media of the channel, then chains
                                          itself while more remain
   Listing enqueues ONE chained detail job per channel/playlist (not one per video) so user-triggered
-  downloads are not stuck behind thousands of queued detail jobs in the FIFO fetch queue.
+  downloads are not stuck behind thousands of queued detail jobs in the FIFO detail queue.
 """
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ from . import youtube as yt
 log = logging.getLogger("voti.sources")
 
 COOKIES_KEY = "system/cookies.txt"
-YT_DEFAULTS = {"rate_limit_kbps": 0, "sleep_between_downloads_sec": 5, "max_concurrent_downloads": 1,
+YT_DEFAULTS = {"rate_limit_kbps": 0, "sleep_between_downloads_sec": 5, "max_concurrent_downloads": 2,
                "cookies_enabled": False,
                # re-list every channel this often to find new videos (voti.scheduler); 0 disables
                "auto_refresh_hours": 24,
@@ -312,6 +312,7 @@ def upsert_listed_media(s, entries: list[dict], channel: Channel | None) -> tupl
                 m.metadata_ = {**(m.metadata_ or {}), "published_approximate": e.get("published_approximate", True)}
             if e.get("availability"):
                 m.availability = e["availability"]
+                mark_if_members_only(m)
         elif e["kind"] == "short" and m.kind == "video":
             m.kind = "short"
         if e.get("view_count") is not None:
@@ -319,6 +320,15 @@ def upsert_listed_media(s, entries: list[dict], channel: Channel | None) -> tupl
         rows.append(m)
     s.flush()
     return rows, new
+
+
+def mark_if_members_only(m: Media) -> bool:
+    """Members-only videos are unsupported: mark them skipped (never downloaded) as soon as we know."""
+    if not yt.is_members_only(m.availability):
+        return False
+    if m.status in ("listed", "detailed", "failed", "blocked", "skipped"):
+        m.status, m.failure_code, m.failure_message = "skipped", "members_only", yt.MEMBERS_ONLY_MESSAGE
+    return True
 
 
 def apply_detail(s, m: Media, d: dict, ctx: JobContext | None = None) -> None:
@@ -584,7 +594,7 @@ def _detail_one(ctx: JobContext, media_id: uuid.UUID, fo: yt.FetchOptions) -> di
         m = s.get(Media, media_id)
         apply_detail(s, m, d, ctx)
         store_info_json(s, m, info)
-        if m.status in ("listed", "failed", "blocked"):
+        if not mark_if_members_only(m) and m.status in ("listed", "failed", "blocked"):
             m.status = "detailed"
             m.failure_code = m.failure_message = None
         return {"media_id": str(media_id), "video_id": vid, "manual": d["manual_caption_langs"],

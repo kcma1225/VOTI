@@ -375,12 +375,12 @@ function overview(): T.Overview {
     speakers: { candidates: d.speakers.length, verified: d.speakers.filter((s) => s.verified).length },
     storage_bytes: 412.6 * 1024 ** 3,
     workers: [
-      { name: 'worker-fetch-1', queues: ['fetch'], alive: true, last_seen_at: new Date().toISOString(), current_job: (() => { const j = d.jobs.find((j) => j.queue === 'fetch' && j.status === 'running'); return j ? { id: j.id, kind: j.kind, media_title: j.media_title ?? null } : null })() },
+      { name: 'worker-scan-1', queues: ['scan', 'detail'], alive: true, last_seen_at: new Date().toISOString(), current_job: (() => { const j = d.jobs.find((j) => (j.queue === 'scan' || j.queue === 'detail') && j.status === 'running'); return j ? { id: j.id, kind: j.kind, media_title: j.media_title ?? null } : null })() },
       { name: 'worker-audio-1', queues: ['audio', 'export'], alive: true, last_seen_at: new Date().toISOString(), current_job: null },
       { name: 'worker-ml-1', queues: ['ml'], alive: true, last_seen_at: new Date().toISOString(), current_job: (() => { const j = d.jobs.find((j) => j.queue === 'ml' && j.status === 'running'); return j ? { id: j.id, kind: j.kind, media_title: j.media_title ?? null } : null })() },
       { name: 'legacy-ml', queues: ['ml'], alive: false, last_seen_at: new Date(Date.now() - 7 * 60_000).toISOString(), current_job: null },
     ],
-    queue_depth: { fetch: qd('fetch'), audio: qd('audio'), ml: qd('ml'), export: qd('export') },
+    queue_depth: { scan: qd('scan'), detail: qd('detail'), download: qd('download'), audio: qd('audio'), ml: qd('ml'), export: qd('export') },
   }
 }
 

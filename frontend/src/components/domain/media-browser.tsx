@@ -459,14 +459,14 @@ export function MediaBrowser({ channelId, kind, captionsPending }: { channelId: 
       cell: (m) => <CaptionBadges manual={m.has_manual_captions} auto={m.has_auto_captions} manualLangs={m.manual_caption_langs} autoLangs={m.auto_caption_langs} />,
     },
     { id: 'q', header: t('collect.media.cols.quality'), width: 'w-24', hideBelow: 'xl', cell: (m) => <QualityCell m={m} /> },
-    { id: 'status', header: t('collect.media.cols.status'), width: 'w-28', cell: (m) => <MediaStatusBadge status={m.status} stage={m.stage} /> },
+    { id: 'status', header: t('collect.media.cols.status'), width: 'w-28', cell: (m) => <MediaStatusBadge status={m.status} stage={m.stage} failureCode={m.failure_code} /> },
   ]
 
   const card = (m: MediaSummary) => (
     <div className="min-w-0">
       <TitleCell m={m} short={short} />
       <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 pl-0 text-xs text-fg-3">
-        <MediaStatusBadge status={m.status} stage={m.stage} />
+        <MediaStatusBadge status={m.status} stage={m.stage} failureCode={m.failure_code} />
         <CaptionBadges compact manual={m.has_manual_captions} auto={m.has_auto_captions} manualLangs={m.manual_caption_langs} autoLangs={m.auto_caption_langs} />
         <span className="tabular">{fmtDate(m.published_at)}</span>
         {m.quality && <span className="tabular">SNR {fmtDb(m.quality.snr_mean)}</span>}

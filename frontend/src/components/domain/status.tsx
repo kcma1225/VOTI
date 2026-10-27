@@ -8,7 +8,13 @@ import { cn } from '@/lib/cn'
 import { lang } from '@/lib/labels'
 import { Captions, Bot } from 'lucide-react'
 
-export function MediaStatusBadge({ status, stage, className }: { status: MediaStatus; stage?: string | null; className?: string }) {
+export function MediaStatusBadge({ status, stage, failureCode, className }: { status: MediaStatus; stage?: string | null; failureCode?: string | null; className?: string }) {
+  if (failureCode === 'members_only')
+    return (
+      <Badge tone="warning" className={className} title={t('labels.membersOnlyHint')}>
+        <Ban className="size-3" /> {t('labels.membersOnly')}
+      </Badge>
+    )
   const s = mediaStatus[status] ?? { label: status, tone: 'neutral' as Tone }
   const active = status === 'downloading' || status === 'processing'
   return (

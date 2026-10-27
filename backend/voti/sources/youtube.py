@@ -167,6 +167,15 @@ class YouTubeError(Exception):
         self.code, self.message, self.blocked, self.retryable = code, message, blocked, retryable
 
 
+# Members-only (paid channel membership) / premium videos can never be fetched by this system.
+MEMBERS_ONLY_AVAILABILITY = frozenset({"subscriber_only", "premium_only"})
+MEMBERS_ONLY_MESSAGE = "會員限定影片，本系統不支援下載。"
+
+
+def is_members_only(availability: str | None) -> bool:
+    return (availability or "") in MEMBERS_ONLY_AVAILABILITY
+
+
 # (pattern, code, blocked, retryable, message). First match wins; patterns match lower-cased yt-dlp text.
 _ERROR_RULES: list[tuple[str, str, bool, bool, str]] = [
     (r"confirm you.?re not a bot|not a robot", "bot_check", True, True,
@@ -177,7 +186,7 @@ _ERROR_RULES: list[tuple[str, str, bool, bool, str]] = [
     (r"confirm your age|age.?restrict|inappropriate for some users|age-gated", "age_restricted", True, False,
      "影片有年齡限制，需要登入帳號（cookies）才能取得。"),
     (r"members.?only|join this channel|available to this channel.?s members", "members_only", True, False,
-     "影片僅限頻道會員觀看。"),
+     MEMBERS_ONLY_MESSAGE),
     (r"private video|this video is private|this playlist is private",
      "access_restricted", True, False, "影片／播放清單為私人或需要權限。"),
     (r"available in your (?:country|region)|geo.?restrict|blocked it in your country|geo-?blocked", "region_restricted",
