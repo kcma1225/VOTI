@@ -3,14 +3,15 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Link, Navigate, useLocation, useNavigate } from 'react-router'
 import { ArrowRight, Check, ListFilter, Loader2, Pause, Play, RotateCcw, X } from 'lucide-react'
-import { useChannels, useSegments } from '@/api/queries'
+import { useChannels, useSegment, useSegments } from '@/api/queries'
 import type { SegmentSummary } from '@/api/types'
 import { fmtDb, fmtMos, fmtSec, fmtTimestamp } from '@/lib/format'
 import { flagLabel, textSource } from '@/lib/labels'
 import { cn } from '@/lib/cn'
 import { useT } from '@/i18n'
 import { useIsDesktop } from '@/hooks/useMedia'
-import { useClipPlayer } from '@/hooks/useClipPlayer'
+import { useSentencePlayer } from '@/hooks/useSentencePlayer'
+import { KaraokeText, toUnits, useClock } from '@/components/domain/karaoke'
 import { Page, PageHeader, useTitle } from '@/components/layout/page'
 import { Button } from '@/components/ui/button'
 import { Card, Tag } from '@/components/ui/primitives'
@@ -19,12 +20,13 @@ import { Sheet } from '@/components/ui/overlay'
 import { Pagination } from '@/components/ui/data-table'
 import { EmptyState, ErrorState, ListSkeleton } from '@/components/ui/states'
 import { ReviewBadge } from '@/components/domain/status'
+import { ValidityBadge } from '@/components/domain/validity'
 import { LIST_LIMIT, recallListScroll, rememberListScroll, toSegmentQuery, useReviewParams, type ReviewParams } from './params'
 
 const FLAGS = ['low_snr', 'low_speech', 'clipped', 'repeated', 'overlap', 'too_short', 'boundary_adjusted', 's2t_converted']
 
 function activeFilterCount(p: ReviewParams) {
-  return (p.channel ? 1 : 0) + (p.source ? 1 : 0) + (p.flags.length ? 1 : 0) + (p.snr !== null ? 1 : 0) + (p.mos !== null ? 1 : 0) + (p.sort ? 1 : 0)
+  return (p.channel ? 1 : 0) + (p.source ? 1 : 0) + (p.validity ? 1 : 0) + (p.flags.length ? 1 : 0) + (p.snr !== null ? 1 : 0) + (p.mos !== null ? 1 : 0) + (p.sort ? 1 : 0)
 }
 
 function StatusFilter({ p, set }: { p: ReviewParams; set: ReturnType<typeof useReviewParams>['set'] }) {
@@ -71,6 +73,15 @@ function MoreFilters({ p, set, stacked }: { p: ReviewParams; set: ReturnType<typ
           <option value="manual_caption">{textSource.manual_caption}</option>
           <option value="auto_caption">{textSource.auto_caption}</option>
           <option value="human_revision">{textSource.human_revision}</option>
+        </Select>
+      </label>
+      <label className={cn('min-w-0', stacked ? 'space-y-1.5' : 'w-36 space-y-1')}>
+        <span className="text-xs font-medium text-fg-3">{t('validate.filter.label')}</span>
+        <Select value={p.validity} onChange={(e) => set({ validity: e.target.value })} data-shot="validity-filter">
+          <option value="">{t('validate.filter.all')}</option>
+          <option value="valid">{t('validate.filter.valid')}</option>
+          <option value="invalid">{t('validate.filter.invalid')}</option>
+          <option value="unknown">{t('validate.filter.unknown')}</option>
         </Select>
       </label>
       <div className={cn('grid grid-cols-2 gap-2', stacked ? '' : 'w-64')}>
@@ -123,21 +134,34 @@ function QualityChips({ s }: { s: SegmentSummary }) {
   )
 }
 
-function SegmentRow({ s, href, onOpen, clip, focused }: { s: SegmentSummary; href: string; onOpen: () => void; clip: ReturnType<typeof useClipPlayer>; focused: boolean }) {
+type Player = ReturnType<typeof useSentencePlayer>
+
+/** The playing row's text: per-character karaoke from the segment's word timings (fetched for this row only),
+ * or a sentence-level highlight when the segment has no alignment. */
+function PlayingText({ s, player }: { s: SegmentSummary; player: Player }) {
+  const detail = useSegment(s.id)
+  const units = toUnits(detail.data?.words ?? null, s.start_sec, s.end_sec)
+  const time = useClock(player.clock, true)
+  if (units) return <KaraokeText units={units} time={time} />
+  return <span className="rounded-[3px] bg-primary-soft text-primary-soft-fg shadow-[0_0_0_2px_var(--primary-soft)] [box-decoration-break:clone]">{s.text}</span>
+}
+
+function SegmentRow({ s, href, onOpen, player, focused }: { s: SegmentSummary; href: string; onOpen: () => void; player: Player; focused: boolean }) {
   const t = useT()
-  const playing = clip.playing === s.id
+  const active = player.id === s.id && player.status !== 'idle'
+  const playing = active && player.status !== 'paused'
   return (
     <li id={`rv-${s.id}`} className={cn('relative flex min-w-0 items-start gap-2 px-3 py-3 transition-colors hover:bg-surface-2/60 sm:gap-3 sm:px-4 md:items-center md:gap-4', focused && 'animate-flash')}>
       <button
         type="button"
-        onClick={() => clip.toggle(s.id)}
+        onClick={() => player.play({ id: s.id, start_sec: s.start_sec, revision: s.revision })}
         aria-label={playing ? t('process.review.stopSample') : t('process.review.playSample')}
         className={cn(
           'mt-0.5 grid size-9 shrink-0 place-items-center rounded-full transition-colors md:mt-0 [&_svg]:size-3.5',
           playing ? 'bg-primary text-primary-fg' : 'bg-surface-2 text-fg-2 hover:bg-primary-soft hover:text-primary-soft-fg',
         )}
       >
-        {clip.loading === s.id ? <Loader2 className="animate-spin" /> : playing ? <Pause /> : <Play className="translate-x-px" />}
+        {active && player.status === 'loading' ? <Loader2 className="animate-spin" /> : playing ? <Pause /> : <Play className="translate-x-px" />}
       </button>
       <Link
         to={href}
@@ -145,15 +169,18 @@ function SegmentRow({ s, href, onOpen, clip, focused }: { s: SegmentSummary; hre
         className="grid min-w-0 flex-1 gap-x-4 gap-y-1.5 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring md:grid-cols-[minmax(0,1fr)_4rem_10rem_6.5rem] md:items-center"
       >
         <span className="min-w-0">
-          <span className="line-clamp-2 text-[14px] leading-6 text-fg break-cjk">{s.text}</span>
+          <span className={cn('line-clamp-2 text-[14px] leading-6 break-cjk', s.validity === 'invalid' ? 'text-fg-3' : 'text-fg', active && 'line-clamp-none')}>
+            {active ? <PlayingText s={s} player={player} /> : s.text}
+          </span>
           <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-fg-3">
             <span className="truncate">{s.media_title}</span>
             <span className="shrink-0">·</span>
             <span className="shrink-0 truncate">{s.channel_title}</span>
             <span className="hidden shrink-0 font-mono sm:inline">· {fmtTimestamp(s.start_sec).replace(/\.\d+$/, '')}</span>
           </span>
-          {(s.flags.length > 0 || s.text_source === 'auto_caption') && (
+          {(s.flags.length > 0 || s.text_source === 'auto_caption' || s.validity === 'invalid' || s.validity_source === 'manual') && (
             <span className="mt-1 flex flex-wrap gap-1">
+              <ValidityBadge s={s} className="h-auto min-h-5 text-[11px]" />
               {s.text_source === 'auto_caption' && <Tag className="border-warning/30 text-warning-fg">{textSource.auto_caption}</Tag>}
               {s.flags.map((f) => (
                 <Tag key={f}>{flagLabel[f] ?? f}</Tag>
@@ -188,7 +215,7 @@ export default function ReviewList() {
   const isDesktop = useIsDesktop()
   const [sheet, setSheet] = useState(false)
   const [qDraft, setQDraft] = useState(p.q)
-  const clip = useClipPlayer()
+  const player = useSentencePlayer()
   const list = useSegments({ ...toSegmentQuery(p), limit: LIST_LIMIT, offset: p.offset })
   const media = p.media ? list.data?.items[0]?.media_title : undefined
   const focusId = (location.state as { focus?: string } | null)?.focus ?? null
@@ -271,7 +298,7 @@ export default function ReviewList() {
           </span>
         )}
         {nFilters > 0 && (
-          <button className="h-8 px-2 text-xs hover:text-fg" onClick={() => set({ channel: null, source: null, flags: null, snr: null, mos: null, sort: null })}>
+          <button className="h-8 px-2 text-xs hover:text-fg" onClick={() => set({ channel: null, source: null, validity: null, flags: null, snr: null, mos: null, sort: null })}>
             {t('process.review.resetFilters')}
           </button>
         )}
@@ -288,7 +315,7 @@ export default function ReviewList() {
             title={p.status === 'unchecked' && !nFilters && !p.q ? t('process.review.emptyTitle') : t('process.review.noMatchTitle')}
             description={p.status === 'unchecked' && !nFilters && !p.q ? t('process.review.emptyDesc') : t('process.review.noMatchDesc')}
             action={
-              <Button onClick={() => (setQDraft(''), set({ status: 'all', channel: null, media: null, source: null, flags: null, snr: null, mos: null, q: null, sort: null }))}>
+              <Button onClick={() => (setQDraft(''), set({ status: 'all', channel: null, media: null, source: null, validity: null, flags: null, snr: null, mos: null, q: null, sort: null }))}>
                 <RotateCcw /> {t('process.review.showAll')}
               </Button>
             }
@@ -304,7 +331,7 @@ export default function ReviewList() {
             </div>
             <ul className="divide-y divide-border">
               {items.map((s) => (
-                <SegmentRow key={s.id} s={s} href={href(s.id)} onOpen={open} clip={clip} focused={s.id === focusId} />
+                <SegmentRow key={s.id} s={s} href={href(s.id)} onOpen={open} player={player} focused={s.id === focusId} />
               ))}
             </ul>
             <Pagination total={list.data.total} limit={LIST_LIMIT} offset={p.offset} onChange={(o) => (set({ offset: o || null }), window.scrollTo({ top: 0 }))} className="border-t border-border" />
@@ -317,7 +344,7 @@ export default function ReviewList() {
           <MoreFilters p={p} set={set} stacked />
         </div>
         <div className="sticky bottom-0 flex gap-2 border-t border-border bg-surface p-3">
-          <Button className="flex-1" onClick={() => set({ channel: null, source: null, flags: null, snr: null, mos: null, sort: null })}>
+          <Button className="flex-1" onClick={() => set({ channel: null, source: null, validity: null, flags: null, snr: null, mos: null, sort: null })}>
             {t('process.review.resetFilters')}
           </Button>
           <Button className="flex-1" variant="primary" onClick={() => setSheet(false)}>
