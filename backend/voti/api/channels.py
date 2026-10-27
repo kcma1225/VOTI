@@ -8,7 +8,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from ..auth import current_user
+from ..auth import current_user, require_admin
+from ..deletion import channel_impact, delete_channel
 from ..db import get_session
 from ..models import Channel, Job, Media, MediaQuality, Playlist, PlaylistItem, RepeatedRegion, Segment, Speaker, User
 from ..queue import enqueue
@@ -99,6 +100,29 @@ def patch_channel(channel_id: uuid.UUID, body: S.ChannelPatchIn, user: User = De
     c.notes = body.notes
     s.commit()
     return channel_detail(s, c)
+
+
+@router.get("/channels/{channel_id}/delete-impact", response_model=S.ChannelDeleteImpact)
+def get_delete_impact(channel_id: uuid.UUID, _: User = Depends(require_admin), s: Session = Depends(get_session)):
+    get_or_404(s, Channel, channel_id, "頻道")
+    return channel_impact(s, channel_id)
+
+
+@router.delete("/channels/{channel_id}", response_model=S.ChannelDeleteOut)
+def remove_channel(channel_id: uuid.UUID, confirm: str | None = None, admin: User = Depends(require_admin),
+                   s: Session = Depends(get_session)):
+    """Admin only. When anything was downloaded or reviewed, `confirm` must equal the channel title."""
+    c = get_or_404(s, Channel, channel_id, "頻道")
+    impact = channel_impact(s, c.id)
+    if impact["requires_confirmation"] and (confirm or "").strip() != (c.title or "").strip():
+        raise ApiError(409, "confirmation_required",
+                       f"此頻道已有 {impact['downloaded_media']} 部影片下載或處理過，刪除會一併永久刪除音檔與分析結果；"
+                       "請輸入頻道名稱確認")
+    title = c.title
+    result = delete_channel(s, c)
+    audit(s, admin, "channel.delete", "channel", channel_id, before={"title": title, **impact}, after=None)
+    s.commit()
+    return result
 
 
 # ───────────────────────────── playlists ─────────────────────────────

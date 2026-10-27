@@ -203,6 +203,23 @@ class ChannelPatchIn(BaseModel):
     notes: str = Field(max_length=100_000)
 
 
+class ChannelDeleteImpact(BaseModel):
+    media_total: int
+    playlists: int
+    downloaded_media: int
+    downloaded_sec: float
+    segments: int
+    reviewed_segments: int
+    storage_bytes: int
+    active_jobs: int
+    datasets_referencing: int
+    requires_confirmation: bool  # true → DELETE must carry ?confirm=<exact channel title>
+
+
+class ChannelDeleteOut(ChannelDeleteImpact):
+    objects_deleted: int = 0
+
+
 class ChannelDetailIn(BaseModel):
     media_ids: list[uuid.UUID] | None = None
 

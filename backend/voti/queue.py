@@ -165,7 +165,7 @@ class JobContext:
         self._last_beat = now
         with session_scope() as s:
             job = s.get(Job, self.job_id)
-            if job.cancel_requested:
+            if job is None or job.cancel_requested:  # None: its media/channel was deleted
                 raise Cancelled()
             if fraction is not None:
                 job.progress = max(0.0, min(1.0, fraction))
@@ -196,6 +196,8 @@ def _finish(ctx: JobContext, status: str, result: dict | None = None, code: str 
             message: str | None = None) -> None:
     with session_scope() as s:
         job = s.get(Job, ctx.job_id)
+        if job is None:  # deleted together with its media/channel while running
+            return
         job.status, job.finished_at = status, utcnow()
         if result is not None:
             job.result = result

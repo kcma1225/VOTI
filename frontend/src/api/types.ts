@@ -103,6 +103,20 @@ export interface JobList extends Page<Job> {
 }
 
 // ─────────────── channels & playlists ───────────────
+export interface ChannelDeleteImpact {
+  media_total: number
+  playlists: number
+  downloaded_media: number
+  downloaded_sec: number
+  segments: number
+  reviewed_segments: number
+  storage_bytes: number
+  active_jobs: number
+  datasets_referencing: number
+  /** true → DELETE must carry ?confirm=<exact channel title> */
+  requires_confirmation: boolean
+}
+
 export type ListStatus = 'new' | 'listing' | 'listed' | 'failed'
 export interface ChannelSummary {
   id: UUID

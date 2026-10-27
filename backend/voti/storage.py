@@ -124,5 +124,18 @@ def store_bytes_asset(s: Session, data: bytes, key: str, kind: str, media_id: uu
     return asset
 
 
+def delete_prefix(prefix: str) -> int:
+    """Delete every object under `prefix` (e.g. "media/<id>/"). Returns the number of objects deleted."""
+    if not prefix or not prefix.endswith("/"):
+        raise ValueError("prefix must be a non-empty directory-like prefix ending with '/'")
+    deleted = 0
+    for page in client().get_paginator("list_objects_v2").paginate(Bucket=bucket(), Prefix=prefix):
+        keys = [{"Key": o["Key"]} for o in page.get("Contents", [])]
+        if keys:
+            client().delete_objects(Bucket=bucket(), Delete={"Objects": keys, "Quiet": True})
+            deleted += len(keys)
+    return deleted
+
+
 def upload_stream(fileobj: BinaryIO, key: str, content_type: str) -> None:
     client().upload_fileobj(fileobj, bucket(), key, ExtraArgs={"ContentType": content_type})

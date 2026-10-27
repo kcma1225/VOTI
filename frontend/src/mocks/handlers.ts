@@ -501,6 +501,29 @@ export const handlers = [
     return json(strip(newJob(db, 'channel.list', { channel_id: params.id as string })))
   }),
   http.post(`${A}/channels/:id/detail`, ({ params }) => json({ queued: db.media.filter((m) => m.channel?.id === params.id && m.has_manual_captions === null).length })),
+  http.get(`${A}/channels/:id/delete-impact`, ({ params }) => {
+    const ms = db.media.filter((m) => m.channel?.id === params.id)
+    const dl = ms.filter((m) => ['downloaded', 'processing', 'ready'].includes(m.status))
+    const segs = dl.reduce((a, m) => a + (m.segment_count ?? 0), 0)
+    return json({
+      media_total: ms.length, playlists: db.playlists.filter((p) => p.channel_id === params.id).length,
+      downloaded_media: dl.length, downloaded_sec: dl.reduce((a, m) => a + (m.duration_sec ?? 0), 0),
+      segments: segs, reviewed_segments: Math.round(segs * 0.18), storage_bytes: dl.reduce((a, m) => a + (m.duration_sec ?? 0) * 210_000, 0),
+      active_jobs: db.jobs.filter((j) => j.channel_id === params.id && ['queued', 'running'].includes(j.status)).length,
+      datasets_referencing: 1, requires_confirmation: dl.length > 0,
+    } satisfies T.ChannelDeleteImpact)
+  }),
+  http.delete(`${A}/channels/:id`, ({ params, request }) => {
+    const c = db.channels.find((x) => x.id === params.id)
+    if (!c) return json({ detail: '找不到頻道', code: 'not_found' }, { status: 404 })
+    const ms = db.media.filter((m) => m.channel?.id === c.id)
+    const hasDl = ms.some((m) => ['downloaded', 'processing', 'ready'].includes(m.status))
+    if (hasDl && new URL(request.url).searchParams.get('confirm') !== c.title) return json({ detail: '請輸入頻道名稱確認', code: 'confirmation_required' }, { status: 409 })
+    db.channels = db.channels.filter((x) => x.id !== c.id)
+    db.media = db.media.filter((m) => m.channel?.id !== c.id)
+    for (const m of ms) db.mediaById.delete(m.id)
+    return json({ objects_deleted: ms.length })
+  }),
   http.get(`${A}/channels/:id`, ({ params }) => {
     const c = db.channels.find((x) => x.id === params.id)
     return c ? json(c) : err(404, '找不到頻道', 'not_found')

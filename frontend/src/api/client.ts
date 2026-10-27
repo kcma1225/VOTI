@@ -95,6 +95,9 @@ export const api = {
   refreshChannel: (id: string) => post<T.Job>(`/channels/${id}/refresh`),
   detailChannel: (id: string, media_ids?: string[]) => post<{ queued: number }>(`/channels/${id}/detail`, { media_ids }),
   patchChannel: (id: string, notes: string) => patch<T.ChannelDetail>(`/channels/${id}`, { notes }),
+  channelDeleteImpact: (id: string) => get<T.ChannelDeleteImpact>(`/channels/${id}/delete-impact`),
+  deleteChannel: (id: string, confirm?: string) =>
+    request<T.ChannelDeleteImpact & { objects_deleted: number }>('DELETE', `/channels/${id}` + qs({ confirm })),
   playlists: (channel_id: string) => get<T.Page<T.Playlist>>('/playlists', { channel_id }), // ext
   playlist: (id: string) => get<T.Playlist>(`/playlists/${id}`),
   repeated: (channel_id: string) => get<T.RepeatedGroup[]>(`/channels/${channel_id}/repeated`),

@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { Link, useParams } from 'react-router'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { Link, useNavigate, useParams } from 'react-router'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
   Captions,
@@ -15,20 +15,22 @@ import {
   Repeat2,
   ScanSearch,
   Smartphone,
+  Trash2,
+  TriangleAlert,
   Users,
 } from 'lucide-react'
 import { api } from '@/api/client'
-import { errMsg, onErr, qk, useChannel, useDiversity, usePlaylists, useRepeated, useSpeakers } from '@/api/queries'
+import { errMsg, onErr, qk, useMe, useChannel, useDiversity, usePlaylists, useRepeated, useSpeakers } from '@/api/queries'
 import type { ChannelDetail as TChannel } from '@/api/types'
-import { fmt1, fmtClock, fmtCompact, fmtHours, fmtInt, fmtMos, fmtRelative, fmtSec } from '@/lib/format'
+import { fmt1, fmtBytes, fmtClock, fmtCompact, fmtHours, fmtInt, fmtMos, fmtRelative, fmtSec } from '@/lib/format'
 import { ageGroupLabel, ageGroupOrder, repeatPosition, sexLabel } from '@/lib/labels'
 import { Page } from '@/components/layout/page'
 import { useTitle } from '@/components/layout/page'
 import { Button } from '@/components/ui/button'
 import { Avatar, Badge, Card, CardBody, CardHeader, Skeleton } from '@/components/ui/primitives'
 import { NavTabs } from '@/components/ui/tabs'
-import { Dialog, Menu, MenuContent, MenuItem, MenuTrigger } from '@/components/ui/overlay'
-import { Switch, Textarea } from '@/components/ui/form'
+import { Dialog, Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '@/components/ui/overlay'
+import { Field, Input, Switch, Textarea } from '@/components/ui/form'
 import { EmptyState, ErrorState, ListSkeleton } from '@/components/ui/states'
 import { MediaBrowser } from '@/components/domain/media-browser'
 import { QualityPanels } from '@/components/domain/quality-viz'
@@ -36,8 +38,94 @@ import { SpeakerList } from '@/components/domain/speakers'
 import { HBars, ORDINAL, StackBar } from '@/components/charts/charts'
 import { cn } from '@/lib/cn'
 
+function DeleteChannelDialog({ c, open, onOpenChange }: { c: TChannel; open: boolean; onOpenChange: (o: boolean) => void }) {
+  const qc = useQueryClient()
+  const navigate = useNavigate()
+  const [typed, setTyped] = useState('')
+  const impact = useQuery({ queryKey: ['channel-delete-impact', c.id], queryFn: () => api.channelDeleteImpact(c.id), enabled: open, staleTime: 0 })
+  const del = useMutation({
+    mutationFn: () => api.deleteChannel(c.id, impact.data?.requires_confirmation ? typed : undefined),
+    onSuccess: () => {
+      toast.success(`已刪除頻道「${c.title}」`)
+      onOpenChange(false)
+      qc.removeQueries({ queryKey: qk.channel(c.id) })
+      qc.invalidateQueries()
+      navigate('/channels', { replace: true })
+    },
+    onError: onErr,
+  })
+  const d = impact.data
+  const mustType = !!d?.requires_confirmation
+  const canDelete = !!d && !del.isPending && (!mustType || typed.trim() === c.title.trim())
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        onOpenChange(o)
+        if (o) setTyped('')
+      }}
+      title="刪除頻道"
+      description={<>將從系統移除「<span className="font-medium text-fg">{c.title}</span>」及其所有影片、播放清單與工作。此動作無法復原。</>}
+      footer={
+        <>
+          <Button onClick={() => onOpenChange(false)}>取消</Button>
+          <Button variant="danger" loading={del.isPending} disabled={!canDelete} onClick={() => del.mutate()}>
+            <Trash2 /> 永久刪除
+          </Button>
+        </>
+      }
+    >
+      {impact.isLoading || !d ? (
+        impact.isError ? <p className="text-[13px] text-danger-fg">{errMsg(impact.error)}</p> : <Skeleton className="h-24" />
+      ) : (
+        <div className="space-y-4">
+          {mustType ? (
+            <div className="flex gap-3 rounded-lg border border-danger/30 bg-danger-soft px-3.5 py-3 text-[13px] leading-5">
+              <TriangleAlert className="mt-0.5 size-4 shrink-0 text-danger-fg" />
+              <div className="min-w-0 space-y-1.5">
+                <p className="font-medium text-danger-fg">這個頻道已有下載或處理過的資料，刪除後會一併永久刪除：</p>
+                <ul className="list-disc space-y-0.5 pl-4 text-fg-2">
+                  <li>{fmtInt(d.downloaded_media)} 部影片的音檔（約 {fmtHours(d.downloaded_sec)}，佔用 {fmtBytes(d.storage_bytes)}）</li>
+                  <li>音質分析、語者分段、語者向量與 Vox-Profile 結果</li>
+                  <li>{fmtInt(d.segments)} 個音段{d.reviewed_segments > 0 && <>，其中 <span className="font-medium text-danger-fg">{fmtInt(d.reviewed_segments)} 個已人工審查</span></>}</li>
+                  {d.active_jobs > 0 && <li>{fmtInt(d.active_jobs)} 個進行中或排隊中的工作會被取消</li>}
+                </ul>
+              </div>
+            </div>
+          ) : (
+            <p className="text-[13px] leading-5 text-fg-2">這個頻道還沒有下載任何影片，只會移除 {fmtInt(d.media_total)} 筆影片資訊{d.playlists > 0 && <>與 {fmtInt(d.playlists)} 個播放清單</>}。</p>
+          )}
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 rounded-lg bg-surface-2 px-3.5 py-3 text-[13px] sm:grid-cols-4">
+            {[
+              ['影片', fmtInt(d.media_total)],
+              ['已下載', fmtInt(d.downloaded_media)],
+              ['音段', fmtInt(d.segments)],
+              ['佔用空間', fmtBytes(d.storage_bytes)],
+            ].map(([k, v]) => (
+              <div key={k} className="min-w-0">
+                <dt className="text-fg-3">{k}</dt>
+                <dd className="tabular font-medium">{v}</dd>
+              </div>
+            ))}
+          </dl>
+          {d.datasets_referencing > 0 && (
+            <p className="text-[12px] leading-5 text-fg-3">有 {fmtInt(d.datasets_referencing)} 個資料集的篩選條件包含此頻道；已匯出的資料集檔案不受影響，之後重新匯出時不會再包含這個頻道。</p>
+          )}
+          {mustType && (
+            <Field label={<>請輸入頻道名稱 <span className="font-medium text-fg">{c.title}</span> 以確認</>} htmlFor="confirm-channel-title">
+              <Input id="confirm-channel-title" value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" placeholder={c.title} invalid={typed.length > 0 && typed.trim() !== c.title.trim()} />
+            </Field>
+          )}
+        </div>
+      )}
+    </Dialog>
+  )
+}
+
 function Header({ c }: { c: TChannel }) {
   const qc = useQueryClient()
+  const isAdmin = useMe().data?.role === 'admin'
+  const [deleteOpen, setDeleteOpen] = useState(false)
   const [notesOpen, setNotesOpen] = useState(false)
   const [notes, setNotes] = useState(c.notes)
   const refresh = useMutation({
@@ -128,6 +216,14 @@ function Header({ c }: { c: TChannel }) {
               <MenuItem icon={<NotebookPen />} onSelect={() => setNotesOpen(true)}>
                 編輯研究筆記
               </MenuItem>
+              {isAdmin && (
+                <>
+                  <MenuSeparator />
+                  <MenuItem danger icon={<Trash2 />} onSelect={() => setDeleteOpen(true)}>
+                    刪除頻道…
+                  </MenuItem>
+                </>
+              )}
             </MenuContent>
           </Menu>
         </div>
@@ -146,6 +242,7 @@ function Header({ c }: { c: TChannel }) {
         ))}
       </div>
 
+      <DeleteChannelDialog c={c} open={deleteOpen} onOpenChange={setDeleteOpen} />
       <Dialog
         open={notesOpen}
         onOpenChange={(o) => {
