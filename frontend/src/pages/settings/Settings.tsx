@@ -254,6 +254,9 @@ function YoutubeTab() {
           <Row label={t('output.settings.youtube.useCookies')} hint={t('output.settings.youtube.useCookiesHint')}>
             <Switch checked={v.cookies_enabled} onCheckedChange={(x) => setV({ ...v, cookies_enabled: x })} disabled={!ck.present} />
           </Row>
+          <Row label={t('output.settings.youtube.verifyCaptions')} hint={t('output.settings.youtube.verifyCaptionsHint')}>
+            <Switch checked={v.verify_captions ?? true} onCheckedChange={(x) => setV({ ...v, verify_captions: x })} aria-label={t('output.settings.youtube.verifyCaptions')} />
+          </Row>
         </CardBody>
         <SaveBar dirty={dirty} saving={save.isPending} onSave={() => save.mutate()} onReset={() => setV(s.data.youtube)} />
       </Card>

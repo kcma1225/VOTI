@@ -95,7 +95,7 @@ def is_side_job(kind: str, payload: dict | None) -> bool:
     return kind in SIDE_KINDS or (kind in ("media.align", "media.validate") and (payload or {}).get("chain") is False)
 
 # Failure codes that mean "not eligible" rather than "broken": media becomes `skipped`.
-SKIP_CODES = {"no_usable_captions", "members_only"}
+SKIP_CODES = {"no_usable_captions", "members_only", "empty_captions"}
 
 # ── recovery timings ──
 HEARTBEAT_SEC = 15.0                          # worker key + jobs.heartbeat_at refresh

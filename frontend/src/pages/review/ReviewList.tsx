@@ -3,7 +3,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Link, Navigate, useLocation, useNavigate } from 'react-router'
 import { ArrowRight, Check, ListFilter, Loader2, Pause, Play, RotateCcw, X } from 'lucide-react'
-import { useChannels, useSegment, useSegments } from '@/api/queries'
+import { useQueryClient } from '@tanstack/react-query'
+import { api } from '@/api/client'
+import { qk, useChannels, useSegment, useSegments } from '@/api/queries'
 import type { SegmentSummary } from '@/api/types'
 import { fmtDb, fmtMos, fmtSec, fmtTimestamp } from '@/lib/format'
 import { flagLabel, textSource } from '@/lib/labels'
@@ -11,7 +13,9 @@ import { cn } from '@/lib/cn'
 import { useT } from '@/i18n'
 import { useIsDesktop } from '@/hooks/useMedia'
 import { useSentencePlayer } from '@/hooks/useSentencePlayer'
-import { KaraokeText, toUnits, useClock } from '@/components/domain/karaoke'
+import { KaraokeText, SeekableChars, timeAtChar, toUnits, useClock } from '@/components/domain/karaoke'
+import { SpeakerDot, localSpeakerName, speakerVars, useSpeakerIndexMany } from '@/components/domain/speaker-color'
+import { speakerName } from '@/components/domain/speakers'
 import { Page, PageHeader, useTitle } from '@/components/layout/page'
 import { Button } from '@/components/ui/button'
 import { Card, Tag } from '@/components/ui/primitives'
@@ -21,7 +25,7 @@ import { Pagination } from '@/components/ui/data-table'
 import { EmptyState, ErrorState, ListSkeleton } from '@/components/ui/states'
 import { ReviewBadge } from '@/components/domain/status'
 import { ValidityBadge } from '@/components/domain/validity'
-import { LIST_LIMIT, recallListScroll, rememberListScroll, toSegmentQuery, useReviewParams, type ReviewParams } from './params'
+import { LIST_LIMIT, recallListScroll, rememberListScroll, takeListReturn, toSegmentQuery, useReviewParams, type ReviewNavState, type ReviewParams } from './params'
 
 const FLAGS = ['low_snr', 'low_speech', 'clipped', 'repeated', 'overlap', 'too_short', 'boundary_adjusted', 's2t_converted']
 
@@ -137,24 +141,71 @@ function QualityChips({ s }: { s: SegmentSummary }) {
 type Player = ReturnType<typeof useSentencePlayer>
 
 /** The playing row's text: per-character karaoke from the segment's word timings (fetched for this row only),
- * or a sentence-level highlight when the segment has no alignment. */
+ * or a sentence-level highlight when the segment has no alignment. Characters seek (click / tap). */
 function PlayingText({ s, player }: { s: SegmentSummary; player: Player }) {
   const detail = useSegment(s.id)
   const units = toUnits(detail.data?.words ?? null, s.start_sec, s.end_sec)
   const time = useClock(player.clock, true)
-  if (units) return <KaraokeText units={units} time={time} />
-  return <span className="rounded-[3px] bg-primary-soft text-primary-soft-fg shadow-[0_0_0_2px_var(--primary-soft)] [box-decoration-break:clone]">{s.text}</span>
+  if (units) return <KaraokeText units={units} time={time} onSeek={(at) => player.play(s, at)} />
+  return <span className="hl-sentence rounded-[3px]">{s.text}</span>
 }
 
-function SegmentRow({ s, href, onOpen, player, focused }: { s: SegmentSummary; href: string; onOpen: () => void; player: Player; focused: boolean }) {
+/** A row's speaker: colour dot + 語者 N (+ the candidate speaker's name when it has one). */
+function rowSpeaker(s: SegmentSummary, idx: number | null) {
+  if (idx == null) return null
+  const name = localSpeakerName(idx)
+  return {
+    label: s.speaker?.display_name ? `${name} · ${s.speaker.display_name}` : name,
+    title: [s.local_speaker, s.speaker ? speakerName(s.speaker) : null].filter(Boolean).join(' · '),
+  }
+}
+
+function SegmentRow({
+  s,
+  href,
+  onOpen,
+  player,
+  focused,
+  speakerIdx,
+}: {
+  s: SegmentSummary
+  href: string
+  onOpen: () => void
+  player: Player
+  focused: boolean
+  speakerIdx: number | null
+}) {
   const t = useT()
+  const qc = useQueryClient()
   const active = player.id === s.id && player.status !== 'idle'
   const playing = active && player.status !== 'paused'
+  const who = rowSpeaker(s, speakerIdx)
+  // a click on a character of a row that is not playing: fetch its word timings, play from that character
+  const playFromChar = async (charIdx: number) => {
+    let at: number | undefined
+    try {
+      const d = await qc.fetchQuery({ queryKey: qk.segment(s.id), queryFn: () => api.segment(s.id), staleTime: 60_000 })
+      const units = toUnits(d.words ?? null, s.start_sec, s.end_sec)
+      at = units ? (timeAtChar(units, charIdx) ?? undefined) : undefined
+    } catch {
+      /* no timings: play the sentence from its start */
+    }
+    player.play(s, at)
+  }
   return (
-    <li id={`rv-${s.id}`} className={cn('relative flex min-w-0 items-start gap-2 px-3 py-3 transition-colors hover:bg-surface-2/60 sm:gap-3 sm:px-4 md:items-center md:gap-4', focused && 'animate-flash')}>
+    <li
+      id={`rv-${s.id}`}
+      data-speaker={speakerIdx ?? undefined}
+      style={speakerVars(speakerIdx)}
+      className={cn(
+        'relative flex min-w-0 items-start gap-2 px-3 py-3 transition-colors sm:gap-3 sm:px-4 md:items-center md:gap-4',
+        active ? 'hl-row-active' : 'hover:bg-surface-2/60',
+        focused && 'animate-flash',
+      )}
+    >
       <button
         type="button"
-        onClick={() => player.play({ id: s.id, start_sec: s.start_sec, revision: s.revision })}
+        onClick={() => player.play(s)}
         aria-label={playing ? t('process.review.stopSample') : t('process.review.playSample')}
         className={cn(
           'mt-0.5 grid size-9 shrink-0 place-items-center rounded-full transition-colors md:mt-0 [&_svg]:size-3.5',
@@ -165,14 +216,25 @@ function SegmentRow({ s, href, onOpen, player, focused }: { s: SegmentSummary; h
       </button>
       <Link
         to={href}
+        state={{ fromList: true } satisfies ReviewNavState}
         onClick={onOpen}
         className="grid min-w-0 flex-1 gap-x-4 gap-y-1.5 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring md:grid-cols-[minmax(0,1fr)_4rem_10rem_6.5rem] md:items-center"
       >
         <span className="min-w-0">
-          <span className={cn('line-clamp-2 text-[14px] leading-6 break-cjk', s.validity === 'invalid' ? 'text-fg-3' : 'text-fg', active && 'line-clamp-none')}>
-            {active ? <PlayingText s={s} player={player} /> : s.text}
+          <span
+            data-row-text
+            title={t('process.media.clickCharHint')}
+            className={cn('line-clamp-2 text-[14px] leading-6 break-cjk', s.validity === 'invalid' ? 'text-fg-3' : 'text-fg', active && 'line-clamp-none')}
+          >
+            {active ? <PlayingText s={s} player={player} /> : <SeekableChars text={s.text} onChar={(i) => void playFromChar(i)} />}
           </span>
           <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-fg-3">
+            {who && (
+              <>
+                <SpeakerDot index={speakerIdx} label={who.label} title={who.title} className="max-w-36 shrink-0" />
+                <span className="shrink-0">·</span>
+              </>
+            )}
             <span className="truncate">{s.media_title}</span>
             <span className="shrink-0">·</span>
             <span className="shrink-0 truncate">{s.channel_title}</span>
@@ -209,7 +271,7 @@ function SegmentRow({ s, href, onOpen, player, focused }: { s: SegmentSummary; h
 export default function ReviewList() {
   const t = useT()
   useTitle(t('process.review.title'))
-  const { p, set, sp } = useReviewParams()
+  const { p, set, setAll, sp } = useReviewParams()
   const navigate = useNavigate()
   const location = useLocation()
   const isDesktop = useIsDesktop()
@@ -218,7 +280,14 @@ export default function ReviewList() {
   const player = useSentencePlayer()
   const list = useSegments({ ...toSegmentQuery(p), limit: LIST_LIMIT, offset: p.offset })
   const media = p.media ? list.data?.items[0]?.media_title : undefined
-  const focusId = (location.state as { focus?: string } | null)?.focus ?? null
+  const spIdx = useSpeakerIndexMany((list.data?.items ?? []).map((x) => x.media_id))
+  // coming back from the reviewer through history: it may have moved on to another page of the list
+  const [ret] = useState(takeListReturn)
+  const waiting = !!ret && ret.search !== sp.toString()
+  useEffect(() => {
+    if (waiting) setAll(ret!.search)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  const focusId = (location.state as ReviewNavState | null)?.focus ?? ret?.focus ?? null
   const restored = useRef(false)
 
   useEffect(() => {
@@ -228,7 +297,7 @@ export default function ReviewList() {
 
   // restore the reader's place once rows are on screen (after the shell's scroll-to-top on navigation)
   useLayoutEffect(() => {
-    if (restored.current || !list.data) return
+    if (restored.current || !list.data || list.isPlaceholderData || (ret && ret.search !== sp.toString())) return
     restored.current = true
     const y = recallListScroll(sp)
     requestAnimationFrame(() =>
@@ -238,7 +307,7 @@ export default function ReviewList() {
         else if (y !== null) window.scrollTo({ top: y })
       }),
     )
-  }, [list.data]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [list.data, list.isPlaceholderData, sp.toString()]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // legacy deep links: /review?segment=<id>&… → /review/<id>?…
   const legacy = sp.get('segment')
@@ -260,7 +329,7 @@ export default function ReviewList() {
         description={t('process.review.listDesc')}
         actions={
           items[0] && (
-            <Button variant="primary" onClick={() => (open(), navigate(href(items[0].id)))}>
+            <Button variant="primary" onClick={() => (open(), navigate(href(items[0].id), { state: { fromList: true } satisfies ReviewNavState }))}>
               {t('process.review.startFirst')} <ArrowRight />
             </Button>
           )
@@ -331,7 +400,7 @@ export default function ReviewList() {
             </div>
             <ul className="divide-y divide-border">
               {items.map((s) => (
-                <SegmentRow key={s.id} s={s} href={href(s.id)} onOpen={open} player={player} focused={s.id === focusId} />
+                <SegmentRow key={s.id} s={s} href={href(s.id)} onOpen={open} player={player} focused={s.id === focusId} speakerIdx={spIdx(s.media_id, s.local_speaker)} />
               ))}
             </ul>
             <Pagination total={list.data.total} limit={LIST_LIMIT} offset={p.offset} onChange={(o) => (set({ offset: o || null }), window.scrollTo({ top: 0 }))} className="border-t border-border" />

@@ -79,8 +79,10 @@ async function discover(page) {
     // caption validation: an English-speech segment with Chinese captions (language mismatch)
     const inv = (await j('/api/segments?validity=invalid&status=all&limit=40')).items ?? []
     const invalidSeg = (inv.find((s) => s.invalid_reason === 'language_mismatch') ?? inv[0])?.id
+    // uploader captions that turned out empty
+    const emptyCap = ((await j('/api/media?captions=empty&include_auto=true&limit=1')).items ?? [])[0]?.id
     return {
-      invalidSeg,
+      invalidSeg, emptyCap,
       ch: listed[0]?.id, ch2: listed[1]?.id, media: media[0]?.id, failed: failed[0]?.id, speaker: (sp[1] ?? sp[0])?.id, dataset: (ds.items ?? ds)[0]?.id,
       queued: ch.find((c) => c.list_status === 'queued' || c.list_status === 'new')?.id, listing: ch.find((c) => c.list_status === 'listing' && !c.last_listed_at)?.id,
       segment: seg[0]?.id, unaligned,
@@ -137,6 +139,28 @@ function screens(ids, lang) {
     { name: '44-validate-review-list', path: '/review?status=all&validity=invalid' },
     { name: '45-validate-dataset-preview', path: '/datasets/new' },
     { name: '46-validate-settings', path: '/settings/pipeline', act: async (p) => { await centerOn(p, '[data-shot="validation-card"]') } },
+    // speakers on the media page, speaker colours everywhere, click-a-character-to-seek, status badges
+    { name: '50-media-speakers', path: `/media/${ids.media}`, act: async (p) => { await p.waitForSelector('[data-speaker-card]'); await centerOn(p, '[data-shot="media-speakers"]') } },
+    { name: '51-media-speaker-detail', path: `/media/${ids.media}`, act: async (p) => { await p.locator('[data-speaker-card]').first().click(); await p.waitForSelector('[data-speaker-dialog]'); await p.waitForTimeout(400) } },
+    { name: '52-media-karaoke-speaker2', path: `/media/${ids.media}`, act: playAndFreeze(0.5, '[data-seg-row][data-speaker="1"]') },
+    { name: '53-media-seek-char', path: `/media/${ids.media}`, act: async (p) => { const row = p.locator('[data-seg-row]').nth(2); await row.scrollIntoViewIfNeeded(); await row.locator('[data-seek]').nth(5).click(); await p.waitForTimeout(900); if (!(await p.evaluate(() => window.__votiPlayer?.freeze(0.3)))) throw new Error('player hook unavailable'); await centerOn(p, '[data-seg-row].hl-row-active') } },
+    { name: '54-review-list-playing', path: '/review?status=all', act: async (p) => { const li = p.locator('li[id^="rv-"]').nth(1); await li.locator('[data-seek]').nth(3).click(); await p.waitForSelector('li.hl-row-active [data-k]', { timeout: 8000 }); await p.waitForTimeout(600); if (!(await p.evaluate(() => window.__votiPlayer?.freeze(0.4)))) throw new Error('player hook unavailable'); await centerOn(p, 'li.hl-row-active') } },
+    { name: '55-channel-status-badges', path: `/channels/${ids.ch}`, act: async (p) => { await p.waitForSelector('[data-status="members_only"]', { state: 'attached' }); await p.evaluate(() => [...document.querySelectorAll('[data-status="members_only"]')].find((e) => e.offsetParent)?.scrollIntoView({ block: 'center' })); await p.waitForTimeout(150) } },
+    { name: '56-media-empty-captions', path: `/media/${ids.emptyCap}` },
+    { name: '57-channel-filter-empty-captions', path: `/channels/${ids.ch}?cap=empty` },
+    // Shift+click range selection: anchor on row 2, Shift held while hovering row 9 (preview + floating hint)
+    { name: '58-channel-shift-range-preview', path: `/channels/${ids.ch}`, act: async (p) => {
+      const boxes = p.locator('[data-preview], tbody td button[role="checkbox"]:visible, li button[role="checkbox"]:visible')
+      await p.locator('button[role="checkbox"]:visible').nth(2).click()
+      const target = p.locator('button[role="checkbox"]:visible').nth(9)
+      await target.scrollIntoViewIfNeeded()
+      const b = await target.boundingBox()
+      await p.mouse.move(b.x + 200, b.y + b.height / 2)
+      await p.keyboard.down('Shift')
+      await p.mouse.move(b.x + 220, b.y + b.height / 2 + 2)
+      await p.waitForSelector('[data-shot="range-hint"]', { timeout: 4000 })
+      void boxes
+    } },
     { name: '33-add-video-new-channel', path: '/sources/new', act: async (p) => { await p.fill('input[name="url"]', 'https://youtu.be/dQw4w9WgXcQ'); await p.locator('form button[type="submit"]').click(); await p.waitForTimeout(1600) } },
   ]
 }
@@ -146,16 +170,17 @@ async function centerOn(p, sel) {
   await p.waitForTimeout(150)
 }
 
-/** Click the first transcript sentence, let it play briefly, then freeze it mid-sentence (mock player hook). */
-function playAndFreeze(frac) {
+/** Play a transcript sentence from its start (its play button; a click on a character would seek), let it play
+ * briefly, then freeze it mid-sentence (mock player hook). */
+function playAndFreeze(frac, sel = '[data-seg-row]') {
   return async (p) => {
-    const row = p.locator('[data-seg-row]').first()
+    const row = p.locator(sel).first()
     await row.scrollIntoViewIfNeeded()
-    await row.click({ position: { x: 120, y: 16 } })
+    await row.locator('button').first().click()
     await p.waitForTimeout(900)
     const ok = await p.evaluate((f) => window.__votiPlayer?.freeze(f), frac)
     if (!ok) throw new Error('player hook unavailable')
-    await centerOn(p, '[data-seg-row]')
+    await centerOn(p, sel === '[data-seg-row]' ? '[data-seg-row]' : '[data-seg-row].hl-row-active')
   }
 }
 
@@ -220,6 +245,7 @@ try {
             await page.setViewportSize(vp)
           }
         }
+        await page.keyboard.up('Shift').catch(() => {})
         count++
       }
       await ctx.close()

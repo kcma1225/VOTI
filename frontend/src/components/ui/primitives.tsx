@@ -1,4 +1,4 @@
-import { useState, type HTMLAttributes, type ReactNode } from 'react'
+import { Children, useState, type HTMLAttributes, type ReactNode } from 'react'
 import { cn } from '@/lib/cn'
 import type { Tone } from '@/lib/labels'
 
@@ -20,6 +20,9 @@ export const toneDot: Record<Tone, string> = {
   danger: 'bg-danger',
 }
 
+/** Pill badge. Text never escapes the pill: the badge shrinks to its container (max-w-full, min-w-0) and its text
+ * runs are truncated with an ellipsis inside it (icons/dots stay). Use short labels in narrow table cells and put the
+ * full text / explanation in a tooltip or `title` (status badges do). */
 export function Badge({
   tone = 'neutral',
   dot,
@@ -31,14 +34,20 @@ export function Badge({
   return (
     <span
       className={cn(
-        'inline-flex h-[22px] max-w-full shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-2 text-xs font-medium leading-none',
+        'inline-flex h-[22px] min-w-0 max-w-full shrink-0 items-center gap-1.5 overflow-hidden whitespace-nowrap rounded-full px-2 text-xs font-medium leading-none [&>svg]:shrink-0',
         toneSoft[tone],
         className,
       )}
       {...props}
     >
       {dot && <span className={cn('size-1.5 shrink-0 rounded-full', toneDot[tone], pulse && 'animate-pulse-dot')} />}
-      {children}
+      {Children.map(children, (c) =>
+        typeof c === 'string' || typeof c === 'number' ? (
+          String(c).trim() === '' ? c : <span className="min-w-0 truncate">{c}</span>
+        ) : (
+          c
+        ),
+      )}
     </span>
   )
 }

@@ -67,7 +67,9 @@ export function useReviewParams() {
     if (!('offset' in patch)) n.delete('offset')
     setSp(n, { replace: true })
   }
-  return { p, set, search: sp.toString(), sp }
+  /** Replace the whole query string (no history entry). */
+  const setAll = (search: string) => setSp(new URLSearchParams(search), { replace: true })
+  return { p, set, setAll, search: sp.toString(), sp }
 }
 
 /** Query string without paging (used as the scroll-memory key and for neighbors). */
@@ -90,6 +92,34 @@ export function recallListScroll(sp: URLSearchParams): number | null {
   try {
     const v = JSON.parse(sessionStorage.getItem(SCROLL_KEY) ?? 'null') as { k: string; y: number } | null
     return v && v.k === sp.toString() ? v.y : null
+  } catch {
+    return null
+  }
+}
+
+/* ── reviewer ↔ list history ──
+ * The list opens the reviewer with `state.fromList`; prev/next inside the reviewer replace the entry and carry the
+ * state on. "Back to list" then goes back in history (one entry) instead of pushing a new list entry. The list it
+ * returns to may show another page than the one the reviewer has moved on to, so the wanted list query and the
+ * segment to highlight are handed over in sessionStorage; the list applies them with `replace`. */
+export interface ReviewNavState {
+  fromList?: boolean
+  focus?: string
+}
+const RETURN_KEY = 'voti-review-return'
+export function setListReturn(search: string, focus: string) {
+  try {
+    sessionStorage.setItem(RETURN_KEY, JSON.stringify({ search, focus }))
+  } catch {
+    /* storage unavailable */
+  }
+}
+/** Read-and-clear the hand-over left by the reviewer (null when there is none). */
+export function takeListReturn(): { search: string; focus: string } | null {
+  try {
+    const v = JSON.parse(sessionStorage.getItem(RETURN_KEY) ?? 'null') as { search: string; focus: string } | null
+    sessionStorage.removeItem(RETURN_KEY)
+    return v && typeof v.search === 'string' ? v : null
   } catch {
     return null
   }

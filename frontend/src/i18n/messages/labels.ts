@@ -7,6 +7,10 @@ export const zh = {
     processing: '處理中', ready: '可用', failed: '失敗', blocked: '受阻', skipped: '已略過',
   },
   membersOnly: '會員限定・不支援',
+  membersOnlyShort: '會員限定',
+  emptyCaptions: '已略過・字幕為空',
+  emptyCaptionsShort: '字幕為空',
+  emptyCaptionsHint: '上傳者字幕軌沒有內容，無法用來切分語句；字幕補上後可重新檢查。',
   membersOnlyHint: '此影片僅限頻道會員觀看，本系統不支援下載。',
   jobStatus: {
     queued: '排隊中', running: '執行中', completed: '完成', failed: '失敗', blocked: '受阻', cancelled: '已取消', interrupted: '中斷',
@@ -67,7 +71,19 @@ export const zh = {
   },
   voiceQuality: {
     breathy: '氣聲', creaky: '嘎裂聲', hoarse: '沙啞', nasal: '鼻音', resonant: '共鳴', tense: '緊繃', smooth: '平滑', shrill: '尖細',
+    // Vox-Profile voice-quality labels
+    deep: '低沉', silky: '絲滑', husky: '粗啞', raspy: '嘶啞', guttural: '喉音', 'vocal-fry': '氣泡音', booming: '宏亮',
+    authoritative: '有威嚴', loud: '大聲', hushed: '壓低聲音', soft: '輕柔', crisp: '清脆', slurred: '含糊', lisp: '咬舌',
+    stammering: '結巴', singsong: '抑揚頓挫', pitchy: '音高不穩', flowing: '流暢', monotone: '單調', staccato: '斷斷續續',
+    punctuated: '頓挫分明', enunciated: '咬字清楚', hesitant: '遲疑',
   },
+  /** Vox-Profile age buckets (Common Voice) */
+  ageWord: {
+    teens: '10 多歲', twenties: '20 多歲', thirties: '30 多歲', forties: '40 多歲', fifties: '50 多歲', sixties: '60 多歲',
+    seventies: '70 多歲', eighties: '80 多歲', nineties: '90 多歲',
+  },
+  /** English accent model (reference only) */
+  accentBroad: { 'British Isles': '英倫', 'North America': '北美', Other: '其他' },
   speechFlow: { fluent: '流暢', disfluent: '不流暢', slow: '慢速', fast: '快速', normal: '正常語速' },
   ageUnknown: '未知',
   ageUnder20: '20 歲以下',
@@ -90,6 +106,10 @@ export const en: Shape<typeof zh> = {
     processing: 'Processing', ready: 'Ready', failed: 'Failed', blocked: 'Blocked', skipped: 'Skipped',
   },
   membersOnly: 'Members only · unsupported',
+  membersOnlyShort: 'Members only',
+  emptyCaptions: 'Skipped · empty captions',
+  emptyCaptionsShort: 'Empty captions',
+  emptyCaptionsHint: 'The uploader caption tracks have no content, so there is nothing to segment; re-check once captions are added.',
   membersOnlyHint: 'This video is for channel members only and cannot be downloaded.',
   jobStatus: {
     queued: 'Queued', running: 'Running', completed: 'Done', failed: 'Failed', blocked: 'Blocked', cancelled: 'Cancelled', interrupted: 'Interrupted',
@@ -150,7 +170,16 @@ export const en: Shape<typeof zh> = {
   },
   voiceQuality: {
     breathy: 'Breathy', creaky: 'Creaky', hoarse: 'Hoarse', nasal: 'Nasal', resonant: 'Resonant', tense: 'Tense', smooth: 'Smooth', shrill: 'Shrill',
+    deep: 'Deep', silky: 'Silky', husky: 'Husky', raspy: 'Raspy', guttural: 'Guttural', 'vocal-fry': 'Vocal fry', booming: 'Booming',
+    authoritative: 'Authoritative', loud: 'Loud', hushed: 'Hushed', soft: 'Soft', crisp: 'Crisp', slurred: 'Slurred', lisp: 'Lisp',
+    stammering: 'Stammering', singsong: 'Sing-song', pitchy: 'Pitchy', flowing: 'Flowing', monotone: 'Monotone', staccato: 'Staccato',
+    punctuated: 'Punctuated', enunciated: 'Enunciated', hesitant: 'Hesitant',
   },
+  ageWord: {
+    teens: 'Teens', twenties: '20s', thirties: '30s', forties: '40s', fifties: '50s', sixties: '60s', seventies: '70s',
+    eighties: '80s', nineties: '90s',
+  },
+  accentBroad: { 'British Isles': 'British Isles', 'North America': 'North America', Other: 'Other' },
   speechFlow: { fluent: 'Fluent', disfluent: 'Disfluent', slow: 'Slow', fast: 'Fast', normal: 'Normal pace' },
   ageUnknown: 'Unknown',
   ageUnder20: 'Under 20',

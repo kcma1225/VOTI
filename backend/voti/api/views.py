@@ -268,7 +268,8 @@ def _media_base(m: Media) -> dict:
                 published_at=m.published_at, view_count=m.view_count, license=m.license,
                 has_manual_captions=m.has_manual_captions, has_auto_captions=m.has_auto_captions,
                 manual_caption_langs=list(m.manual_caption_langs or []),
-                auto_caption_langs=list(m.auto_caption_langs or []), status=m.status, stage=m.stage,
+                auto_caption_langs=list(m.auto_caption_langs or []), captions_empty=bool(m.captions_empty),
+                caption_check=(m.metadata_ or {}).get("caption_check"), status=m.status, stage=m.stage,
                 failure_code=m.failure_code, detailed_at=m.detailed_at, discovered_at=m.discovered_at,
                 is_new=is_new(m))
 

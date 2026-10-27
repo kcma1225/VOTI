@@ -60,9 +60,25 @@ export const emotionLabel: Record<string, string> = localized(() => L().emotion)
 export const voiceQualityLabel: Record<string, string> = localized(() => L().voiceQuality)
 export const speechFlowLabel: Record<string, string> = localized(() => L().speechFlow)
 
+export const accentBroadLabel: Record<string, string> = localized(() => L().accentBroad)
+
 export const ageGroupOrder = ['<20', '20-29', '30-39', '40-49', '50-59', '60+']
 export const ageGroupLabel = (g: string) =>
-  g === 'unknown' ? L().ageUnknown : g === '<20' ? L().ageUnder20 : g === '60+' ? L().age60plus : L().ageRange(g)
+  g === 'unknown'
+    ? L().ageUnknown
+    : g === '<20'
+      ? L().ageUnder20
+      : g === '60+'
+        ? L().age60plus
+        : ((L().ageWord as Record<string, string>)[g.toLowerCase()] ?? L().ageRange(g))
+
+/** Vox-Profile emits capitalised / noun labels (Anger, Happiness, Fluent); the UI maps use lower-case adjectives. */
+const TRAIT_ALIAS: Record<string, string> = { anger: 'angry', happiness: 'happy', sadness: 'sad' }
+/** Label of a Vox-Profile trait value in the active language, tolerant of case and the model's label names. */
+export function traitLabel(map: Record<string, string>, key: string): string {
+  const k = key.toLowerCase()
+  return map[key] ?? map[k] ?? map[TRAIT_ALIAS[k] ?? ''] ?? key
+}
 
 export const langLabel: Record<string, string> = localized(() => L().lang)
 export const lang = (code: string) => langLabel[code] ?? langLabel[code.split('-')[0]] ?? code

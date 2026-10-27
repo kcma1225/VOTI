@@ -12,6 +12,9 @@ YouTube auto-captions ("rolling" VTT, where each cue repeats the previous line a
 transition cues) are collapsed so every spoken line appears once. Consecutive identical cues that touch are
 merged.
 
+track_content(data, fmt) classifies a whole file as ok / empty / error (caption verification, see
+voti.sources.youtube.verify_captions).
+
 Flags per cue:
   empty                 nothing left after cleaning (raw text kept)
   non_speech            cue consisted only of sound annotations / music notes ([音樂], ♪)
@@ -355,3 +358,32 @@ def summary(cues: list[ParsedCue]) -> dict:
             "text_sec": round(sum(c.end_sec - c.start_sec for c in usable), 2),
             "chars": sum(len(c.text) for c in usable),
             "flags": {f: sum(f in c.flags for c in cues) for f in sorted({f for c in cues for f in c.flags})}}
+
+
+# ───────────────────────────── track emptiness (caption verification) ─────────────────────────────
+
+_WORDISH = re.compile(r"[^\W_]", re.UNICODE)  # a letter / digit / CJK character: something was said
+
+
+def track_content(data: bytes | str | None, fmt: str | None = None) -> dict:
+    """Classify a downloaded caption file: does it contain any speech text?
+
+    → {"status": "ok"|"empty"|"error", "cues", "speech_cues", "chars", "reason"?}
+      empty  zero bytes, no cues (e.g. header-only WebVTT, json3 with only window events), or every cue is empty
+             after cleaning / only non-speech annotations ([音樂], [Music], ♪, [掌聲] …) / punctuation
+      error  the file could not be parsed (unknown format, broken JSON): undecided, never treated as empty
+    `chars` counts letters/digits/CJK characters of the speech cues.
+    """
+    if data is None or not (data.strip() if isinstance(data, (bytes, str)) else data):
+        return {"status": "empty", "cues": 0, "speech_cues": 0, "chars": 0, "reason": "zero_bytes"}
+    try:
+        cues = parse_subtitle(data, fmt)
+    except (ValueError, TypeError, AttributeError) as e:  # json.JSONDecodeError is a ValueError
+        return {"status": "error", "cues": 0, "speech_cues": 0, "chars": 0,
+                "reason": f"unparseable: {type(e).__name__}"}
+    speech = [c for c in cues if c.text and _WORDISH.search(c.text)]
+    out = {"status": "ok" if speech else "empty", "cues": len(cues), "speech_cues": len(speech),
+           "chars": sum(len(_WORDISH.findall(c.text)) for c in speech)}
+    if not speech:
+        out["reason"] = "no_cues" if not cues else "no_speech"
+    return out

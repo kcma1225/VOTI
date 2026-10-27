@@ -20,7 +20,7 @@ import { CaptionBadges, MediaStatusBadge } from './status'
 import { useT } from '@/i18n'
 
 const LIMIT = 50
-type CapUI = 'all' | 'manual' | 'none' | 'unknown'
+type CapUI = 'all' | 'manual' | 'none' | 'unknown' | 'empty'
 type DlUI = '' | 'yes' | 'no'
 
 /* ───────────── URL-backed filter state ───────────── */
@@ -55,7 +55,7 @@ function useMediaFilters(kind: MediaKind[]) {
     channel_id,
     kind,
     q: f.q || undefined,
-    captions: f.cap === 'manual' ? 'manual' : f.cap === 'none' ? ('none' as CaptionFilter) : undefined,
+    captions: f.cap === 'manual' ? 'manual' : f.cap === 'none' ? ('none' as CaptionFilter) : f.cap === 'empty' ? ('empty' as CaptionFilter) : undefined,
     detailed: f.cap === 'unknown' ? false : undefined,
     include_auto: f.auto || undefined,
     status: f.status.length ? f.status : undefined,
@@ -111,7 +111,7 @@ function FilterPanel({ ctl, facets, captionsPending }: { ctl: ReturnType<typeof 
     [t('collect.media.dur10to30'), 10, 30],
     [t('collect.media.dur30plus'), 30, null],
   ]
-  const statuses: MediaStatus[] = ['listed', 'detailed', 'queued', 'downloading', 'processing', 'ready', 'failed']
+  const statuses: MediaStatus[] = ['listed', 'detailed', 'queued', 'downloading', 'processing', 'ready', 'failed', 'blocked', 'skipped']
   return (
     <div className="space-y-6">
       <section>
@@ -132,6 +132,8 @@ function FilterPanel({ ctl, facets, captionsPending }: { ctl: ReturnType<typeof 
             ['all', t('collect.media.capAll'), undefined],
             ['manual', t('collect.media.capManual'), fc?.manual],
             ['none', t('collect.media.capNone'), fc?.none],
+            // subset of "none": uploader tracks YouTube lists that turned out empty (once the API reports the facet)
+            ...(fc?.empty !== undefined || f.cap === 'empty' ? [['empty', t('collect.media.capEmptySub'), fc?.empty] as [CapUI, string, number | undefined]] : []),
             ['unknown', t('collect.media.capUnknown'), fc?.unknown],
           ]}
         />
@@ -220,7 +222,7 @@ function ActiveChips({ ctl, playlistTitle }: { ctl: ReturnType<typeof useMediaFi
   const t = useT()
   const chips: { k: string; label: ReactNode; clear: () => void }[] = []
   if (f.playlist) chips.push({ k: 'pl', label: t('collect.media.chipPlaylist', playlistTitle ?? '…'), clear: () => set({ playlist: null }) })
-  if (f.cap !== 'all') chips.push({ k: 'cap', label: { manual: t('collect.media.chipManual'), none: t('collect.media.chipNone'), unknown: t('collect.media.chipUnknown') }[f.cap], clear: () => set({ cap: null }) })
+  if (f.cap !== 'all') chips.push({ k: 'cap', label: { manual: t('collect.media.chipManual'), none: t('collect.media.chipNone'), unknown: t('collect.media.chipUnknown'), empty: t('collect.media.capEmpty') }[f.cap], clear: () => set({ cap: null }) })
   if (f.auto) chips.push({ k: 'auto', label: t('collect.media.chipAuto'), clear: () => set({ auto: null }) })
   if (f.status.length) chips.push({ k: 'st', label: t('collect.media.chipStatus', f.status.map((s) => mediaStatus[s].label).join(t('common.listSep'))), clear: () => set({ status: null }) })
   if (f.minDur !== null || f.maxDur !== null)
@@ -289,7 +291,7 @@ export function DownloadDialog({
     mutationFn: () => api.download({ media_ids: selection.ids, filter: selection.filter, caption_langs: picked, include_auto: includeAuto }),
     onSuccess: (r) => {
       if (r.queued === 0) {
-        const known = ['already_downloaded', 'no_usable_captions', 'members_only', 'not_found'] as const
+        const known = ['already_downloaded', 'no_usable_captions', 'members_only', 'not_found', 'empty_captions'] as const
         const reasons = Object.keys(r.skipped_reasons ?? {}).map((k) =>
           (known as readonly string[]).includes(k) ? t(`collect.media.dl.reason.${k as (typeof known)[number]}`) : k,
         )
@@ -459,6 +461,14 @@ export function MediaBrowser({ channelId, kind, captionsPending }: { channelId: 
       return n
     })
   }
+  /** Shift+click range. In "all matching" mode the selection first becomes the explicit ids of this page. */
+  const toggleRange = (ids: string[], on: boolean) => {
+    const base = allMatching ? new Set(rows.map((r) => r.id)) : selected
+    setAllMatching(false)
+    const n = new Set(base)
+    ids.forEach((id) => (on ? n.add(id) : n.delete(id)))
+    setSelected(n)
+  }
   const selCount = allMatching ? total : selected.size
   const pageAllSelected = rows.length > 0 && rows.every((r) => selected.has(r.id))
 
@@ -471,18 +481,18 @@ export function MediaBrowser({ channelId, kind, captionsPending }: { channelId: 
       id: 'cap',
       header: t('collect.media.cols.captions'),
       width: 'w-36',
-      cell: (m) => <CaptionBadges manual={m.has_manual_captions} auto={m.has_auto_captions} manualLangs={m.manual_caption_langs} autoLangs={m.auto_caption_langs} />,
+      cell: (m) => <CaptionBadges empty={m.captions_empty} check={m.caption_check} manual={m.has_manual_captions} auto={m.has_auto_captions} manualLangs={m.manual_caption_langs} autoLangs={m.auto_caption_langs} />,
     },
     { id: 'q', header: t('collect.media.cols.quality'), width: 'w-24', hideBelow: 'xl', cell: (m) => <QualityCell m={m} /> },
-    { id: 'status', header: t('collect.media.cols.status'), width: 'w-28', cell: (m) => <MediaStatusBadge status={m.status} stage={m.stage} failureCode={m.failure_code} /> },
+    { id: 'status', header: t('collect.media.cols.status'), width: 'w-36', cell: (m) => <MediaStatusBadge compact status={m.status} stage={m.stage} failureCode={m.failure_code} /> },
   ]
 
   const card = (m: MediaSummary) => (
     <div className="min-w-0">
       <TitleCell m={m} short={short} />
       <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 pl-0 text-xs text-fg-3">
-        <MediaStatusBadge status={m.status} stage={m.stage} failureCode={m.failure_code} />
-        <CaptionBadges compact manual={m.has_manual_captions} auto={m.has_auto_captions} manualLangs={m.manual_caption_langs} autoLangs={m.auto_caption_langs} />
+        <MediaStatusBadge compact status={m.status} stage={m.stage} failureCode={m.failure_code} />
+        <CaptionBadges compact empty={m.captions_empty} check={m.caption_check} manual={m.has_manual_captions} auto={m.has_auto_captions} manualLangs={m.manual_caption_langs} autoLangs={m.auto_caption_langs} />
         <span className="tabular">{fmtDate(m.published_at)}</span>
         {m.quality && <span className="tabular">SNR {fmtDb(m.quality.snr_mean)}</span>}
       </div>
@@ -585,6 +595,7 @@ export function MediaBrowser({ channelId, kind, captionsPending }: { channelId: 
                 selected={allMatching ? new Set(rows.map((r) => r.id)) : selected}
                 onToggle={toggle}
                 onToggleAll={togglePage}
+                onToggleRange={toggleRange}
                 onRowClick={(m) => navigate(`/media/${m.id}`)}
               />
               <Pagination total={total} limit={LIMIT} offset={f.offset} onChange={(o) => set({ offset: o }, true)} className="border-t border-border" />

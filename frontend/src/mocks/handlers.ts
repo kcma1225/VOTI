@@ -68,9 +68,10 @@ function matchMedia(m: MockMedia, f: MF, omit?: string) {
   const autoOnly = m.has_manual_captions === false && m.has_auto_captions === true
   if (omit !== 'captions') {
     const c = s('captions')
-    if (c === 'manual' && !m.has_manual_captions) return false
+    if (c === 'manual' && (!m.has_manual_captions || m.captions_empty)) return false
     if (c === 'auto' && !m.has_auto_captions) return false
-    if (c === 'none' && (m.has_manual_captions !== false || m.has_auto_captions !== false)) return false
+    if (c === 'none' && !m.captions_empty && (m.has_manual_captions !== false || m.has_auto_captions !== false)) return false
+    if (c === 'empty' && !m.captions_empty) return false
     if (c === 'any' && !(m.has_manual_captions || (includeAuto && m.has_auto_captions))) return false
     if (c !== 'auto' && !includeAuto && autoOnly) return false
   }
@@ -107,10 +108,11 @@ function facets(f: MF): T.MediaFacets {
   return {
     kind: count(k, (m) => m.kind),
     captions: {
-      manual: c.filter((m) => m.has_manual_captions).length,
+      manual: c.filter((m) => m.has_manual_captions && !m.captions_empty).length,
       auto_only: c.filter((m) => m.has_manual_captions === false && m.has_auto_captions).length,
-      none: c.filter((m) => m.has_manual_captions === false && m.has_auto_captions === false).length,
+      none: c.filter((m) => m.captions_empty || (m.has_manual_captions === false && m.has_auto_captions === false)).length,
       unknown: c.filter((m) => m.has_manual_captions === null).length,
+      empty: c.filter((m) => m.captions_empty).length,
     },
     license: count(l, (m) => m.license ?? 'youtube'),
     status: count(st, (m) => m.status),
@@ -347,6 +349,78 @@ function timeline(m: MockMedia): T.Timeline {
     cues: segs.map((s) => ({ start: s.start_sec, end: s.end_sec, text: s.original_text })),
     segments: segs.map(summary),
   }
+}
+
+/** GET /media/{id}/speakers from the generated segments (same rules as the API: label order, invalid excluded). */
+function mediaSpeakers(m: MockMedia): T.MediaSpeaker[] {
+  const segs = m.status === 'ready' || getDB().segments.has(m.id) ? genSegments(getDB(), m) : []
+  const labels = [...new Set(segs.map((s) => s.local_speaker).filter((x): x is string => !!x))].sort()
+  const norm = (d: Record<string, number>) => {
+    const tot = Object.values(d).reduce((a, v) => a + v, 0)
+    return tot > 0 ? Object.fromEntries(Object.entries(d).sort((a, b) => b[1] - a[1]).map(([k, v]) => [k, Math.round((v / tot) * 1e4) / 1e4])) : {}
+  }
+  const add = (acc: Record<string, number>, d: Record<string, number> | undefined, w: number, normalize = true) => {
+    if (!d) return
+    const tot = normalize ? Object.values(d).reduce((a, v) => a + v, 0) || 1 : 1
+    for (const [k, v] of Object.entries(d)) acc[k] = (acc[k] ?? 0) + (w * v) / tot
+  }
+  return labels.map((lab, i) => {
+    const all = segs.filter((s) => s.local_speaker === lab)
+    const mine = all.filter((s) => s.validity !== 'invalid')
+    const prof = mine.filter((s) => s.profile)
+    const sex: Record<string, number> = {}, ag: Record<string, number> = {}, emo: Record<string, number> = {}, vq: Record<string, number> = {}, fl: Record<string, number> = {}, acc: Record<string, number> = {}
+    let ageS = 0, w = 0
+    for (const s of prof) {
+      const p = s.profile!
+      const d = s.duration
+      w += d
+      if (p.sex) {
+        const pr = p.sex_prob ?? 1
+        sex[p.sex] = (sex[p.sex] ?? 0) + d * pr
+        const o = p.sex === 'male' ? 'female' : 'male'
+        sex[o] = (sex[o] ?? 0) + d * (1 - pr)
+      }
+      if (p.age != null) ageS += d * p.age
+      if (p.age_group) ag[p.age_group] = (ag[p.age_group] ?? 0) + d
+      add(emo, p.emotion, d)
+      add(vq, p.voice_quality, d, false)
+      add(fl, p.speech_flow, d)
+      add(acc, p.accent_broad, d)
+    }
+    const sexN = norm(sex)
+    const top = Object.entries(sexN)[0]
+    const clusters = new Map<string, { sec: number; sp: NonNullable<T.SegmentSummary['speaker']> }>()
+    for (const s of mine) if (s.speaker) clusters.set(s.speaker.id, { sec: (clusters.get(s.speaker.id)?.sec ?? 0) + s.duration, sp: s.speaker })
+    const best = [...clusters.values()].sort((a, b) => b.sec - a.sec)[0]
+    const clusterTot = [...clusters.values()].reduce((a, c) => a + c.sec, 0)
+    const samples = [...mine]
+      .sort((a, b) => Number(a.speaker_state !== 'single') - Number(b.speaker_state !== 'single') || Number(a.duration < 2 || a.duration > 15) - Number(b.duration < 2 || b.duration > 15) || (Number(b.snr ?? -99) - Number(a.snr ?? -99)))
+      .slice(0, 5)
+      .sort((a, b) => a.start_sec - b.start_sec)
+    return {
+      local_speaker: lab,
+      color_index: i,
+      segment_count: mine.length,
+      total_sec: Math.round(mine.reduce((a, s) => a + s.duration, 0) * 1000) / 1000,
+      diarized_sec: Math.round(all.reduce((a, s) => a + s.duration, 0) * 1000) / 1000,
+      invalid_count: all.length - mine.length,
+      first_sec: all[0]?.start_sec ?? null,
+      profile: {
+        sex: sexN,
+        sex_top: top?.[0] ?? null,
+        sex_prob: top?.[1] ?? null,
+        age_mean: w ? Math.round((ageS / w) * 100) / 100 : null,
+        age_group: norm(ag),
+        emotion: norm(emo),
+        voice_quality: Object.fromEntries(Object.entries(vq).map(([k, v]) => [k, Math.round((v / (w || 1)) * 1e4) / 1e4] as [string, number]).sort((a, b) => b[1] - a[1])),
+        speech_flow: norm(fl),
+        accent_broad: norm(acc),
+      },
+      profiled_segments: prof.length,
+      cluster: best ? { id: best.sp.id, label: best.sp.label, display_name: best.sp.display_name, share: Math.round((best.sec / clusterTot) * 1e4) / 1e4 } : null,
+      sample_segment_ids: samples.map((s) => s.id),
+    }
+  })
 }
 
 function overview(): T.Overview {
@@ -648,9 +722,12 @@ export const handlers = [
     const targets = b.media_ids ? b.media_ids.map((id) => db.mediaById.get(id)!).filter(Boolean) : db.media.filter((m) => matchMedia(m, b.filter ?? {}))
     let queued = 0
     let skipped = 0
+    const reasons: Record<string, number> = {}
     for (const m of targets) {
       const ok = m.has_manual_captions || (b.include_auto && m.has_auto_captions)
-      if (!ok || !['listed', 'detailed', 'failed'].includes(m.status)) {
+      if (m.captions_empty || m.failure_code === 'members_only' || !ok || !['listed', 'detailed', 'failed'].includes(m.status)) {
+        const why = m.captions_empty ? 'empty_captions' : m.failure_code === 'members_only' ? 'members_only' : !ok ? 'no_usable_captions' : 'already_downloaded'
+        reasons[why] = (reasons[why] ?? 0) + 1
         skipped++
         continue
       }
@@ -658,11 +735,15 @@ export const handlers = [
       newJob(db, 'media.download', { media_id: m.id })
       queued++
     }
-    return json({ queued, skipped })
+    return json({ queued, skipped, skipped_reasons: reasons })
   }),
   http.get(`${A}/media/:id/timeline`, ({ params }) => {
     const m = db.mediaById.get(params.id as string)
     return m ? json(timeline(m)) : err(404, '找不到影片', 'not_found')
+  }),
+  http.get(`${A}/media/:id/speakers`, ({ params }) => {
+    const m = db.mediaById.get(params.id as string)
+    return m ? json(mediaSpeakers(m)) : err(404, '找不到影片', 'not_found')
   }),
   http.get(`${A}/media/:id/quality`, ({ params }) => json(db.mediaById.get(params.id as string)?.q ?? null)),
   http.get(`${A}/media/:id/words`, ({ params }) => {
@@ -698,6 +779,16 @@ export const handlers = [
     if (!(db.segments.get(m.id) ?? []).length) return json({ queued: 0 })
     newJob(db, 'media.validate', { media_id: m.id, _dur: 5000, payload: { chain: false } })
     return json({ queued: 1 })
+  }),
+  http.post(`${A}/media/:id/recheck-captions`, ({ params }) => {
+    const m = db.mediaById.get(params.id as string)
+    if (!m) return err(404, '找不到影片', 'not_found')
+    return json(strip(newJob(db, 'media.detail', { media_id: m.id, _dur: 3000, payload: { recheck_captions: true } })))
+  }),
+  http.post(`${A}/channels/:id/recheck-captions`, ({ params }) => {
+    const ms = db.media.filter((m) => m.channel?.id === params.id && (m.has_manual_captions || m.captions_empty) && ['listed', 'detailed', 'skipped'].includes(m.status))
+    ms.forEach((m) => newJob(db, 'media.detail', { media_id: m.id, _dur: 3000, payload: { recheck_captions: true } }))
+    return json({ queued: ms.length })
   }),
   http.post(`${A}/media/:id/convert-text`, ({ params }) => {
     const m = db.mediaById.get(params.id as string)
@@ -845,8 +936,11 @@ export const handlers = [
   // audio
   http.get(`${A}/audio/segments/:id`, ({ params, request }) => {
     const s = db.segById.get(params.id as string)
-    const pad = Number(new URL(request.url).searchParams.get('pad') ?? 0.3)
-    const dur = s ? s.duration + pad * 2 : 3
+    const u = new URL(request.url).searchParams
+    const pad = Number(u.get('pad') ?? 0.3)
+    const from = u.get('from')
+    let dur = s ? s.duration + pad * 2 : 3
+    if (s && from !== null) dur = Math.max(0.05, s.end_sec + pad - Math.max(s.start_sec - pad, Math.min(Number(from), s.end_sec + pad - 0.05)))
     const sp = s?.speaker ? db.speakers.find((x) => x.id === s.speaker!.id) : null
     const f0 = sp ? (sp.sex === 'female' ? 210 : 115) * (sp.age > 65 ? 0.92 : 1) : 150
     const wav = synthWav((s?.id.charCodeAt(0) ?? 7) * 997 + (s?.id.charCodeAt(2) ?? 3), dur, s?.snr ?? 20, f0)

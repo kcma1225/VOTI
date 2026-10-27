@@ -9,6 +9,8 @@ Caption vocabulary
   auto   = original-language YouTube ASR only. In info["automatic_captions"] that is the `<lang>-orig` key
            (timedtext URL with kind=asr and no tlang). Machine translations (tlang=…) and the HLS
            timedtext manifests some clients list for every track are NOT counted.
+  A listed manual track may be empty (no speech text / 404): verify_captions, caption_state and download() check the
+  content (docs/ARCHITECTURE.md "Caption verification").
 """
 from __future__ import annotations
 
@@ -21,6 +23,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+
+from .. import subtitles as subs_mod
 
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 CHANNEL_ID_RE = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
@@ -165,6 +169,7 @@ class YouTubeError(Exception):
     def __init__(self, code: str, message: str, blocked: bool = False, retryable: bool = True):
         super().__init__(message)
         self.code, self.message, self.blocked, self.retryable = code, message, blocked, retryable
+        self.extra: dict = {}
 
 
 # Members-only (paid channel membership) / premium videos can never be fetched by this system.
@@ -718,6 +723,125 @@ def _pick_sub_format(fmts: list[dict]) -> dict | None:
     return None
 
 
+# ───────────────────────────── caption verification ─────────────────────────────
+# YouTube metadata sometimes lists an uploader caption track whose content is empty (or that 404s). A video is
+# only "has manual captions" when a listed track actually contains speech text (voti.subtitles.track_content).
+
+CAPTION_VERIFY_MAX_FETCHES = 3
+EMPTY_CAPTIONS_MESSAGE = "YouTube 標示有字幕，但字幕內容是空的"
+_NOT_FOUND_RE = re.compile(r"http error (?:404|410)\b|\b(?:404|410)\b.*not found")
+
+
+def fetch_caption_bytes(fmt: dict, fo: FetchOptions, headers: dict | None = None) -> bytes:
+    """GET one subtitle format URL through yt-dlp's networking (cookies / proxy / impersonation as configured).
+
+    Raises YouTubeError: `caption_not_found` (HTTP 404/410: the listed track does not exist), `rate_limited` /
+    `bot_check` (classified, blocked), anything else `network_or_extractor`.
+    """
+    from yt_dlp.networking import Request
+    from yt_dlp.networking.exceptions import HTTPError
+
+    YDL = _ydl_class()
+    try:
+        with YDL(base_opts(fo, _Logger())) as ydl:
+            resp = ydl.urlopen(Request(fmt["url"], headers=dict(fmt.get("http_headers") or headers or {})))
+            try:
+                return resp.read()
+            finally:
+                resp.close()
+    except HTTPError as e:
+        if e.status in (404, 410):
+            raise YouTubeError("caption_not_found", f"字幕軌不存在（HTTP {e.status}）", retryable=False) from e
+        raise classify_error(f"HTTP Error {e.status}: {e.reason}") from e
+    except YouTubeError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise classify_error(e) from e
+
+
+def verify_caption_track(info: dict, key: str, fo: FetchOptions) -> dict:
+    """Fetch and classify one manual caption track (no media download).
+
+    → {"lang", "status": "ok"|"empty"|"error", "cues", "speech_cues", "chars", "reason"?, "format"?}
+    empty: no downloadable format, HTTP 404/410, zero bytes, no cues, or no speech text (only [音樂] / ♪ …).
+    error: transient / network failure or unparseable content — never treated as empty.
+    bot_check / rate_limited are raised (they block every further request, see the handlers' error rules).
+    """
+    base = {"lang": key, "cues": 0, "speech_cues": 0, "chars": 0}
+    fmt = _pick_sub_format((info.get("subtitles") or {}).get(key) or [])
+    if fmt is None:
+        return {**base, "status": "empty", "reason": "no_formats"}
+    try:
+        data = fetch_caption_bytes(fmt, fo, info.get("http_headers"))
+    except YouTubeError as e:
+        if e.code == "caption_not_found":
+            return {**base, "status": "empty", "reason": "not_found", "format": fmt.get("ext")}
+        if e.code in ("bot_check", "rate_limited"):
+            raise
+        return {**base, "status": "error", "reason": _short(f"{e.code}: {e.message}", 200), "format": fmt.get("ext")}
+    return {**base, **subs_mod.track_content(data, fmt.get("ext")), "format": fmt.get("ext")}
+
+
+def verify_captions(info: dict, fo: FetchOptions, max_fetches: int = CAPTION_VERIFY_MAX_FETCHES,
+                    sleep: Callable[[float], None] | None = None) -> dict | None:
+    """Verify the manual caption tracks of a video in download preference order (caption_rank): the preferred
+    track first; while it is empty, the next one — at most `max_fetches` tracks. Stops at the first usable
+    track and at the first `error` (do not hammer YouTube while the network misbehaves).
+
+    → None when the video lists no manual tracks, else the `caption_check` dict stored in Media.metadata:
+      {"checked_at", "source": "detail", "tracks": {lang: {"status","cues","speech_cues","chars","reason"?}},
+       "usable_langs": [verified-ok langs]}
+    """
+    import time
+
+    manual = list(caption_tracks(info)["manual"])
+    if not manual:
+        return None
+    sleep = sleep or time.sleep
+    tracks: dict[str, dict] = {}
+    for i, key in enumerate(_ranked(manual)[:max(1, max_fetches)]):
+        if i and fo.sleep_subtitles_sec:
+            sleep(fo.sleep_subtitles_sec)  # same spacing yt-dlp uses between subtitle downloads
+        r = verify_caption_track(info, key, fo)
+        tracks[key] = {k: v for k, v in r.items() if k != "lang"}
+        if r["status"] in ("ok", "error"):
+            break
+    return new_caption_check(tracks, "detail")
+
+
+def new_caption_check(tracks: dict[str, dict], source: str) -> dict:
+    return {"checked_at": datetime.now(timezone.utc).isoformat(), "source": source, "tracks": tracks,
+            "usable_langs": _ranked([k for k, t in tracks.items() if t.get("status") == "ok"])}
+
+
+def merge_caption_check(old: dict | None, tracks: dict[str, dict], source: str) -> dict:
+    """Download-time results update the stored check per language (other languages keep their status)."""
+    merged = {**((old or {}).get("tracks") or {}), **tracks}
+    return new_caption_check(merged, source)
+
+
+def caption_state(manual_keys, check: dict | None) -> dict:  # noqa: ANN001
+    """Media caption columns from the listed manual tracks + the stored verification.
+
+    → {"has_manual_captions", "manual_caption_langs", "captions_empty"}
+      No verification of any listed track: trust the metadata (has_manual = any listed).
+      Otherwise: has_manual = a track verified ok, or a verification errored (benefit of the doubt: unverified
+      tracks remain claimed). manual_caption_langs = verified-ok langs (preference order), then the unverified
+      ones; empty tracks are never listed, and the list is [] when has_manual is False.
+      captions_empty = tracks are listed, none is usable, and every checked one was empty.
+    """
+    manual = _ranked(list(manual_keys or []))
+    tracks = {k: v for k, v in ((check or {}).get("tracks") or {}).items() if k in manual}
+    if not tracks:
+        return {"has_manual_captions": bool(manual), "manual_caption_langs": sorted(manual), "captions_empty": False}
+    ok = [k for k in manual if tracks.get(k, {}).get("status") == "ok"]
+    errored = [k for k in manual if tracks.get(k, {}).get("status") == "error"]
+    unverified = sorted(k for k in manual if tracks.get(k, {}).get("status") not in ("ok", "empty"))
+    has = bool(ok) or bool(errored)
+    return {"has_manual_captions": has, "manual_caption_langs": (ok + unverified) if has else [],
+            "captions_empty": bool(manual) and not has}
+
+
 # ───────────────────────────── download ─────────────────────────────
 
 AUDIO_FORMAT = "bestaudio[vcodec=none][protocol^=http][format_id!*=-drc]/bestaudio[vcodec=none]/bestaudio"
@@ -731,6 +855,7 @@ class DownloadResult:
     subtitles: list[dict]           # {"key","language","kind","primary","path","format"}
     subtitle_errors: list[dict]     # {"key","kind","error"}
     warnings: list[str]
+    caption_check: dict = field(default_factory=dict)  # {manual key: track_content result} of fetched tracks
 
 
 def download(video_id: str, workdir: Path, fo: FetchOptions, caption_langs: list[str] | None = None,
@@ -741,6 +866,11 @@ def download(video_id: str, workdir: Path, fo: FetchOptions, caption_langs: list
 
     Order: extract info → choose tracks (raise no_usable_captions before downloading anything when
     require_captions and nothing fits) → subtitles → audio.
+    Every fetched subtitle file is classified (voti.subtitles.track_content): empty tracks (404, zero bytes, no
+    speech text) are dropped; when the preferred manual tracks are empty (default languages only) the next manual
+    tracks are tried (CAPTION_VERIFY_MAX_FETCHES in all). When nothing usable is left and only emptiness (no
+    network error) is to blame, YouTubeError("empty_captions") is raised before any audio is downloaded
+    (`.extra` = {"caption_tracks", "checked"}).
     progress(fraction, phase) is called with the audio download fraction.
     """
     import yt_dlp
@@ -785,36 +915,78 @@ def download(video_id: str, workdir: Path, fo: FetchOptions, caption_langs: list
                     msg = "影片沒有任何字幕軌"
                 raise YouTubeError("no_usable_captions", msg, retryable=False)
 
-            # subtitles first: cheap, and a missing track should not cost an audio download
-            subs, sub_errors = [], []
-            for c in chosen:
+            # subtitles first: cheap, and a missing / empty track should not cost an audio download
+            subs, sub_errors, checked, auto_empty = [], [], {}, []
+
+            def fetch(c: dict) -> None:
                 pool = (info.get("subtitles") if c["kind"] == "manual" else info.get("automatic_captions")) or {}
                 fmt = _pick_sub_format(pool.get(c["key"]) or [])
                 if fmt is None:
-                    sub_errors.append({"key": c["key"], "kind": c["kind"], "error": "no downloadable format"})
-                    continue
+                    if c["kind"] == "manual":
+                        checked[c["key"]] = {"status": "empty", "cues": 0, "speech_cues": 0, "chars": 0,
+                                             "reason": "no_formats"}
+                    else:
+                        sub_errors.append({"key": c["key"], "kind": c["kind"], "error": "no downloadable format"})
+                    return
                 safe_key = re.sub(r"[^A-Za-z0-9_-]", "_", c["key"])
                 path = workdir / f"sub.{safe_key}.{c['kind']}.{fmt['ext']}"
                 try:
                     sub = {**fmt}
                     sub.setdefault("http_headers", info.get("http_headers"))
                     ydl.dl(str(path), sub, subtitle=True)
-                    if not path.exists() or path.stat().st_size == 0:
-                        raise YouTubeError("subtitle_unavailable", "empty subtitle file")
-                    subs.append({**c, "path": path, "format": fmt["ext"]})
                 except yt_dlp.utils.DownloadCancelled:
                     raise
                 except Exception as e:  # noqa: BLE001
                     err = classify_error(e)
                     if err.code in ("bot_check", "rate_limited"):
                         raise err from e
+                    if c["kind"] == "manual" and _NOT_FOUND_RE.search(str(e).lower()):
+                        checked[c["key"]] = {"status": "empty", "cues": 0, "speech_cues": 0, "chars": 0,
+                                             "reason": "not_found", "format": fmt["ext"]}
+                        return
                     sub_errors.append({"key": c["key"], "kind": c["kind"], "error": _short(str(e), 300)})
+                    return
+                data = path.read_bytes() if path.exists() else b""
+                content = subs_mod.track_content(data, fmt["ext"])
+                if c["kind"] == "manual":
+                    checked[c["key"]] = {**content, "format": fmt["ext"]}
+                if content["status"] == "empty":
+                    if c["kind"] == "auto":
+                        auto_empty.append(f"{c['key']} (auto)")
+                    path.unlink(missing_ok=True)  # YouTube listed it, but there is nothing to use
+                    return
+                subs.append({**c, "path": path, "format": fmt["ext"]})
+
+            for c in chosen:
+                fetch(c)
+            first = chosen[0] if chosen else None
+            if not caption_langs and first and first["kind"] == "manual" and \
+                    checked.get(first["key"], {}).get("status") == "empty" and \
+                    not any(s_["kind"] == "manual" and s_["rank"] < 5 for s_ in subs):
+                # the preferred manual track was empty: try the next ones in preference order
+                budget = max(0, CAPTION_VERIFY_MAX_FETCHES - len(checked))
+                for k in _ranked(caps["manual"]):
+                    if budget <= 0:
+                        break
+                    if k in checked or any(c["key"] == k and c["kind"] == "manual" for c in chosen):
+                        continue
+                    fetch({"key": k, "language": k, "kind": "manual", "primary": False, "rank": caption_rank(k)})
+                    budget -= 1
+                    if checked.get(k, {}).get("status") == "ok":
+                        break
+            empty = sorted(k for k, v in checked.items() if v["status"] == "empty") + auto_empty
+            if chosen and not subs and empty and not sub_errors and require_captions:
+                err = YouTubeError("empty_captions", f"{EMPTY_CAPTIONS_MESSAGE}（{', '.join(empty)}）",
+                                   retryable=False)
+                err.extra = {"caption_tracks": caps, "checked": checked}
+                raise err
             if chosen and not subs and require_captions:
                 raise YouTubeError("subtitle_unavailable",
                                    "字幕軌列在影片資訊中但下載失敗：" +
                                    "; ".join(f"{e['key']}: {e['error']}" for e in sub_errors), retryable=True)
-            if subs and not any(s["primary"] for s in subs):
-                subs[0]["primary"] = True
+            if subs and not any(s_["primary"] for s_ in subs):
+                manual_subs = [s_ for s_ in subs if s_["kind"] == "manual"]
+                min(manual_subs or subs, key=lambda s_: s_.get("rank", 6))["primary"] = True
 
             if progress:
                 progress(0.0, "audio")
@@ -834,7 +1006,7 @@ def download(video_id: str, workdir: Path, fo: FetchOptions, caption_langs: list
     for f in info.get("requested_downloads") or []:
         fmt.update({k: f.get(k) for k in ("filesize", "ext", "format_id") if f.get(k) is not None})
     return DownloadResult(info=info, audio_path=audio, audio_format=fmt, subtitles=subs,
-                          subtitle_errors=sub_errors, warnings=logger.warnings)
+                          subtitle_errors=sub_errors, warnings=logger.warnings, caption_check=checked)
 
 
 def _find_audio(workdir: Path, info: dict) -> Path | None:

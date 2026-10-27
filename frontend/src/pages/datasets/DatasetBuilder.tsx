@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { Link, useNavigate, useParams } from 'react-router'
+import { useNavigate, useParams } from 'react-router'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { AlertTriangle, Download, PackageOpen, RotateCcw, Save } from 'lucide-react'
@@ -9,7 +9,7 @@ import type { DatasetFilters, DatasetPreview, ReviewStatus, SpeakerState } from 
 import { fmt1, fmtHours, fmtInt } from '@/lib/format'
 import { ageGroupLabel, ageGroupOrder, flagLabel, reviewStatus, sexLabel, speakerState, textSource } from '@/lib/labels'
 import { cn } from '@/lib/cn'
-import { Page, useTitle } from '@/components/layout/page'
+import { BackLink, Page, useTitle } from '@/components/layout/page'
 import { Button } from '@/components/ui/button'
 import { Card, CardBody, CardHeader, Skeleton } from '@/components/ui/primitives'
 import { Checkbox, Chip, Field, Input, NumberInput, Segmented, Slider, Switch, Textarea } from '@/components/ui/form'
@@ -208,9 +208,7 @@ export default function DatasetBuilder() {
   const p = preview.data
   return (
     <Page wide>
-      <Link to="/datasets" className="-ml-1 mb-3 inline-flex h-8 items-center gap-1 rounded-md pl-0.5 pr-2 text-[13px] text-fg-3 hover:bg-surface-2 hover:text-fg">
-        ‹ {t('output.builder.back')}
-      </Link>
+      <BackLink to="/datasets">{t('output.builder.back')}</BackLink>
       <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="min-w-0">
           <h1 className="text-[22px] font-semibold leading-8 tracking-tight sm:text-2xl">{isNew ? t('output.builder.newTitle') : name || t('output.builder.fallbackTitle')}</h1>

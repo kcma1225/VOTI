@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react'
 import type { ReviewStatus, Timeline } from '@/api/types'
 import { fmtClock, fmtTimestamp } from '@/lib/format'
 import { reviewStatus } from '@/lib/labels'
-import { SERIES } from '@/components/charts/charts'
+import { speakerColor, timelineSpeakers } from './speaker-color'
 import { cn } from '@/lib/cn'
 import { localized, msgs, t as tr } from '@/i18n'
 
@@ -63,8 +63,9 @@ export function Lanes({
   const span = Math.max(1e-6, b - a)
   const X = (s: number) => ((s - a) / span) * width
   const [hover, setHover] = useState<{ x: number; sec: number; text?: string } | null>(null)
-  const speakers = useMemo(() => [...new Set(t.diarization.map((d) => d.speaker))].sort(), [t.diarization])
-  const spColor = (s: string) => SERIES[speakers.indexOf(s) % SERIES.length]
+  // same order as GET /media/{id}/speakers (colour index), so lane colours == speaker cards == highlights
+  const speakers = useMemo(() => timelineSpeakers(t), [t])
+  const spColor = (s: string) => speakerColor(Math.max(0, speakers.indexOf(s)))
   const H = lanesHeight(lanes)
 
   // downsampled frame arrays → only the visible window
@@ -217,12 +218,12 @@ function niceStep(raw: number) {
 }
 
 export function SpeakerLegend({ t }: { t: Timeline }) {
-  const speakers = [...new Set(t.diarization.map((d) => d.speaker))].sort()
+  const speakers = timelineSpeakers(t)
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-fg-3">
       {speakers.map((s, i) => (
         <span key={s} className="flex items-center gap-1.5">
-          <span className="size-2.5 rounded-sm" style={{ background: SERIES[i % SERIES.length] }} />
+          <span className="size-2.5 rounded-sm" style={{ background: speakerColor(i) }} />
           <span className="font-mono">{s}</span>
         </span>
       ))}

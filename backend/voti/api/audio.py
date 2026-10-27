@@ -116,13 +116,22 @@ def cut_clip(media_id: uuid.UUID, start: float, end: float, head_only: bool = Fa
     return header + pcm, len(header) + len(pcm)
 
 
+MIN_FROM_TAIL_SEC = 0.05
+
+
 @router.head("/segments/{segment_id}", include_in_schema=False)
 @router.get("/segments/{segment_id}", response_class=Response, responses={200: {"content": {"audio/wav": {}}}})
 def segment_audio(segment_id: uuid.UUID, request: Request, pad: float = Query(0.3, ge=0, le=5),
                   rev: int | None = Query(None, description="segment revision; cache-busting only"),
+                  from_sec: float | None = Query(None, alias="from", ge=0,
+                                                 description="absolute media seconds to start the clip at "
+                                                             "(clamped into the padded segment)"),
                   _: User = Depends(current_user), s: Session = Depends(get_session)):
     g = get_or_404(s, Segment, segment_id, "音段")
     start, end = max(0.0, g.start_sec - pad), g.end_sec + pad
+    if from_sec is not None:
+        # play from a clicked character to the sentence end; never an empty clip
+        start = max(start, min(from_sec, end - MIN_FROM_TAIL_SEC))
     if end - start > MAX_CLIP_SEC:
         raise ApiError(400, "clip_too_long", "音段太長")
     head = request.method == "HEAD"
@@ -131,7 +140,7 @@ def segment_audio(segment_id: uuid.UUID, request: Request, pad: float = Query(0.
     # anything else must be revalidated so an edited segment is never served stale.
     cache = "private, max-age=86400" if rev is not None and rev == g.revision else "private, no-cache"
     headers = {"Content-Length": str(length), "Cache-Control": cache,
-               "ETag": f'"{g.id}-r{g.revision}-p{pad:g}-{g.start_sec:g}-{g.end_sec:g}"',
+               "ETag": f'"{g.id}-r{g.revision}-p{pad:g}-{g.start_sec:g}-{g.end_sec:g}-f{start:.3f}"',
                "X-Segment-Revision": str(g.revision),
                "Content-Disposition": f'inline; filename="{g.id}_r{g.revision}.wav"',
                "X-Clip-Start": f"{start:.3f}", "X-Clip-End": f"{end:.3f}"}

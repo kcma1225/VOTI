@@ -68,7 +68,7 @@ export function ValidityBadge({ s, short, className }: { s: Seg; short?: boolean
         <Badge
           tone="danger"
           data-validity="invalid"
-          className={cn('h-auto min-h-[22px] whitespace-normal py-0.5 text-left leading-4 break-cjk', className)}
+          className={cn('h-auto min-h-[22px] rounded-[11px] whitespace-normal py-0.5 text-left leading-4 break-cjk', className)}
         >
           <ShieldX className="size-3 shrink-0" />
           <span className="min-w-0">{label}</span>

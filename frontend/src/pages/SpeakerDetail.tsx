@@ -9,7 +9,7 @@ import { onErr, qk, useSpeaker } from '@/api/queries'
 import { fmtDb, fmtHours, fmtMos } from '@/lib/format'
 import { ageGroupLabel, ageGroupOrder, emotionLabel, sexLabel, voiceQualityLabel } from '@/lib/labels'
 import { useClipPlayer } from '@/hooks/useClipPlayer'
-import { Page, useTitle } from '@/components/layout/page'
+import { BackLink, Page, useTitle } from '@/components/layout/page'
 import { Button } from '@/components/ui/button'
 import { Avatar, Badge, Card, CardBody, CardHeader, Skeleton } from '@/components/ui/primitives'
 import { Input } from '@/components/ui/form'
@@ -60,9 +60,7 @@ export default function SpeakerDetail() {
   const p = s.profile
   return (
     <Page>
-      <Link to="/speakers" className="-ml-1 mb-3 inline-flex h-8 items-center gap-1 rounded-md pl-0.5 pr-2 text-[13px] text-fg-3 hover:bg-surface-2 hover:text-fg">
-        ‹ {t('people.speakerDetail.back')}
-      </Link>
+      <BackLink to="/speakers">{t('people.speakerDetail.back')}</BackLink>
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
         <Avatar name={speakerName(s)} size={60} />
         <div className="min-w-0 flex-1">

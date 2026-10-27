@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import {
   AlertTriangle,
   Captions,
+  CaptionsOff,
   Clock,
   ExternalLink,
   Film,
@@ -29,7 +30,7 @@ import { errMsg, isListing, onErr, qk, useMe, useChannel, useDiversity, usePlayl
 import type { ChannelDetail as TChannel } from '@/api/types'
 import { fmt1, fmtBytes, fmtClock, fmtCompact, fmtHours, fmtInt, fmtMos, fmtRelative, fmtSec, hoursUnit } from '@/lib/format'
 import { ageGroupLabel, ageGroupOrder, jobPhaseText, repeatPosition, sexLabel } from '@/lib/labels'
-import { Page } from '@/components/layout/page'
+import { BackLink, Page } from '@/components/layout/page'
 import { useTitle } from '@/components/layout/page'
 import { Button } from '@/components/ui/button'
 import { Avatar, Badge, Card, CardBody, CardHeader, Progress, Skeleton } from '@/components/ui/primitives'
@@ -151,6 +152,15 @@ function Header({ c }: { c: TChannel }) {
     onSuccess: (r) => toast.success(r.queued ? t('collect.channel.toastDetailQueued', r.queued) : t('collect.channel.toastDetailAll')),
     onError: onErr,
   })
+  const recheck = useMutation({
+    mutationFn: () => api.recheckChannelCaptions(c.id),
+    onSuccess: (r) => {
+      toast.success(t('collect.channel.recheckQueued', r.queued))
+      qc.invalidateQueries({ queryKey: ['media'] })
+      qc.invalidateQueries({ queryKey: qk.channel(c.id) })
+    },
+    onError: onErr,
+  })
   const dedup = useMutation({ mutationFn: () => api.dedup(c.id), onSuccess: () => toast.success(t('collect.channel.toastDedup')), onError: onErr })
   const convertAll = useMutation({
     mutationFn: () => api.convertChannelText(c.id),
@@ -236,6 +246,9 @@ function Header({ c }: { c: TChannel }) {
             <MenuContent>
               <MenuItem icon={<Captions />} onSelect={() => detail.mutate()}>
                 {t('collect.channel.checkAllCaptions')}
+              </MenuItem>
+              <MenuItem icon={<CaptionsOff />} onSelect={() => recheck.mutate()}>
+                {t('collect.channel.recheckAllCaptions')}
               </MenuItem>
               <MenuItem icon={<ScanSearch />} onSelect={() => dedup.mutate()}>
                 {t('collect.channel.redetectRepeated')}
@@ -421,7 +434,7 @@ function PlaylistsTab({ cid }: { cid: string }) {
   return (
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
       {pl.data.items.map((p, i) => (
-        <Link key={p.id} to={`/channels/${cid}?playlist=${p.id}`} className="group flex min-w-0 items-center gap-4 rounded-xl border border-border bg-surface p-4 shadow-xs hover:border-border-strong hover:shadow-md">
+        <Link key={p.id} to={`/channels/${cid}?playlist=${p.id}`} replace className="group flex min-w-0 items-center gap-4 rounded-xl border border-border bg-surface p-4 shadow-xs hover:border-border-strong hover:shadow-md">
           <div className="relative grid h-14 w-20 shrink-0 place-items-center rounded-lg text-white" style={{ background: `linear-gradient(135deg, var(--series-${(i % 3) + 1}), var(--series-7))` }}>
             <ListVideo className="size-5" />
             <span className="absolute bottom-1 right-1 rounded bg-black/60 px-1 text-[10px] font-medium">{fmtInt(p.media_count)}</span>
@@ -593,9 +606,7 @@ export default function ChannelDetail() {
   const detailActive = !!c?.detail_progress?.active
   return (
     <Page wide>
-      <Link to="/channels" className="-ml-1 mb-3 inline-flex h-8 items-center gap-1 rounded-md pl-0.5 pr-2 text-[13px] text-fg-3 hover:bg-surface-2 hover:text-fg">
-        ‹ {t('collect.channel.back')}
-      </Link>
+      <BackLink to="/channels">{t('collect.channel.back')}</BackLink>
       {ch.isError ? (
         <Card>
           <ErrorState error={ch.error} onRetry={() => ch.refetch()} />

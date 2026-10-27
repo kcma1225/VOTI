@@ -106,6 +106,7 @@ export const api = {
   patchRepeated: (group_id: string, excluded: boolean) => patch<T.RepeatedGroup>(`/repeated/${group_id}`, { excluded }),
   dedup: (channel_id: string) => post<T.Job>(`/channels/${channel_id}/dedup`),
   convertChannelText: (id: string) => post<{ queued: number }>(`/channels/${id}/convert-text`),
+  recheckChannelCaptions: (id: string) => post<{ queued: number }>(`/channels/${id}/recheck-captions`),
   alignChannel: (id: string) => post<{ queued: number }>(`/channels/${id}/align`),
   validateChannel: (id: string, force = false) => post<{ queued: number }>(`/channels/${id}/validate`, { force }),
   /** admin: media.validate for every media with segments */
@@ -118,6 +119,7 @@ export const api = {
   retryMedia: (id: string) => post<T.Job>(`/media/${id}/retry`),
   reprocess: (id: string, from_step: string) => post<T.Job>(`/media/${id}/reprocess`, { from_step }),
   timeline: (id: string) => get<T.Timeline>(`/media/${id}/timeline`),
+  mediaSpeakers: (id: string) => get<T.MediaSpeaker[]>(`/media/${id}/speakers`),
   mediaQuality: (id: string) => get<T.MediaQuality>(`/media/${id}/quality`),
   mediaWords: (id: string) =>
     get<T.MediaWordsResponse | T.MediaWords>(`/media/${id}/words`).then((r): T.MediaWordsResponse => {
@@ -126,6 +128,7 @@ export const api = {
       return { words, segments: Object.keys(words).length, status: { aligned: Object.keys(words).length }, job_active: false }
     }),
   convertMediaText: (id: string) => post<{ queued: number }>(`/media/${id}/convert-text`),
+  recheckMediaCaptions: (id: string) => post<T.Job>(`/media/${id}/recheck-captions`),
   alignMedia: (id: string) => post<{ queued: number }>(`/media/${id}/align`),
   validateMedia: (id: string, force = false) => post<{ queued: number }>(`/media/${id}/validate`, { force }),
   // segments
@@ -169,7 +172,8 @@ export const api = {
 }
 
 export const audioUrl = {
-  segment: (id: string, pad = 0.3, rev?: number) => `${API_BASE}/audio/segments/${id}${qs({ pad, rev })}`,
+  /** `from` (absolute media seconds): start the clip there — play from a clicked character to the sentence end */
+  segment: (id: string, pad = 0.3, rev?: number, from?: number) => `${API_BASE}/audio/segments/${id}${qs({ pad, rev, from: from != null ? Math.round(from * 1000) / 1000 : undefined })}`,
   media: (id: string) => `${API_BASE}/audio/media/${id}`,
   exportFile: (exportId: string, name: string) => `${API_BASE}/exports/${exportId}/download/${name}`,
 }

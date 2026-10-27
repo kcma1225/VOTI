@@ -167,6 +167,25 @@ def test_segment_audio_cut(annotator_client, factory):
     assert annotator_client.get(f"/api/audio/segments/{missing.id}").status_code == 404
 
 
+def test_segment_audio_from(annotator_client, factory):
+    """?from= starts the clip at a clicked character (absolute media time), clamped into the padded segment."""
+    m = factory.media(duration_sec=10)
+    pcm = upload_wav(m.id, 10.0)
+    g = factory.segment(m, 2.0, 3.5)
+    r = annotator_client.get(f"/api/audio/segments/{g.id}", params={"pad": 0, "from": 2.75})
+    assert r.status_code == 200, r.text
+    assert r.headers["x-clip-start"] == "2.750" and r.headers["x-clip-end"] == "3.500"
+    with wave.open(io.BytesIO(r.content)) as w:
+        frames = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2")
+    assert np.array_equal(frames, pcm[int(2.75 * SR):int(3.5 * SR)])
+    # before the segment → the normal clip start; past the end → a short tail, never empty
+    r = annotator_client.get(f"/api/audio/segments/{g.id}", params={"pad": 0, "from": 0.5})
+    assert r.headers["x-clip-start"] == "2.000"
+    r = annotator_client.get(f"/api/audio/segments/{g.id}", params={"pad": 0, "from": 9})
+    assert r.headers["x-clip-start"] == "3.450" and len(r.content) > 44
+    assert annotator_client.get(f"/api/audio/segments/{g.id}", params={"from": -1}).status_code == 422
+
+
 def test_media_audio_range(annotator_client, factory):
     from voti import storage
     m = factory.media()

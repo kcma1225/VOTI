@@ -35,6 +35,8 @@ export interface YoutubeSettings {
   cookies_enabled: boolean
   /** scheduled re-listing of every channel, in hours; 0 = off */
   auto_refresh_hours?: number
+  /** download each uploader caption track's content during the caption sweep to catch empty CC tracks (default true) */
+  verify_captions?: boolean
 }
 export type VoxBackbone = 'whisper-large-v3' | 'wavlm-large'
 export interface PipelineSettings {
@@ -260,6 +262,16 @@ export interface MediaSummary {
   /** active segments whose caption does not match the audio */
   invalid_count?: number
   invalid_sec?: number
+  /** the uploader caption tracks YouTube lists turned out to be empty (no speech cues) */
+  captions_empty?: boolean
+  caption_check?: CaptionCheck | null
+}
+export type CaptionTrackCheck = { status: 'ok' | 'empty' | 'error'; cues?: number; speech_cues?: number; chars?: number; reason?: string | null; format?: string | null }
+export interface CaptionCheck {
+  checked_at: ISODate | null
+  source?: 'detail' | 'download'
+  tracks: Record<string, CaptionTrackCheck>
+  usable_langs: string[]
 }
 export interface MediaQuality {
   sample_rate: number | null
@@ -340,7 +352,8 @@ export interface TextConversion {
 }
 export interface MediaFacets {
   kind: Partial<Record<MediaKind, number>>
-  captions: { manual: number; auto_only: number; none: number; unknown: number }
+  /** `none` includes the empty-caption videos; `empty` is that subset */
+  captions: { manual: number; auto_only: number; none: number; unknown: number; empty?: number }
   license: Partial<Record<License, number>>
   status: Partial<Record<MediaStatus, number>>
   downloaded?: { yes: number; no: number }
@@ -349,7 +362,7 @@ export interface MediaFacets {
 export interface MediaList extends Page<MediaSummary> {
   facets: MediaFacets
 }
-export type CaptionFilter = 'manual' | 'auto' | 'any' | 'none'
+export type CaptionFilter = 'manual' | 'auto' | 'any' | 'none' | 'empty'
 export type MediaSort = 'published_at' | '-published_at' | 'duration' | '-duration' | 'views' | '-views' | 'title'
 export interface MediaQuery {
   channel_id?: UUID
@@ -371,6 +384,35 @@ export interface MediaQuery {
   sort?: MediaSort
   limit?: number
   offset?: number
+}
+
+/** GET /media/{id}/speakers — one diarized speaker (SPEAKER_00 …) of one media; list in label order,
+ * color_index = position (same order as the timeline speaker lane). Invalid segments are excluded. */
+export interface MediaSpeakerProfile {
+  sex: Dist
+  sex_top: string | null
+  sex_prob: number | null
+  age_mean: number | null
+  age_group: Dist
+  emotion: Dist
+  /** multi-label: mean probability per trait (not normalized) */
+  voice_quality: Dist
+  speech_flow: Dist
+  /** English-only accent model: reference only */
+  accent_broad: Dist
+}
+export interface MediaSpeaker {
+  local_speaker: string
+  color_index: number
+  segment_count: number
+  total_sec: number
+  diarized_sec: number
+  invalid_count: number
+  first_sec: number | null
+  profile: MediaSpeakerProfile
+  profiled_segments: number
+  cluster: { id: UUID; label: string; display_name: string | null; share: number } | null
+  sample_segment_ids: UUID[]
 }
 
 export interface Timeline {

@@ -68,6 +68,8 @@ class YoutubeSettings(BaseModel):
     cookies_enabled: bool = False
     sleep_between_requests_sec: float = Field(default=2.0, ge=0, le=3600)  # listing/detail job spacing
     auto_refresh_hours: float = Field(default=24, ge=0, le=24 * 365)  # scheduled channel re-listing; 0 = off
+    # media.detail fetches the preferred manual caption track to confirm it is not empty (≤3 small requests)
+    verify_captions: bool = True
 
 
 class PipelineSettings(BaseModel):
@@ -317,6 +319,8 @@ class MediaSummary(BaseModel):
     has_auto_captions: bool | None = None
     manual_caption_langs: list[str] = []
     auto_caption_langs: list[str] = []
+    captions_empty: bool = False            # YouTube listed manual captions, but every checked track was empty
+    caption_check: dict | None = None       # metadata.caption_check (see docs/ARCHITECTURE.md "Caption verification")
     status: str
     stage: str | None = None
     failure_code: str | None = None
@@ -384,6 +388,8 @@ class MediaDetailOut(BaseModel):
     has_auto_captions: bool | None = None
     manual_caption_langs: list[str] = []
     auto_caption_langs: list[str] = []
+    captions_empty: bool = False            # YouTube listed manual captions, but every checked track was empty
+    caption_check: dict | None = None       # metadata.caption_check (see docs/ARCHITECTURE.md "Caption verification")
     status: str
     stage: str | None = None
     failure_code: str | None = None
@@ -624,6 +630,41 @@ class CueOut(BaseModel):
     start: float
     end: float
     text: str
+
+
+class MediaSpeakerProfile(BaseModel):
+    """Duration-weighted Vox-Profile aggregate over one diarized speaker's (non-invalid) segments of one media.
+    Distributions are flat {label: p}; voice_quality is multi-label (mean sigmoid per label, not normalized)."""
+    sex: dict[str, float] = {}
+    sex_top: str | None = None
+    sex_prob: float | None = None
+    age_mean: float | None = None
+    age_group: dict[str, float] = {}
+    emotion: dict[str, float] = {}
+    voice_quality: dict[str, float] = {}
+    speech_flow: dict[str, float] = {}
+    accent_broad: dict[str, float] = {}
+
+
+class MediaSpeakerCluster(BaseModel):
+    id: uuid.UUID
+    label: str
+    display_name: str | None = None
+    share: float = 1.0   # fraction of the local speaker's assigned seconds that went to this cluster
+
+
+class MediaSpeaker(BaseModel):
+    local_speaker: str
+    color_index: int
+    segment_count: int
+    total_sec: float
+    diarized_sec: float = 0.0
+    invalid_count: int = 0
+    first_sec: float | None = None
+    profile: MediaSpeakerProfile = MediaSpeakerProfile()
+    profiled_segments: int = 0
+    cluster: MediaSpeakerCluster | None = None
+    sample_segment_ids: list[uuid.UUID] = []
 
 
 class Timeline(BaseModel):

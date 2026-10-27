@@ -133,6 +133,38 @@ def detail_channel(channel_id: uuid.UUID, body: S.ChannelDetailIn | None = None,
     return S.QueuedOut(queued=n)
 
 
+# media whose captions are already fetched (or being fetched) are not re-checked
+RECHECK_SKIP_STATUSES = ("queued", "downloading", "downloaded", "processing", "ready")
+
+
+@router.post("/channels/{channel_id}/recheck-captions", response_model=S.QueuedOut)
+def recheck_channel_captions(channel_id: uuid.UUID, user: User = Depends(current_user),
+                             s: Session = Depends(get_session)):
+    """Re-fetch metadata and re-verify captions of every not-yet-downloaded media of the channel that claims (or
+    claimed: captions_empty) manual captions. One chained media.detail batch job (media_ids, DETAIL_BATCH per
+    run, re-queued at the end of the detail queue between batches) keeps it rate-limited and round-robin with
+    other channels. While such a re-check is active, it is not queued twice (`queued` = its media count)."""
+    from ..sources.handlers import DETAIL_BATCH
+    c = get_or_404(s, Channel, channel_id, "頻道")
+    active = s.scalars(select(Job).where(Job.kind == "media.detail", Job.channel_id == c.id, Job.media_id.is_(None),
+                                         Job.status.in_(("queued", "running")),
+                                         Job.payload["recheck"].as_boolean().is_(True))).first()
+    if active is not None:
+        return S.QueuedOut(queued=len((active.payload or {}).get("media_ids") or []))
+    ids = [str(x) for x in s.scalars(
+        select(Media.id).where(Media.channel_id == c.id, Media.platform == "youtube",
+                               or_(Media.has_manual_captions.is_(True), Media.captions_empty.is_(True)),
+                               Media.status.notin_(RECHECK_SKIP_STATUSES),
+                               func.coalesce(Media.failure_code, "") != "members_only")
+        .order_by(Media.published_at.desc().nulls_last(), Media.id))]
+    if ids:
+        enqueue(s, "media.detail", channel_id=c.id, created_by=user.id,
+                payload={"media_ids": ids, "batch_size": DETAIL_BATCH, "force": True, "verify": True,
+                         "recheck": True})
+    s.commit()
+    return S.QueuedOut(queued=len(ids))
+
+
 @router.post("/channels/{channel_id}/convert-text", response_model=S.QueuedOut)
 def convert_channel_text(channel_id: uuid.UUID, user: User = Depends(current_user),
                          s: Session = Depends(get_session)):

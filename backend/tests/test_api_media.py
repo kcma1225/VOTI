@@ -92,10 +92,10 @@ def test_media_facets(annotator_client, corpus):
     # kind facet ignores the kind filter itself (auto-only short is hidden by default)
     assert f["kind"] == {"video": 5}
     # captions facet ignores captions/include_auto so auto-only media are counted
-    assert f["captions"] == {"manual": 3, "auto_only": 0, "none": 1, "unknown": 1}
+    assert f["captions"] == {"manual": 3, "auto_only": 0, "none": 1, "unknown": 1, "empty": 0}
     r = annotator_client.get("/api/media", params={"channel_id": str(ch1.id)})
     f = r.json()["facets"]
-    assert f["captions"] == {"manual": 3, "auto_only": 1, "none": 1, "unknown": 1}
+    assert f["captions"] == {"manual": 3, "auto_only": 1, "none": 1, "unknown": 1, "empty": 0}
     assert f["status"] == {"detailed": 3, "listed": 1, "ready": 1}
     assert f["license"] == {"creative_commons": 1, "youtube": 2, "unknown": 2}
     r = annotator_client.get("/api/media", params={"channel_id": str(ch1.id), "status": "ready"})

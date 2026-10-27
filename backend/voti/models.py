@@ -171,6 +171,9 @@ class Media(Base):
     has_auto_captions: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     manual_caption_langs: Mapped[list[str]] = mapped_column(ARRAY(String(16)), default=list)
     auto_caption_langs: Mapped[list[str]] = mapped_column(ARRAY(String(16)), default=list)
+    # YouTube listed manual caption tracks but every verified one was empty (no speech text / 404): treated as
+    # "no captions" (has_manual_captions False). Details: metadata["caption_check"] (voti.sources.youtube)
+    captions_empty: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)  # selected extra fields
     info_json_asset_id: Mapped[uuid.UUID | None] = fk("assets.id", nullable=True, ondelete="SET NULL", index=False)
     status: Mapped[str] = mapped_column(String(16), default="listed", index=True)

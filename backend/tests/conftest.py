@@ -210,3 +210,16 @@ class Factory:
 @pytest.fixture
 def factory(db):  # noqa: ANN001
     return Factory(db)
+
+
+# Caption verification (media.detail / voti.sources.youtube.verify_captions) must never reach YouTube from tests:
+# by default every fetched caption track contains speech. Tests that need empty / failing tracks override
+# `voti.sources.youtube.fetch_caption_bytes` themselves.
+SPEECH_JSON3 = b'{"events": [{"tStartMs": 0, "dDurationMs": 1000, "segs": [{"utf8": "\xe5\xa4\xa7\xe5\xae\xb6\xe5\xa5\xbd"}]}]}'
+
+
+@pytest.fixture(autouse=True)
+def _no_caption_network(monkeypatch):  # noqa: ANN001
+    from voti.sources import youtube as yt
+
+    monkeypatch.setattr(yt, "fetch_caption_bytes", lambda fmt, fo, headers=None: SPEECH_JSON3)

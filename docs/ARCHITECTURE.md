@@ -29,7 +29,8 @@ index `jobs_running_heartbeat`, `media.discovered_at` (+ partial index `media_di
 `jobs_channel_kind_active` on `jobs (channel_id, kind) WHERE status IN ('queued','running')`, the caption-validation
 columns of `segments` (`validity` NOT NULL DEFAULT 'unknown' — metadata-only in Postgres ≥ 11, `invalid_reason`,
 `validity_source`, `lid_lang`, `lid_prob`, `align_score`, `validation` JSONB) + partial index `segments_invalid`
-on `segments (media_id) WHERE validity = 'invalid'`. New tables
+on `segments (media_id) WHERE validity = 'invalid'`, `media.captions_empty` (BOOLEAN NOT NULL DEFAULT false; caption
+verification). New tables
 (e.g. `word_alignments`) come from `create_all` and need no migration.
 
 ## Code layout
@@ -94,7 +95,7 @@ shorter than 1 s: result null).
 
 | key | value |
 |---|---|
-| `youtube` | `{"rate_limit_kbps": 0, "sleep_between_downloads_sec": 5, "sleep_between_requests_sec": 2, "max_concurrent_downloads": 2, "cookies_enabled": false, "auto_refresh_hours": 24}` — `auto_refresh_hours`: re-list every channel this often to find new videos (0 = off; see "Channel listing & scheduled refresh") |
+| `youtube` | `{"rate_limit_kbps": 0, "sleep_between_downloads_sec": 5, "sleep_between_requests_sec": 2, "max_concurrent_downloads": 2, "cookies_enabled": false, "auto_refresh_hours": 24, "verify_captions": true}` — `auto_refresh_hours`: re-list every channel this often to find new videos (0 = off; see "Channel listing & scheduled refresh"). `verify_captions`: `media.detail` fetches the preferred manual caption track to confirm it is not empty (see "Caption verification"); off = trust YouTube's track list (download still drops empty tracks) |
 | `pipeline` | `{"voxprofile_backbone": "whisper-large-v3", "diarization_enabled": true, "segment_min_sec": 1.0, "segment_max_sec": 20.0, "edge_pad_sec": 0.1}` |
 | `quality_thresholds` | `{"low_speech_ratio": 0.5, "low_snr_db": 10, "clipping_ratio": 0.001}` (used to set segment flags) |
 | `validation` | `{"enabled": true, "lid_min_prob": 0.7, "lid_min_speech_sec": 1.0, "align_min_score": 0.4, "align_min_units": 4}` — caption ↔ audio validation (see "Caption validation"). `enabled: false`: `media.validate` does nothing (existing results stay). |
@@ -111,6 +112,36 @@ first one turned out Simplified (`sources.handlers.repick_primary_by_script`). T
 always downloaded in addition. `include_auto` adds YouTube ASR (original language only) with the same ranking; a
 manual track is always primary when one exists. A Simplified-only video has `has_manual_captions = true` and is
 downloadable by default (its text is converted). Explicit `caption_langs` keep their exact meaning.
+
+## Caption verification (empty CC tracks, `voti.sources.youtube.verify_captions` / `caption_state`)
+
+YouTube metadata sometimes lists an uploader caption track that is empty or does not exist. A track is **empty** when
+it has no downloadable format, its URL answers 404/410, the file is zero bytes, it parses to 0 cues (header-only
+WebVTT, json3 with only window events), or no cue contains a letter/digit/CJK character after cleaning (only
+`[音樂]`, `[Music]`, `♪`, `[掌聲]` …). Network/HTTP failures and unparseable content are `error`, never empty;
+`bot_check`/`rate_limited` stop the job as usual (`voti.subtitles.track_content`).
+
+- **media.detail** (when `settings.youtube.verify_captions`, or payload `verify: true`): for a video listing manual
+  tracks, fetch the preferred one (caption_rank order, json3 > vtt > srt; Taiwanese/Hakka first when they are the only
+  manual tracks); while it is empty try the next one — at most 3 fetches, `sleep_subtitles_sec` (1 s) apart, stop at
+  the first ok or error. Stored in `Media.metadata.caption_check = {checked_at, source: "detail"|"download",
+  tracks: {lang: {status: ok|empty|error, cues, speech_cues, chars, reason?, format?}}, usable_langs: [ok langs]}`.
+  A fresh verification replaces the stored check; without one the stored check keeps applying.
+- **Columns** (`caption_state`, also recomputed after every download): no track checked → trust the list.
+  Otherwise `has_manual_captions` = a track verified ok, or a verification errored (benefit of the doubt);
+  `manual_caption_langs` = verified-ok langs (preference order) then the unverified ones, never empty ones, `[]` when
+  `has_manual_captions` is false; `captions_empty` = tracks are listed but none is usable and every checked one was
+  empty (unchecked tracks beyond the 3-fetch cap do not count).
+- **media.download** classifies every fetched track again before the audio: empty tracks are dropped (when the
+  preferred manual track was empty and no other Chinese manual track was fetched, the next manual tracks are tried,
+  3 in all); results merge into `caption_check` (`source: "download"`). When nothing usable is left and only
+  emptiness is to blame, the job fails with `empty_captions` (no audio downloaded, no retry) → media `skipped`,
+  `failure_code = "empty_captions"`, `failure_message` 「YouTube 標示有字幕，但字幕內容是空的（langs）」,
+  `captions_empty`/`has_manual_captions` per the rule above. Empty + network errors → `subtitle_unavailable` (retried).
+- **Re-check**: `POST /media/{id}/recheck-captions`, `POST /channels/{id}/recheck-captions` → `media.detail` with
+  `{force: true, verify: true}`. A re-detail only changes status for `listed`/`failed`/`blocked` → `detailed` and
+  `skipped` + `empty_captions` → `detailed` (when a track is usable now); downloaded/processed media only get their
+  metadata/caption fields updated, and a failed re-check never moves them.
 
 ## Channel listing & scheduled refresh
 
@@ -285,6 +316,12 @@ Timestamps ISO-8601 UTC strings. IDs are UUID strings.
   the channel with active segments (without a current validation unless `force`)
 - `POST /validate/backfill` (admin) `{force?: false}` → `{queued: n}`: the same for every media with active segments
 - `POST /channels/{id}/detail` `{media_ids?: [...]}` → `{queued: n}` (fetch full metadata for listed media; all un-detailed when omitted)
+- `POST /channels/{id}/recheck-captions` → `{queued: n}`: re-fetch metadata + re-verify captions of every media of the
+  channel that claims or claimed manual captions (`has_manual_captions` or `captions_empty`), excluding media already
+  queued/downloading/downloaded/processing/ready and members-only. One chained `media.detail` batch job
+  (`{media_ids, batch_size: 20, force: true, verify: true, recheck: true}`; re-queued at the end of the detail queue
+  after each batch → rate-limited and round-robin with other channels). While one is active the call queues nothing
+  and returns its media count. Progress: the channel's `media.detail` jobs.
 - `POST /channels/{id}/convert-text` (any logged-in user) → `{queued: n}`: one `media.convert_text` job for every media
   of the channel that has a convertible caption track (Simplified, or Chinese never examined); 409
   `text_conversion_disabled` when the `text` setting is off
@@ -313,17 +350,23 @@ media_with_quality}, kind_counts: {video: n, short: n, live?: n, ...}, playlist_
 ### Media (videos)
 - `GET /media` — filters (all optional):
   `channel_id, playlist_id, q (title/description), kind (video|short|live, comma list), status (comma list),
-   captions (manual|auto|any|none), include_auto (bool, default false — auto-only videos hidden unless true or captions=auto),
+   captions (manual|auto|any|none|empty), include_auto (bool, default false — auto-only videos hidden unless true or captions=auto),
    caption_lang, license (youtube|creative_commons), min_duration, max_duration, published_after, published_before,
    detailed (bool), upsampled_suspect (bool: media_quality.upsampled_suspect is / is not true),
    downloaded (bool: true = an original_audio asset exists or status ∈ downloaded|processing|ready; false = the rest),
    is_new (bool), sort (published_at|-published_at|duration|-duration|views|-views|title), limit, offset`
-  → `{items: [MediaSummary], total, facets: {kind: {video: n, short: n}, captions: {manual: n, auto_only: n, none: n, unknown: n}, license: {...}, status: {...},
+  → `{items: [MediaSummary], total, facets: {kind: {video: n, short: n}, captions: {manual: n, auto_only: n, none: n, unknown: n, empty: n}, license: {...}, status: {...},
      downloaded: {yes: n, no: n}, new: n}}` (each facet ignores its own dimension)
+  `captions_empty` media count as `none` (also when YouTube ASR exists) and never as `manual`/`auto_only`/`unknown`;
+  `empty` is the subset of `none` with `captions_empty` (`captions=empty` filters them).
 - `GET /media/{id}` → `MediaDetail`
 - `POST /media/download` `{media_ids?: [...], filter?: <same query object as GET /media>, caption_langs?: ["zh-TW", ...], include_auto: false}`
-  → `{queued: n, skipped: n}`. Either explicit ids or "everything matching filter" (select-all). Media without the
-  required captions are skipped unless include_auto/no-caption allowed (POC: skip when no usable track).
+  → `{queued: n, skipped: n, skipped_reasons: {already_downloaded|members_only|empty_captions|no_usable_captions|not_found: n}}`.
+  Either explicit ids or "everything matching filter" (select-all). Media without the required captions are skipped
+  unless include_auto/no-caption allowed (POC: skip when no usable track); `captions_empty` media are skipped as
+  `empty_captions` unless `include_auto` and the media has YouTube ASR.
+- `POST /media/{id}/recheck-captions` → `Job` (`media.detail {force: true, verify: true}`; an already queued detail
+  job of the media is upgraded to verify and returned). See "Caption verification".
 - `POST /media/{id}/retry` → `Job` (re-run the failed step)
 - `POST /media/{id}/reprocess` `{from_step: "media.quality"|...}` → `Job`
 - `POST /media/{id}/convert-text` (any logged-in user) → `{queued: 0|1}` (0 when nothing is convertible; 409
@@ -336,13 +379,29 @@ media_with_quality}, kind_counts: {video: n, short: n, live?: n, ...}, playlist_
 - `GET /media/{id}/words` → `{words: {segment_id: [[unit, start|null, end|null], ...]}, segments: n,
   status: {aligned|stale|pending|skipped|failed|none: n}, job_active: bool}` — character timing for the media page
   player (only alignments valid for the segment's current text/revision)
+- `GET /media/{id}/speakers` → `[MediaSpeaker]` — the diarized speakers of one media in **label order**
+  (`SPEAKER_00`, `SPEAKER_01`, …; every label of the diarization turns ∪ the active segments' `local_speaker`).
+  `color_index` = position in that list — the same order the timeline speaker lane, the speaker cards and every
+  speaker-coloured highlight use (the UI maps it onto the categorical chart palette `--series-1…8`). Invalid segments
+  are excluded from every number, the profile and the samples (`invalid_count` reports them). `[]` without diarization.
+  `MediaSpeaker = {local_speaker, color_index, segment_count, total_sec (sum of segment durations), diarized_sec
+  (sum of diarization turns), invalid_count, first_sec|null (first segment start), profile: {sex: {label: p},
+  sex_top|null, sex_prob|null, age_mean|null, age_group: {label: p}, emotion: {label: p}, voice_quality: {label: p}
+  (multi-label: mean sigmoid, not normalized), speech_flow: {label: p}, accent_broad: {label: p} (English-only
+  model — reference only)}, profiled_segments, cluster: {id, label, display_name, share}|null (the current-run
+  candidate speaker holding most of this speaker's assigned seconds; `share` = that fraction), sample_segment_ids
+  (≤ 5 representative segments: single-speaker, 2–15 s, highest SNR first; returned in time order)}`.
+  Profile aggregation: one VoiceProfile per segment (current revision; the configured backbone preferred), weighted by
+  segment duration; distributions normalized to sum 1 (sex from `model_versions.sex_probs` when stored, else
+  `sex`/`sex_prob`).
 - `POST /media/{id}/align` `{force?: false}` → `{queued: 0|1}` (0 when the media has no segments)
 - `POST /media/{id}/validate` `{force?: false}` → `{queued: 0|1}` (`media.validate {chain: false}`; 0 without segments)
 - `GET /media/{id}/quality` → `MediaQuality` (all columns) + `details` (passed through as stored; the pipeline stores
   `details.spectrum: [{hz, db}]`, the long-term average spectrum of the original audio, when available)
 
 `MediaSummary = {id, platform, platform_media_id, url, kind, title, thumbnail_url, duration_sec, published_at, view_count,
- license, has_manual_captions, has_auto_captions, manual_caption_langs, auto_caption_langs, status, stage, failure_code,
+ license, has_manual_captions, has_auto_captions, manual_caption_langs, auto_caption_langs,
+ captions_empty: bool (listed CC tracks are all empty), caption_check: metadata.caption_check|null, status, stage, failure_code,
  channel: {id, title}, quality?: {snr_mean, dnsmos_ovrl, real_bandwidth_hz, speech_ratio, sample_rate, upsampled_suspect},
  segment_count, discovered_at (found by a re-listing)|null, is_new (discovered ≤ 7 days ago and still listed/detailed),
  downloaded: bool, invalid_count (active segments with validity invalid), invalid_sec}`
@@ -396,6 +455,9 @@ media_with_quality}, kind_counts: {video: n, short: n, live?: n, ...}, playlist_
 - `GET /audio/segments/{id}?pad=0.3&rev=<revision>` → `audio/wav` cut from normalized audio (supports HEAD).
   `rev` only busts caches: when it equals the segment's current revision the response is cacheable
   (`private, max-age=86400`), otherwise `private, no-cache` (+ `ETag`, `X-Segment-Revision`).
+  `from=<absolute media seconds>` (optional, ≥ 0) starts the clip there instead — "play from this character to the
+  end of the sentence" (karaoke click-to-seek); clamped into `[start − pad, end + pad − 0.05]`. `X-Clip-Start` /
+  `X-Clip-End` give the clip's real bounds (the start is also clamped at 0 s).
 - `GET /audio/media/{id}` → normalized wav, HTTP Range supported (proxied from S3)
 
 ### Speakers (diversity)
@@ -514,7 +576,7 @@ Outcomes visible on `Job` (status / phase / message):
 
 Media / entity state follows the job: a requeued `media.download` puts the media back to `queued`; pipeline steps keep
 `processing` while queued for a retry; a terminal failure/interruption sets the media `failed`/`blocked`
-(`skipped` for `no_usable_captions`), `playlist.list` `listing` → `failed`, a dataset export
+(`skipped` for `no_usable_captions`, `members_only`, `empty_captions` — `queue.SKIP_CODES`), `playlist.list` `listing` → `failed`, a dataset export
 `queued` while waiting and `failed` at the end. `Channel.list_status` follows `channel.list` / `source.resolve`
 (requeued/recovered → `queued`, terminal → `failed`, cancelled → `listed`/`new`; see "Channel listing").
 `media.convert_text`, `media.align` and `media.validate` with `chain: false` never change `Media.status`.

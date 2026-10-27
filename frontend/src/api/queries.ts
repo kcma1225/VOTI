@@ -15,6 +15,7 @@ export const qk = {
   mediaDetail: (id: string) => ['mediaDetail', id] as const,
   timeline: (id: string) => ['timeline', id] as const,
   mediaWords: (id: string) => ['mediaWords', id] as const,
+  mediaSpeakers: (id: string) => ['mediaSpeakers', id] as const,
   mediaSegments: (id: string) => ['segments', 'media', id] as const,
   neighbors: (id: string, q: T.SegmentQuery) => ['neighbors', id, q] as const,
   segments: (q: T.SegmentQuery) => ['segments', q] as const,
@@ -132,6 +133,21 @@ export const useMediaWords = (id: string, enabled = true) =>
   })
 export const useNeighbors = (id: string | undefined, q: T.SegmentQuery) =>
   useQuery({ queryKey: qk.neighbors(id ?? '', q), queryFn: () => api.neighbors(id!, q), enabled: !!id, retry: false, placeholderData: keepPreviousData })
+/** Diarized speakers of a media (cards + colour order). An older API without the endpoint yields []. */
+export const useMediaSpeakers = (id: string, enabled = true) =>
+  useQuery({
+    queryKey: qk.mediaSpeakers(id),
+    queryFn: async () => {
+      try {
+        return await api.mediaSpeakers(id)
+      } catch (e) {
+        if (e instanceof ApiError && (e.status === 404 || e.status === 405)) return [] as T.MediaSpeaker[]
+        throw e
+      }
+    },
+    enabled: enabled && !!id,
+    staleTime: 60_000,
+  })
 export const useTimeline = (id: string, enabled = true) => useQuery({ queryKey: qk.timeline(id), queryFn: () => api.timeline(id), enabled })
 export const useSegments = (q: T.SegmentQuery, enabled = true) =>
   useQuery({ queryKey: qk.segments(q), queryFn: () => api.segments(q), placeholderData: keepPreviousData, enabled })
@@ -209,7 +225,10 @@ export function useSegmentPatch() {
       )
       qc.invalidateQueries({ queryKey: ['timeline', d.media_id] })
       if (v.patch.corrected_text !== undefined) qc.invalidateQueries({ queryKey: qk.mediaWords(d.media_id) })
-      if (v.patch.validity !== undefined) qc.invalidateQueries({ queryKey: qk.mediaDetail(d.media_id) })
+      if (v.patch.validity !== undefined) {
+        qc.invalidateQueries({ queryKey: qk.mediaDetail(d.media_id) })
+        qc.invalidateQueries({ queryKey: qk.mediaSpeakers(d.media_id) })
+      }
     },
   })
 }

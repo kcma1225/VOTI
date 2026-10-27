@@ -67,6 +67,8 @@ MIGRATIONS: tuple[str, ...] = (
     "ALTER TABLE segments ADD COLUMN IF NOT EXISTS align_score DOUBLE PRECISION",
     "ALTER TABLE segments ADD COLUMN IF NOT EXISTS validation JSONB",
     "CREATE INDEX IF NOT EXISTS segments_invalid ON segments (media_id) WHERE validity = 'invalid'",
+    # 2026-10-28: caption verification — a listed CC track whose content is empty (voti.sources.youtube)
+    "ALTER TABLE media ADD COLUMN IF NOT EXISTS captions_empty BOOLEAN NOT NULL DEFAULT false",
 )
 
 

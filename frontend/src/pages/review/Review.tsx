@@ -1,6 +1,6 @@
 import { msgs, t, useT } from '@/i18n'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router'
+import { Link, useLocation, useNavigate, useParams } from 'react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
@@ -44,7 +44,9 @@ import { useSize } from '@/components/charts/charts'
 import { PAD, useSegmentAudio } from './useSegmentAudio'
 import { Waveform } from './Waveform'
 import { KaraokeText, toUnits } from '@/components/domain/karaoke'
-import { LIST_LIMIT, toSegmentQuery, useReviewParams } from './params'
+import { speakerColor, speakerVars, useSpeakerIndex } from '@/components/domain/speaker-color'
+import { LIST_LIMIT, setListReturn, toSegmentQuery, useReviewParams, type ReviewNavState } from './params'
+import { canGoBack } from '@/hooks/useBack'
 
 const NUDGE = 0.05
 
@@ -91,7 +93,7 @@ function MetricChips({ s }: { s: SegmentDetail }) {
   )
 }
 
-function SpeakerPanel({ s }: { s: SegmentDetail }) {
+function SpeakerPanel({ s, speakerIdx }: { s: SegmentDetail; speakerIdx: number | null }) {
   const qc = useQueryClient()
   const [name, setName] = useState('')
   const patch = useSegmentPatch()
@@ -117,7 +119,9 @@ function SpeakerPanel({ s }: { s: SegmentDetail }) {
             <div className="text-[13px] font-medium text-fg-3">{t('process.review.unclustered')}</div>
           )}
           <div className="truncate text-[11px] text-fg-3">
-            {s.speaker?.label ?? '—'} · {t('process.review.inThisVideo')} <span className="font-mono">{s.local_speaker ?? '—'}</span>
+            {s.speaker?.label ?? '—'} · {t('process.review.inThisVideo')}{' '}
+            {speakerIdx != null && <span aria-hidden className="mr-1 inline-block size-2 rounded-full align-middle" style={{ background: speakerColor(speakerIdx) }} />}
+            <span className="font-mono">{s.local_speaker ?? '—'}</span>
           </div>
         </div>
       </div>
@@ -177,7 +181,7 @@ function SimilarPanel({ id }: { id: string }) {
 }
 
 /* ───────────── karaoke line ───────────── */
-function SpokenLine({ s, time, onSeek }: { s: SegmentDetail; time: number | null; onSeek: (abs: number) => void }) {
+function SpokenLine({ s, time, onSeek, speakerIdx }: { s: SegmentDetail; time: number | null; onSeek: (abs: number) => void; speakerIdx: number | null }) {
   const qc = useQueryClient()
   const units = useMemo(() => toUnits(s.words, s.start_sec, s.end_sec), [s.words, s.start_sec, s.end_sec])
   const align = useMutation({
@@ -206,11 +210,11 @@ function SpokenLine({ s, time, onSeek }: { s: SegmentDetail; time: number | null
   }
   return (
     <div className="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-start sm:gap-4">
-      <p className="min-w-0 flex-1 text-[19px] leading-9 tracking-wide break-cjk sm:text-xl sm:leading-9">
+      <p data-spoken-line data-speaker={speakerIdx ?? undefined} style={speakerVars(speakerIdx)} className="min-w-0 flex-1 text-[19px] leading-9 tracking-wide break-cjk sm:text-xl sm:leading-9">
         {units ? (
-          <KaraokeText units={units} time={time} onSeek={onSeek} />
+          <KaraokeText units={units} time={time} onSeek={onSeek} focusable seekLabel={t('process.media.playFrom')} />
         ) : (
-          <span className={cn('rounded-[3px] transition-colors', time != null && time < s.end_sec && 'bg-primary-soft text-primary-soft-fg shadow-[0_0_0_2px_var(--primary-soft)] [box-decoration-break:clone]')}>{s.text}</span>
+          <span className={cn('rounded-[3px] transition-colors', time != null && time < s.end_sec && 'hl-sentence')}>{s.text}</span>
         )}
       </p>
       {units ? (
@@ -268,6 +272,7 @@ export default function Review() {
   const { segmentId = '' } = useParams()
   const { p, sp } = useReviewParams()
   const navigate = useNavigate()
+  const fromList = !!(useLocation().state as ReviewNavState | null)?.fromList
   const query = useMemo(() => toSegmentQuery(p), [sp.toString()]) // eslint-disable-line react-hooks/exhaustive-deps
   const nb = useNeighbors(segmentId, query)
   // fallback when the API has no neighbors endpoint: locate the segment in the list window it was opened from
@@ -284,6 +289,8 @@ export default function Review() {
   const seg = useSegment(segmentId)
   const s = seg.data
   const tl = useTimeline(s?.media_id ?? '', !!s)
+  const spIdx = useSpeakerIndex(s?.media_id)
+  const speakerIdx = s ? spIdx(s.local_speaker) : null
   const patch = useSegmentPatch()
   const audio = useSegmentAudio(s?.id, s?.revision)
   const { resolved } = useTheme()
@@ -320,10 +327,15 @@ export default function Review() {
     const q = n.toString()
     return q ? `?${q}` : ''
   }
-  const open = (id: string | null | undefined) => id && navigate(`/review/${id}${qsFor()}`, { replace: true })
+  // prev/next replace this entry and keep "opened from the list", so "back to list" can step back in history
+  const open = (id: string | null | undefined) => id && navigate(`/review/${id}${qsFor()}`, { replace: true, state: { fromList } satisfies ReviewNavState })
   const backToList = () => {
     const off = nav?.index != null ? Math.floor(nav.index / LIST_LIMIT) * LIST_LIMIT : p.offset
-    navigate(`/review${qsFor({ offset: off ? String(off) : null })}`, { state: { focus: segmentId } })
+    const qs = qsFor({ offset: off ? String(off) : null })
+    if (fromList && canGoBack()) {
+      setListReturn(qs.replace(/^\?/, ''), segmentId)
+      navigate(-1)
+    } else navigate(`/review${qs}`, { replace: !canGoBack(), state: { focus: segmentId } satisfies ReviewNavState })
   }
   const go = (d: 1 | -1) => open(d > 0 ? nav?.next_id : nav?.prev_id)
   const playRegion = () => audio.play(region[0], loop ? null : region[1])
@@ -516,7 +528,7 @@ export default function Review() {
 
             {/* the sentence, highlighted character by character while it plays */}
             <div className="px-4 pt-4 sm:px-5">
-              {s ? <SpokenLine s={s} time={spokenTime} onSeek={(abs) => audio.play(Math.max(0, abs - clipStart), region[1])} /> : <Skeleton className="h-9 w-full" />}
+              {s ? <SpokenLine s={s} time={spokenTime} speakerIdx={speakerIdx} onSeek={(abs) => audio.play(Math.max(0, abs - clipStart), region[1])} /> : <Skeleton className="h-9 w-full" />}
             </div>
 
             <div className="flex gap-3 px-4 pt-7 sm:px-5">
@@ -554,7 +566,7 @@ export default function Review() {
                       activeSegment={s.id}
                       selection={absRegion}
                       playhead={clipStart + audio.time}
-                      onSegmentClick={(id) => id !== s.id && navigate(`/review/${id}${qsFor()}`)}
+                      onSegmentClick={(id) => id !== s.id && open(id)}
                     />
                   </div>
                 )}
@@ -695,7 +707,7 @@ export default function Review() {
           <div className="grid items-start gap-4 md:grid-cols-2 xl:grid-cols-1">
             <Card>
               <CardHeader title={t('process.review.speaker')} icon={<UserRound />} />
-              <CardBody>{s ? <SpeakerPanel s={s} /> : <Skeleton className="h-24" />}</CardBody>
+              <CardBody>{s ? <SpeakerPanel s={s} speakerIdx={speakerIdx} /> : <Skeleton className="h-24" />}</CardBody>
             </Card>
             <Card>
               <CardHeader title={t('process.review.profileTitle')} description={t('process.review.profileDesc')} />

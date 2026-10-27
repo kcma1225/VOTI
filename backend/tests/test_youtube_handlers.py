@@ -188,7 +188,8 @@ def test_detail_single_and_info_json(db, h, monkeypatch):  # noqa: ANN001
     assert job.status == "completed", job.error_message
     db.refresh(m)
     assert m.status == "detailed" and m.detailed_at is not None and m.license == "creative_commons"
-    assert m.has_manual_captions is True and m.manual_caption_langs == ["nan-TW", "zh-TW"]
+    # zh-TW verified (preferred, ok) first, then the unverified nan-TW
+    assert m.has_manual_captions is True and m.manual_caption_langs == ["zh-TW", "nan-TW"]
     assert m.has_auto_captions is False and m.auto_caption_langs == []
     assert m.published_at.year == 2020 and m.metadata_["published_approximate"] is False
     ch = db.get(Channel, m.channel_id)

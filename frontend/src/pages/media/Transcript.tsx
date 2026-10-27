@@ -21,6 +21,7 @@ import { EmptyState, ListSkeleton } from '@/components/ui/states'
 import { ReviewBadge } from '@/components/domain/status'
 import { speakerName } from '@/components/domain/speakers'
 import { KaraokeText, toUnits, useClock, type Unit } from '@/components/domain/karaoke'
+import { SpeakerDot, localSpeakerName, speakerVars, useSpeakerIndex } from '@/components/domain/speaker-color'
 import { ValidityBadge, useValidityActions } from '@/components/domain/validity'
 
 /** rows rendered at first; the rest on demand (long podcasts have 1000+ sentences) */
@@ -87,27 +88,19 @@ function AlignStatus({ mediaId, words }: { mediaId: string; words: MediaWordsRes
   )
 }
 
-/** Sentence text: karaoke when timed units exist, else a sentence-level highlight while active. */
+/** Sentence text: karaoke when timed units exist, else a sentence-level highlight while active (both in the speaker
+ * colour). Timed characters are clickable on every row, playing or not: play this sentence from that character. */
 function SentenceText({ s, units, active, player }: { s: SegmentSummary; units: Unit[] | null; active: boolean; player: Player }) {
   const time = useClock(player.clock, active)
-  if (units) return <KaraokeText units={units} time={time} className="text-[15px] leading-7 break-cjk" />
-  return (
-    <span
-      className={cn(
-        'rounded-[3px] text-[15px] leading-7 break-cjk transition-colors',
-        active && 'bg-primary-soft text-primary-soft-fg shadow-[0_0_0_2px_var(--primary-soft)] [box-decoration-break:clone]',
-      )}
-    >
-      {s.text}
-    </span>
-  )
+  if (units) return <KaraokeText units={units} time={time} onSeek={(at) => player.play(s, at)} className="text-[15px] leading-7 break-cjk" />
+  return <span className={cn('rounded-[3px] text-[15px] leading-7 break-cjk transition-colors', active && 'hl-sentence')}>{s.text}</span>
 }
 
 /** Thin progress line along the bottom of the playing row (sentence-level position). */
 function RowProgress({ s, player }: { s: SegmentSummary; player: Player }) {
   const time = useClock(player.clock, true)
   const p = time == null ? 0 : Math.max(0, Math.min(1, (time - s.start_sec) / Math.max(0.01, s.end_sec - s.start_sec)))
-  return <span aria-hidden className="absolute bottom-0 left-0 h-0.5 bg-primary/70" style={{ width: `${p * 100}%` }} />
+  return <span aria-hidden className="absolute bottom-0 left-0 h-0.5 bg-[var(--spk,var(--primary))]" style={{ width: `${p * 100}%` }} />
 }
 
 export interface RowHandle {
@@ -116,8 +109,8 @@ export interface RowHandle {
 
 const Row = forwardRef<
   RowHandle,
-  { s: SegmentSummary; units: Unit[] | null; player: Player; mediaId: string; onMove: (d: number) => void }
->(function Row({ s, units, player, mediaId, onMove }, ref) {
+  { s: SegmentSummary; units: Unit[] | null; player: Player; mediaId: string; speakerIdx: number | null; onMove: (d: number) => void }
+>(function Row({ s, units, player, mediaId, speakerIdx, onMove }, ref) {
   const t = useT()
   const patch = useSegmentPatch()
   const navigate = useNavigate()
@@ -159,7 +152,8 @@ const Row = forwardRef<
     e.preventDefault()
   }
   const reviewHref = `/review/${s.id}?media=${mediaId}&status=all`
-  const who = s.speaker ? speakerName(s.speaker) : s.local_speaker
+  const who = speakerIdx != null ? (s.speaker?.display_name ? `${localSpeakerName(speakerIdx)} · ${s.speaker.display_name}` : localSpeakerName(speakerIdx)) : s.speaker ? speakerName(s.speaker) : null
+  const whoTitle = [s.local_speaker, s.speaker ? speakerName(s.speaker) : null].filter(Boolean).join(' · ')
 
   return (
     <div
@@ -167,6 +161,8 @@ const Row = forwardRef<
       id={`seg-${s.id}`}
       data-seg-row
       data-invalid={invalid || undefined}
+      data-speaker={speakerIdx ?? undefined}
+      style={speakerVars(speakerIdx)}
       tabIndex={0}
       aria-label={`${fmtTimestamp(s.start_sec)} ${s.text}`}
       aria-keyshortcuts="Space 1 2 3 E"
@@ -175,7 +171,7 @@ const Row = forwardRef<
       className={cn(
         'group relative flex min-w-0 cursor-pointer gap-3 px-3 py-2.5 outline-none transition-colors sm:px-5',
         'focus-visible:bg-surface-2/70 focus-visible:shadow-[inset_3px_0_0_var(--ring)]',
-        active ? 'bg-primary-soft/40 shadow-[inset_3px_0_0_var(--primary)]' : invalid ? 'bg-surface-2/40 shadow-[inset_3px_0_0_var(--danger)] hover:bg-surface-2/70' : 'hover:bg-surface-2/60',
+        active ? 'hl-row-active' : invalid ? 'bg-surface-2/40 shadow-[inset_3px_0_0_var(--danger)] hover:bg-surface-2/70' : 'hover:bg-surface-2/60',
         editing && 'cursor-default',
       )}
     >
@@ -233,7 +229,7 @@ const Row = forwardRef<
         )}
         <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-fg-3">
           <ValidityBadge s={s} className="text-[11px]" />
-          {who && <span className="max-w-40 truncate">{who}</span>}
+          {who && (speakerIdx != null ? <SpeakerDot index={speakerIdx} label={who} title={whoTitle} className="max-w-48" /> : <span className="max-w-40 truncate">{who}</span>)}
           <span className="tabular">{fmtSec(s.duration)}</span>
           {s.corrected_text && <Tag className="border-success/30 text-success-fg">{textSource.human_revision}</Tag>}
           {s.flags.map((f) => (
@@ -354,6 +350,7 @@ export function TranscriptCard({
   const [shown, setShown] = useState(STEP)
   const segs = useMediaSegments(mediaId)
   const words = useMediaWords(mediaId, !!segs.data?.total)
+  const spIdx = useSpeakerIndex(mediaId)
   const items = segs.data?.items ?? []
   const invalidCount = items.filter((x) => x.validity === 'invalid').length
   const all = onlyInvalid ? items.filter((x) => x.validity === 'invalid') : items
@@ -426,6 +423,7 @@ export function TranscriptCard({
                   units={toUnits(words.data?.words[s.id], s.start_sec, s.end_sec)}
                   player={player}
                   mediaId={mediaId}
+                  speakerIdx={spIdx(s.local_speaker)}
                   onMove={(d) => move(i, d)}
                 />
               ))}

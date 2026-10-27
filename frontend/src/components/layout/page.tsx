@@ -1,8 +1,8 @@
 import { useEffect, type ReactNode } from 'react'
 import { Link } from 'react-router'
-import { ChevronLeft } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { t } from '@/i18n'
+import { useBackClick } from '@/hooks/useBack'
 
 export function Page({ children, className, wide }: { children: ReactNode; className?: string; wide?: boolean }) {
   return (
@@ -16,6 +16,24 @@ export function useTitle(title: string | undefined) {
   useEffect(() => {
     document.title = title ? `${title} · ${t('common.brand.name')}` : t('common.brand.name')
   }, [title])
+}
+
+/** "‹ parent" control: goes back in history when the previous entry is in-app, else to `to` (replacing the current
+ * entry). Keeps a real href for open-in-new-tab. */
+export function BackLink({ to, children, className, 'data-shot': shot }: { to: string; children: ReactNode; className?: string; 'data-shot'?: string }) {
+  const onClick = useBackClick()
+  return (
+    <Link
+      to={to}
+      replace
+      onClick={onClick}
+      data-back
+      data-shot={shot}
+      className={cn('-ml-1 mb-3 inline-flex h-8 max-w-full items-center gap-1 rounded-md pl-0.5 pr-2 text-[13px] text-fg-3 transition-colors hover:bg-surface-2 hover:text-fg', className)}
+    >
+      <span className="truncate">‹ {children}</span>
+    </Link>
+  )
 }
 
 export function PageHeader({
@@ -39,13 +57,9 @@ export function PageHeader({
   return (
     <header className={cn('mb-5 sm:mb-6', className)}>
       {back && (
-        <Link
-          to={back.to}
-          className="-ml-1 mb-2 inline-flex h-8 items-center gap-1 rounded-md pl-0.5 pr-2 text-[13px] text-fg-3 transition-colors hover:bg-surface-2 hover:text-fg"
-        >
-          <ChevronLeft className="size-4" />
+        <BackLink to={back.to} className="mb-2">
           {back.label}
-        </Link>
+        </BackLink>
       )}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between sm:gap-6">
         <div className="min-w-0">

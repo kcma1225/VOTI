@@ -432,7 +432,7 @@ export function buildDB(): DB {
       { id: r.uuid(), username: 'yating', display_name: '張雅婷', role: 'annotator', is_active: false, created_at: iso(NOW - 200 * DAY), last_login_at: iso(NOW - 80 * DAY), password: 'voti' },
     ],
     settings: {
-      youtube: { rate_limit_kbps: 0, sleep_between_downloads_sec: 5, sleep_between_requests_sec: 2, max_concurrent_downloads: 1, cookies_enabled: false, auto_refresh_hours: 12 },
+      youtube: { rate_limit_kbps: 0, sleep_between_downloads_sec: 5, sleep_between_requests_sec: 2, max_concurrent_downloads: 1, cookies_enabled: false, auto_refresh_hours: 12, verify_captions: true },
       pipeline: { voxprofile_backbone: 'whisper-large-v3', diarization_enabled: true, segment_min_sec: 1.0, segment_max_sec: 20.0, edge_pad_sec: 0.1 },
       quality_thresholds: { low_speech_ratio: 0.5, low_snr_db: 10, clipping_ratio: 0.001 },
       text: { convert_simplified: true, opencc_config: 's2twp' },
@@ -679,6 +679,27 @@ export function buildDB(): DB {
       const fresh = mine.filter((m) => m.status === 'listed' || m.status === 'detailed').slice(0, ci === 0 ? 3 : 2)
       fresh.forEach((m) => (m.is_new = true))
       c.counts.new = fresh.length
+    }
+    // every media status (incl. members-only) on the first page of the first channel: status-badge screenshots
+    if (ci === 0) {
+      const pool = mine.filter((m) => (m.status === 'listed' || m.status === 'detailed') && !m.is_new && (m.has_manual_captions === true || m.has_auto_captions !== true)).slice(2, 11)
+      const demo: [T.MediaStatus, string | null, string | null][] = [
+        ['skipped', 'members_only', null], ['blocked', 'bot_check', 'media.download'], ['skipped', 'no_usable_captions', null], ['queued', null, null],
+        ['downloading', null, 'media.download'], ['downloaded', null, null], ['processing', null, 'media.diarize'], ['failed', 'download_forbidden', 'media.download'],
+        ['skipped', 'empty_captions', null],
+      ]
+      pool.forEach((m, k) => {
+        const [st, code, stage] = demo[k]
+        Object.assign(m, { status: st, failure_code: code, stage })
+        // YouTube listed an uploader track whose content turned out empty
+        if (code === 'empty_captions')
+          Object.assign(m, {
+            has_manual_captions: true,
+            manual_caption_langs: [],
+            captions_empty: true,
+            caption_check: { checked_at: iso(NOW - DAY), source: 'detail', tracks: { 'zh-TW': { status: 'empty', cues: 2, speech_cues: 0, chars: 0, format: 'vtt' } }, usable_langs: [] },
+          })
+      })
     }
   })
   channels[0].detail_progress = { detailed: channels[0].counts.detailed, total: channels[0].counts.listed, active: true }

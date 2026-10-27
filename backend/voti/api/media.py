@@ -18,13 +18,13 @@ from .. import storage
 from ..auth import current_user
 from ..db import get_session
 from ..models import (Cue, DiarizationTurn, Job, Media, MediaQuality, PlaylistItem, RepeatedRegion, Segment,
-                      SpeechRegion, Track, User, WordAlignment)
+                      Speaker, SpeakerAssignment, SpeechRegion, Track, User, VoiceProfile, WordAlignment)
 from .. import textconv
 from ..queue import PIPELINE, enqueue, is_side_job, requeue
 from . import schemas as S
 from .errors import ApiError
 from .views import (Paging, _media_base, downloaded_condition, get_or_404, job_out, job_outs, media_summaries,
-                    new_condition, paging, segment_summaries)
+                    current_run_id, new_condition, paging, segment_summaries)
 
 log = logging.getLogger("voti.api.media")
 router = APIRouter(prefix="/media", tags=["media"])
@@ -36,7 +36,7 @@ MEDIA_SORTS = {
     "title": Media.title.asc(), "-title": Media.title.desc(),
     "created_at": Media.created_at.asc(), "-created_at": Media.created_at.desc(),
 }
-CAPTION_CHOICES = ("manual", "auto", "any", "none")
+CAPTION_CHOICES = ("manual", "auto", "any", "none", "empty")
 TIMELINE_MAX_POINTS = 2000
 
 
@@ -93,7 +93,7 @@ def media_filter_query(
         channel_id: uuid.UUID | None = None, playlist_id: uuid.UUID | None = None, q: str | None = None,
         kind: str | None = Query(None, description="comma list: video,short,live"),
         status: str | None = Query(None, description="comma list"),
-        captions: str | None = Query(None, description="manual|auto|any|none"), include_auto: bool = False,
+        captions: str | None = Query(None, description="manual|auto|any|none|empty"), include_auto: bool = False,
         caption_lang: str | None = None, license: str | None = None,  # noqa: A002
         min_duration: float | None = None, max_duration: float | None = None,
         published_after: datetime | None = None, published_before: datetime | None = None,
@@ -110,10 +110,14 @@ def media_filter_query(
         raise ApiError(422, "invalid_filter", f"篩選條件不正確：{e}") from None
 
 
-_manual = Media.has_manual_captions.is_(True)
-_auto_only = and_(Media.has_manual_captions.is_(False), Media.has_auto_captions.is_(True))
-_no_captions = and_(Media.has_manual_captions.is_(False), func.coalesce(Media.has_auto_captions, False).is_(False))
-_unknown_captions = Media.has_manual_captions.is_(None)
+# captions_empty (YouTube listed CC tracks that turned out empty) counts as "no captions", never as manual or
+# auto-only, even when YouTube ASR exists; `empty` is the subset of `none` with captions_empty.
+_empty = Media.captions_empty.is_(True)
+_manual = and_(Media.has_manual_captions.is_(True), ~_empty)
+_auto_only = and_(Media.has_manual_captions.is_(False), Media.has_auto_captions.is_(True), ~_empty)
+_no_captions = or_(and_(Media.has_manual_captions.is_(False),
+                        func.coalesce(Media.has_auto_captions, False).is_(False)), _empty)
+_unknown_captions = and_(Media.has_manual_captions.is_(None), ~_empty)
 
 
 def media_conditions(f: MediaFilter, skip: frozenset[str] | set[str] = frozenset()) -> list:
@@ -139,6 +143,8 @@ def media_conditions(f: MediaFilter, skip: frozenset[str] | set[str] = frozenset
             c.append(or_(_manual, Media.has_auto_captions.is_(True)))
         elif f.captions == "none":
             c.append(_no_captions)
+        elif f.captions == "empty":
+            c.append(_empty)
         # auto-caption-only media are hidden by default
         if not f.include_auto and f.captions not in ("auto", "any"):
             c.append(~_auto_only)
@@ -194,13 +200,15 @@ def media_facets(s: Session, f: MediaFilter) -> S.MediaFacets:
 
     cap_where = _where(media_conditions(f, {"captions"}))
     row = s.execute(select(func.count().filter(_manual), func.count().filter(_auto_only),
-                           func.count().filter(_no_captions), func.count().filter(_unknown_captions))
+                           func.count().filter(_no_captions), func.count().filter(_unknown_captions),
+                           func.count().filter(_empty))
                     .where(cap_where)).one()
     dl = s.execute(select(func.count().filter(downloaded_condition()), func.count())
                    .where(_where(media_conditions(f, {"downloaded"})))).one()
     new = s.scalar(select(func.count()).where(_where(media_conditions(f, {"is_new"})), new_condition())) or 0
     return S.MediaFacets(kind=grouped(Media.kind, {"kind"}),
-                         captions={"manual": row[0], "auto_only": row[1], "none": row[2], "unknown": row[3]},
+                         captions={"manual": row[0], "auto_only": row[1], "none": row[2], "unknown": row[3],
+                                   "empty": row[4]},
                          license=grouped(Media.license, {"license"}), status=grouped(Media.status, {"status"}),
                          downloaded={"yes": dl[0], "no": dl[1] - dl[0]}, new=new)
 
@@ -264,6 +272,9 @@ def download(body: DownloadIn, user: User = Depends(current_user), s: Session = 
         if m.failure_code == "members_only" or (m.availability or "") in ("subscriber_only", "premium_only"):
             reasons["members_only"] = reasons.get("members_only", 0) + 1
             continue
+        if m.captions_empty and not (body.include_auto and m.has_auto_captions):
+            reasons["empty_captions"] = reasons.get("empty_captions", 0) + 1
+            continue
         if _usable_captions(m, body.caption_langs, body.include_auto) is False:
             reasons["no_usable_captions"] = reasons.get("no_usable_captions", 0) + 1
             continue
@@ -311,6 +322,25 @@ def media_detail(media_id: uuid.UUID, _: User = Depends(current_user), s: Sessio
         text_convertible=any(textconv.convertible(t.language, s2t.get(t.id)) for t in tracks),
         text_conversion=(m.metadata_ or {}).get("text_conversion"), validity_counts=validity_counts,
         validation_job_active=validating)
+
+
+RECHECK_PAYLOAD = {"force": True, "verify": True}
+
+
+@router.post("/{media_id}/recheck-captions", response_model=S.JobOut)
+def recheck_captions(media_id: uuid.UUID, user: User = Depends(current_user), s: Session = Depends(get_session)):
+    """Re-fetch metadata and re-verify the caption tracks now (media.detail {force, verify}). Downloaded /
+    processed media keep their status; a media skipped for empty_captions returns to `detailed` when a track is
+    usable now."""
+    m = get_or_404(s, Media, media_id, "影片")
+    if m.platform != "youtube":
+        raise ApiError(409, "unsupported_platform", "只有 YouTube 影片可以重新檢查字幕")
+    job = enqueue(s, "media.detail", media_id=m.id, channel_id=m.channel_id, payload=dict(RECHECK_PAYLOAD),
+                  created_by=user.id)
+    if job.status == "queued" and not all((job.payload or {}).get(k) for k in RECHECK_PAYLOAD):
+        job.payload = {**(job.payload or {}), **RECHECK_PAYLOAD}  # an already queued plain detail job
+    s.commit()
+    return job_out(s, job)
 
 
 RETRYABLE = ("failed", "blocked", "interrupted", "cancelled")
@@ -461,6 +491,157 @@ def media_segments(media_id: uuid.UUID, _: User = Depends(current_user), s: Sess
     segs = s.scalars(select(Segment).where(Segment.media_id == m.id, Segment.active.is_(True))
                      .order_by(Segment.start_sec, Segment.id)).all()
     return S.Page[S.SegmentSummary](items=segment_summaries(s, segs), total=len(segs))
+
+
+# ───────────────────────────── speakers of one media ─────────────────────────────
+
+SAMPLE_SEGMENTS = 5
+
+
+def _probs(d) -> dict[str, float]:  # noqa: ANN001
+    """Vox-Profile trait {"label", "probs": {...}} (or a flat {label: p}) → {label: p}."""
+    if not isinstance(d, dict) or not d:
+        return {}
+    src = d["probs"] if isinstance(d.get("probs"), dict) else d
+    return {str(k): float(v) for k, v in src.items() if isinstance(v, (int, float)) and not isinstance(v, bool)}
+
+
+def _norm(acc: dict[str, float]) -> dict[str, float]:
+    tot = sum(v for v in acc.values() if v > 0)
+    if tot <= 0:
+        return {}
+    return {k: round(v / tot, 4) for k, v in sorted(acc.items(), key=lambda kv: -kv[1]) if v > 0}
+
+
+def aggregate_media_profile(items: list[tuple[float, VoiceProfile]]) -> S.MediaSpeakerProfile:
+    """Duration-weighted aggregate of per-segment VoiceProfile rows (one per segment)."""
+    sex: dict[str, float] = {}
+    age_group: dict[str, float] = {}
+    dists: dict[str, dict[str, float]] = {"emotion": {}, "speech_flow": {}, "accent_broad": {}}
+    vq: dict[str, float] = {}
+    vq_w: dict[str, float] = {}
+    age_sum = age_w = 0.0
+    for w, p in items:
+        w = max(float(w), 1e-3)
+        sp = (p.model_versions or {}).get("sex_probs")
+        sp = _probs(sp) if isinstance(sp, dict) else {}
+        if sp:
+            tot = sum(sp.values()) or 1.0
+            for k, v in sp.items():
+                sex[k] = sex.get(k, 0.0) + w * v / tot
+        elif p.sex:
+            if p.sex_prob is not None and p.sex in ("male", "female"):
+                other = "female" if p.sex == "male" else "male"
+                sex[p.sex] = sex.get(p.sex, 0.0) + w * p.sex_prob
+                sex[other] = sex.get(other, 0.0) + w * (1 - p.sex_prob)
+            else:
+                sex[p.sex] = sex.get(p.sex, 0.0) + w
+        if p.age is not None:
+            age_sum += w * p.age
+            age_w += w
+        if p.age_group:
+            age_group[p.age_group] = age_group.get(p.age_group, 0.0) + w
+        for f, acc in dists.items():
+            probs = _probs(getattr(p, f))
+            tot = sum(v for v in probs.values() if v > 0)
+            for k, v in probs.items():
+                if v > 0 and tot > 0:
+                    acc[k] = acc.get(k, 0.0) + w * v / tot
+        for k, v in _probs(p.voice_quality).items():
+            vq[k] = vq.get(k, 0.0) + w * v
+            vq_w[k] = vq_w.get(k, 0.0) + w
+    sex_n = _norm(sex)
+    top = next(iter(sex_n.items()), None)
+    return S.MediaSpeakerProfile(
+        sex=sex_n, sex_top=top[0] if top else None, sex_prob=top[1] if top else None,
+        age_mean=round(age_sum / age_w, 2) if age_w else None, age_group=_norm(age_group),
+        emotion=_norm(dists["emotion"]),
+        voice_quality={k: round(vq[k] / vq_w[k], 4) for k in sorted(vq, key=lambda k: -(vq[k] / vq_w[k]))},
+        speech_flow=_norm(dists["speech_flow"]), accent_broad=_norm(dists["accent_broad"]))
+
+
+def media_speaker_labels(s: Session, media_id: uuid.UUID) -> list[str]:
+    """Every diarization label of a media (turns ∪ segment local_speaker) in label order — the colour order of the
+    timeline speaker lane, speaker cards and transcript highlights."""
+    labels = set(s.scalars(select(DiarizationTurn.local_speaker).where(DiarizationTurn.media_id == media_id)
+                           .distinct()).all())
+    labels |= set(s.scalars(select(Segment.local_speaker).where(Segment.media_id == media_id,
+                                                               Segment.active.is_(True),
+                                                               Segment.local_speaker.isnot(None)).distinct()).all())
+    return sorted(x for x in labels if x)
+
+
+@router.get("/{media_id}/speakers", response_model=list[S.MediaSpeaker])
+def media_speakers(media_id: uuid.UUID, _: User = Depends(current_user), s: Session = Depends(get_session)):
+    """The diarized speakers of one media (SPEAKER_00, …) with speaking time, segment counts, aggregated
+    Vox-Profile estimates, the cross-video candidate speaker (cluster) their segments are assigned to and a few
+    representative segments. Invalid segments (validity = invalid) are excluded from every number."""
+    from .settings import get_setting
+    m = get_or_404(s, Media, media_id, "影片")
+    labels = media_speaker_labels(s, m.id)
+    if not labels:
+        return []
+    diar: dict[str, float] = {}
+    for lab, sec in s.execute(select(DiarizationTurn.local_speaker,
+                                     func.sum(DiarizationTurn.end_sec - DiarizationTurn.start_sec))
+                              .where(DiarizationTurn.media_id == m.id).group_by(DiarizationTurn.local_speaker)):
+        diar[lab] = float(sec or 0)
+    segs = s.scalars(select(Segment).where(Segment.media_id == m.id, Segment.active.is_(True),
+                                           Segment.local_speaker.isnot(None))
+                     .order_by(Segment.start_sec, Segment.id)).all()
+    valid = [g for g in segs if g.validity != "invalid"]
+    ids = [g.id for g in valid]
+    backbone = get_setting(s, "pipeline").voxprofile_backbone
+    profiles: dict[uuid.UUID, VoiceProfile] = {}
+    if ids:
+        rev = {g.id: g.revision for g in valid}
+        for vp in s.scalars(select(VoiceProfile).where(VoiceProfile.segment_id.in_(ids))
+                            .order_by(VoiceProfile.created_at)):
+            if vp.revision != rev.get(vp.segment_id):
+                continue
+            cur = profiles.get(vp.segment_id)
+            if cur is None or vp.backbone == backbone or cur.backbone != backbone:
+                profiles[vp.segment_id] = vp
+    clusters: dict[uuid.UUID, tuple[uuid.UUID, str, str | None]] = {}
+    run_id = current_run_id(s)
+    if run_id and ids:
+        for seg_id, sp_id, label, dn in s.execute(
+                select(SpeakerAssignment.segment_id, Speaker.id, Speaker.label, Speaker.display_name)
+                .join(Speaker, Speaker.id == SpeakerAssignment.speaker_id)
+                .where(SpeakerAssignment.run_id == run_id, SpeakerAssignment.segment_id.in_(ids))):
+            clusters[seg_id] = (sp_id, label, dn)
+    out = []
+    for i, lab in enumerate(labels):
+        mine = [g for g in valid if g.local_speaker == lab]
+        dur = {g.id: max(0.0, g.end_sec - g.start_sec) for g in mine}
+        items = [(dur[g.id], profiles[g.id]) for g in mine if g.id in profiles]
+        by_cluster: dict[uuid.UUID, float] = {}
+        meta: dict[uuid.UUID, tuple[str, str | None]] = {}
+        for g in mine:
+            c = clusters.get(g.id)
+            if c:
+                by_cluster[c[0]] = by_cluster.get(c[0], 0.0) + dur[g.id]
+                meta[c[0]] = (c[1], c[2])
+        cluster = None
+        if by_cluster:
+            cid = max(by_cluster, key=lambda k: by_cluster[k])
+            cluster = S.MediaSpeakerCluster(id=cid, label=meta[cid][0], display_name=meta[cid][1],
+                                            share=round(by_cluster[cid] / (sum(by_cluster.values()) or 1), 4))
+
+        # representative: single-speaker, 2–15 s, cleanest first; shown in time order
+        def rank(g: Segment) -> tuple:
+            d = dur[g.id]
+            return (g.speaker_state != "single", not (2.0 <= d <= 15.0), g.id not in profiles,
+                    -(g.snr if g.snr is not None else -99.0), -d)
+        samples = sorted(sorted(mine, key=rank)[:SAMPLE_SEGMENTS], key=lambda g: g.start_sec)
+        first = next((g.start_sec for g in segs if g.local_speaker == lab), None)
+        out.append(S.MediaSpeaker(
+            local_speaker=lab, color_index=i, segment_count=len(mine), total_sec=round(sum(dur.values()), 3),
+            diarized_sec=round(diar.get(lab, 0.0), 3),
+            invalid_count=sum(1 for g in segs if g.local_speaker == lab and g.validity == "invalid"),
+            first_sec=first, profile=aggregate_media_profile(items), profiled_segments=len(items), cluster=cluster,
+            sample_segment_ids=[g.id for g in samples]))
+    return out
 
 
 @router.get("/{media_id}/words", response_model=S.MediaWords)

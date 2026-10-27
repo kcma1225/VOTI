@@ -4,17 +4,17 @@ import { DownloadDialog } from '@/components/domain/media-browser'
 import { Link, useParams } from 'react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { AlertTriangle, AudioWaveform, Check, ChevronDown, ExternalLink, Languages, Loader2, Minus, RotateCw, ShieldCheck, ShieldX, X, ZoomIn, ZoomOut, Download } from 'lucide-react'
+import { AlertTriangle, AudioWaveform, CaptionsOff, Check, ChevronDown, ExternalLink, Languages, Loader2, Minus, RotateCw, ShieldCheck, ShieldX, X, ZoomIn, ZoomOut, Download } from 'lucide-react'
 import { api } from '@/api/client'
 import { onErr, qk, useMediaDetail, useTimeline } from '@/api/queries'
 import type { Job, MediaDetail as TMedia, MediaQuality, Track } from '@/api/types'
 import { fmtClock, fmtCompact, fmtDate, fmtDateTime, fmtDb, fmtInt, fmtKHz, fmtMos, fmtPct } from '@/lib/format'
 import { jobKind, lang, licenseLabel, pipelineSteps, trackScript } from '@/lib/labels'
 import { cn } from '@/lib/cn'
-import { Page, useTitle } from '@/components/layout/page'
+import { BackLink, Page, useTitle } from '@/components/layout/page'
 import { Button } from '@/components/ui/button'
 import { Badge, Card, CardBody, CardHeader, DescList, Skeleton, Tag, Thumb } from '@/components/ui/primitives'
-import { Menu, MenuContent, MenuItem, MenuLabel, MenuTrigger, Tooltip } from '@/components/ui/overlay'
+import { Menu, MenuContent, MenuItem, MenuLabel, MenuSeparator, MenuTrigger, Tooltip } from '@/components/ui/overlay'
 import { EmptyState, ErrorState } from '@/components/ui/states'
 import { CaptionBadges, MediaStatusBadge } from '@/components/domain/status'
 import { JobRow } from '@/components/domain/job-row'
@@ -23,6 +23,7 @@ import { LaneLabels, Lanes, lanesHeight, SpeakerLegend, type LaneKey } from '@/c
 import { useSize } from '@/components/charts/charts'
 import { useSentencePlayer } from '@/hooks/useSentencePlayer'
 import { TranscriptCard } from './media/Transcript'
+import { SpeakersCard } from './media/Speakers'
 
 function Stepper({ m }: { m: TMedia }) {
   const byKind = new Map<string, Job>()
@@ -266,6 +267,15 @@ export default function MediaDetail() {
     },
     onError: onErr,
   })
+  const recheck = useMutation({
+    mutationFn: () => api.recheckMediaCaptions(id),
+    onSuccess: () => {
+      toast.success(t('process.media.recheckQueued'))
+      qc.invalidateQueries({ queryKey: qk.mediaDetail(id) })
+      qc.invalidateQueries({ queryKey: ['media'] })
+    },
+    onError: onErr,
+  })
   const [onlyInvalid, setOnlyInvalid] = useState(false)
   const player = useSentencePlayer()
   const focus = useMemo(() => Number(new URLSearchParams(location.search).get('t')) || undefined, [])
@@ -294,14 +304,13 @@ export default function MediaDetail() {
 
   const hasPipeline = !['listed', 'detailed', 'skipped', 'blocked'].includes(m.status)
   const membersOnly = m.failure_code === 'members_only'
-  const canDownload = !membersOnly && ['listed', 'detailed', 'skipped', 'blocked', 'failed'].includes(m.status) && !m.jobs.some((j) => j.kind !== 'media.download' && ['queued', 'running'].includes(j.status)) && m.segment_count === 0
+  // caption re-check: a button before processing (listed/detailed/skipped/blocked), else in the ⋯ menu
+  const recheckAsButton = ['listed', 'detailed', 'skipped', 'blocked'].includes(m.status)
+  const recheckActive = m.jobs.some((j) => j.kind === 'media.detail' && (j.status === 'queued' || j.status === 'running'))
+  const canDownload = !membersOnly && m.failure_code !== 'empty_captions' && ['listed', 'detailed', 'skipped', 'blocked', 'failed'].includes(m.status) && !m.jobs.some((j) => j.kind !== 'media.download' && ['queued', 'running'].includes(j.status)) && m.segment_count === 0
   return (
     <Page wide>
-      {m.channel && (
-        <Link to={`/channels/${m.channel.id}`} className="-ml-1 mb-3 inline-flex h-8 max-w-full items-center gap-1 rounded-md pl-0.5 pr-2 text-[13px] text-fg-3 hover:bg-surface-2 hover:text-fg">
-          <span className="truncate">‹ {m.channel.title}</span>
-        </Link>
-      )}
+      {m.channel ? <BackLink to={`/channels/${m.channel.id}`}>{m.channel.title}</BackLink> : <BackLink to="/channels">{t('common.back')}</BackLink>}
       <div className="flex flex-col gap-4 md:flex-row md:items-start">
         <Thumb src={m.thumbnail_url} seed={m.id} className={cn('rounded-xl', m.kind === 'short' ? 'aspect-[9/16] w-28 md:w-36' : 'aspect-video w-44 md:w-56')}>
           <span className="absolute bottom-1.5 right-1.5 rounded bg-black/70 px-1.5 text-xs font-medium leading-5 text-white tabular">{fmtClock(m.duration_sec)}</span>
@@ -314,7 +323,7 @@ export default function MediaDetail() {
             <span>{t('process.media.views', fmtCompact(m.view_count))}</span>
             <span>{licenseLabel[m.license ?? 'youtube']}</span>
             {m.kind === 'short' && <Tag>Shorts</Tag>}
-            <CaptionBadges manual={m.has_manual_captions} auto={m.has_auto_captions} manualLangs={m.manual_caption_langs} autoLangs={m.auto_caption_langs} />
+            <CaptionBadges empty={m.captions_empty} check={m.caption_check} manual={m.has_manual_captions} auto={m.has_auto_captions} manualLangs={m.manual_caption_langs} autoLangs={m.auto_caption_langs} />
             {m.text_converted && (
               <Tooltip content={t('process.media.s2tTip', m.text_conversion?.cues_converted ?? m.tracks.reduce((a, x) => a + (x.cues_converted ?? 0), 0))}>
                 <Badge tone="info">
@@ -354,6 +363,11 @@ export default function MediaDetail() {
                 <Languages /> {t('process.media.s2tConvert')}
               </Button>
             )}
+            {recheckAsButton && (
+              <Button onClick={() => recheck.mutate()} loading={recheck.isPending || recheckActive} data-shot="recheck-captions">
+                <CaptionsOff /> {t('process.media.recheckCaptions')}
+              </Button>
+            )}
             {m.segment_count > 0 && (
               <Button onClick={() => validate.mutate()} loading={validate.isPending || !!m.validation_job_active}>
                 <ShieldCheck /> {m.validation_job_active ? t('validate.validating') : t('validate.revalidate')}
@@ -373,6 +387,14 @@ export default function MediaDetail() {
                       {jobKind[s.kind]}
                     </MenuItem>
                   ))}
+                  {!recheckAsButton && (
+                    <>
+                      <MenuSeparator />
+                      <MenuItem icon={<CaptionsOff />} onSelect={() => recheck.mutate()}>
+                        {t('process.media.recheckCaptions')}
+                      </MenuItem>
+                    </>
+                  )}
                 </MenuContent>
               </Menu>
             )}
@@ -408,7 +430,8 @@ export default function MediaDetail() {
         <div className="min-w-0 space-y-4">
           {m.status === 'ready' || m.segment_count > 0 ? (
             <>
-              <TimelineCard id={m.id} focus={focus} onSegment={player.play} />
+              <TimelineCard id={m.id} focus={focus} onSegment={(seg) => player.play(seg)} />
+              <SpeakersCard mediaId={m.id} player={player} />
               <div id="transcript" className="scroll-mt-4">
                 <TranscriptCard mediaId={m.id} player={player} focusId={player.id} onlyInvalid={onlyInvalid} onOnlyInvalid={setOnlyInvalid} />
               </div>
@@ -418,7 +441,7 @@ export default function MediaDetail() {
               <EmptyState
                 icon={hasPipeline ? <Loader2 className="animate-spin" /> : <Minus />}
                 title={hasPipeline ? (m.status === 'failed' ? t('process.media.stoppedMidway') : t('process.media.processing')) : t('process.media.notDownloaded')}
-                description={hasPipeline ? t('process.media.processingDesc') : membersOnly ? t('process.media.notDownloadableDesc') : t('process.media.notDownloadedDesc')}
+                description={hasPipeline ? t('process.media.processingDesc') : membersOnly ? t('process.media.notDownloadableDesc') : m.failure_code === 'empty_captions' ? t('labels.emptyCaptionsHint') : t('process.media.notDownloadedDesc')}
                 action={
                   canDownload && !hasPipeline ? (
                     <Button variant="primary" onClick={() => setDlOpen(true)}>

@@ -15,6 +15,18 @@ media.detail modes (payload / ids)
                                          itself while more remain
   Listing enqueues ONE chained detail job per channel/playlist (not one per video) so user-triggered
   downloads are not stuck behind thousands of queued detail jobs in the FIFO detail queue.
+  payload {"force": true, "verify": true} (caption re-check, POST /media/{id}/recheck-captions and
+  /channels/{id}/recheck-captions): re-fetch metadata and re-verify captions even when detailed before.
+  "verify" overrides settings.youtube.verify_captions. A re-detail never moves downloaded/processed media:
+  status only changes for listed / failed / blocked → detailed and skipped(empty_captions) → detailed.
+
+Caption verification (settings.youtube.verify_captions, default on)
+  YouTube metadata sometimes lists an uploader caption track that is empty or 404s. media.detail fetches the
+  preferred manual track (yt.verify_captions: caption_rank order, next track while empty, ≤3 fetches,
+  `sleep_subtitles_sec` apart) and stores Media.metadata["caption_check"]. has_manual_captions /
+  manual_caption_langs / captions_empty follow yt.caption_state. media.download classifies every fetched track
+  again: empty ones are dropped; when nothing usable is left it stops before the audio download with
+  failure_code `empty_captions` (media `skipped`).
 """
 from __future__ import annotations
 
@@ -47,7 +59,9 @@ YT_DEFAULTS = {"rate_limit_kbps": 0, "sleep_between_downloads_sec": 5, "max_conc
                # re-list every channel this often to find new videos (voti.scheduler); 0 disables
                "auto_refresh_hours": 24,
                # optional (not in the admin form yet): spacing between listing/detail job starts
-               "sleep_between_requests_sec": 2.0}
+               "sleep_between_requests_sec": 2.0,
+               # media.detail fetches the preferred manual caption track (≤3 tracks) to confirm it is not empty
+               "verify_captions": True}
 DETAIL_BATCH = 20
 PRE_DOWNLOAD_STATUSES = ("listed", "detailed", "failed", "blocked", "skipped")
 
@@ -331,7 +345,21 @@ def mark_if_members_only(m: Media) -> bool:
     return True
 
 
-def apply_detail(s, m: Media, d: dict, ctx: JobContext | None = None) -> None:
+def apply_caption_state(m: Media) -> dict:
+    """has_manual_captions / manual_caption_langs / captions_empty from the listed manual tracks
+    (metadata.caption_tracks) and the stored verification (metadata.caption_check)."""
+    meta = m.metadata_ or {}
+    manual = list(((meta.get("caption_tracks") or {}).get("manual") or {}))
+    st = yt.caption_state(manual, meta.get("caption_check"))
+    m.has_manual_captions = st["has_manual_captions"]
+    m.manual_caption_langs = [str(x)[:16] for x in st["manual_caption_langs"]]
+    m.captions_empty = st["captions_empty"]
+    return st
+
+
+def apply_detail(s, m: Media, d: dict, ctx: JobContext | None = None, caption_check: dict | None = None) -> None:
+    """Copy summarize_detail() values. caption_check: a fresh verification (replaces the stored one); without
+    it the stored check still applies to the tracks it covers."""
     for f in ("url", "kind", "title", "description", "thumbnail_url", "duration_sec", "published_at",
               "view_count", "like_count", "comment_count", "tags", "categories", "chapters", "language", "license",
               "availability", "age_limit", "was_live", "has_manual_captions", "has_auto_captions",
@@ -344,6 +372,9 @@ def apply_detail(s, m: Media, d: dict, ctx: JobContext | None = None) -> None:
                 v = str(v)[:16]
             setattr(m, f, v)
     m.metadata_ = {**(m.metadata_ or {}), **(d.get("metadata") or {})}
+    if caption_check is not None:
+        m.metadata_ = {**m.metadata_, "caption_check": caption_check}
+    apply_caption_state(m)
     ch = _minimal_channel(s, d.get("channel_platform_id"), d["metadata"].get("channel"),
                           d["metadata"].get("uploader_id") if str(d["metadata"].get("uploader_id") or "")
                           .startswith("@") else None, d["metadata"].get("channel_url"),
@@ -373,8 +404,10 @@ def _ytdlp_version() -> str:
 
 
 def _active_detail_sweep(s, channel_id: uuid.UUID | None) -> bool:
+    """A queued/running channel sweep (not an explicit media_ids batch such as a playlist or a caption re-check,
+    which never picks up newly listed media)."""
     return s.scalar(select(Job.id).where(Job.kind == "media.detail", Job.media_id.is_(None),
-                                         Job.channel_id == channel_id,
+                                         Job.channel_id == channel_id, ~Job.payload.has_key("media_ids"),
                                          Job.status.in_(("queued", "running"))).limit(1)) is not None
 
 
@@ -577,7 +610,12 @@ def playlist_list(ctx: JobContext) -> dict:
 
 # ───────────────────────────── media.detail ─────────────────────────────
 
-def _detail_one(ctx: JobContext, media_id: uuid.UUID, fo: yt.FetchOptions) -> dict:
+def _verify_enabled(ctx: JobContext, settings: dict) -> bool:
+    v = ctx.payload.get("verify")
+    return bool(settings.get("verify_captions", True)) if v is None else bool(v)
+
+
+def _detail_one(ctx: JobContext, media_id: uuid.UUID, fo: yt.FetchOptions, verify: bool = False) -> dict:
     with session_scope() as s:
         m = s.get(Media, media_id)
         if m is None:
@@ -590,15 +628,26 @@ def _detail_one(ctx: JobContext, media_id: uuid.UUID, fo: yt.FetchOptions) -> di
     except yt.YouTubeError as e:
         raise _job_error(e, _cookies_used(fo)) from e
     d = yt.summarize_detail(info)
+    check = None
+    if verify and d["manual_caption_langs"] and not yt.is_members_only(d.get("availability")):
+        ctx.progress(phase="caption_check", message="檢查字幕內容")
+        try:
+            check = yt.verify_captions(info, fo)
+        except yt.YouTubeError as e:  # bot_check / rate_limited only (other failures are recorded as `error`)
+            raise _job_error(e, _cookies_used(fo)) from e
     with session_scope() as s:
         m = s.get(Media, media_id)
-        apply_detail(s, m, d, ctx)
+        apply_detail(s, m, d, ctx, caption_check=check)
         store_info_json(s, m, info)
-        if not mark_if_members_only(m) and m.status in ("listed", "failed", "blocked"):
-            m.status = "detailed"
-            m.failure_code = m.failure_message = None
-        return {"media_id": str(media_id), "video_id": vid, "manual": d["manual_caption_langs"],
-                "auto": d["auto_caption_langs"], "license": d["license"], "duration": d["duration_sec"],
+        if not mark_if_members_only(m):
+            if m.status in ("listed", "failed", "blocked") or (
+                    m.status == "skipped" and m.failure_code == "empty_captions" and not m.captions_empty):
+                m.status = "detailed"
+                m.failure_code = m.failure_message = None
+        return {"media_id": str(media_id), "video_id": vid, "manual": list(m.manual_caption_langs or []),
+                "listed_manual": d["manual_caption_langs"], "auto": d["auto_caption_langs"],
+                "captions_empty": bool(m.captions_empty), "license": d["license"], "duration": d["duration_sec"],
+                **({"caption_check": {k: v["status"] for k, v in check["tracks"].items()}} if check else {}),
                 **({"warnings": warnings[:5]} if warnings else {})}
 
 
@@ -610,7 +659,7 @@ def media_detail(ctx: JobContext) -> dict:
         throttle(ctx, "request", gap)
         ctx.progress(0.1, "detail", force=True)
         with fetch_options(settings) as fo:
-            return _detail_one(ctx, ctx.media_id, fo)
+            return _detail_one(ctx, ctx.media_id, fo, verify=_verify_enabled(ctx, settings))
 
     # batch / channel sweep
     batch_size = int(ctx.payload.get("batch_size") or DETAIL_BATCH)
@@ -632,8 +681,8 @@ def media_detail(ctx: JobContext) -> dict:
             ctx.progress(i / max(1, len(batch)), "detail", f"{i + 1}/{len(batch)}" +
                          (f"（剩 {len(rest)}）" if rest else ""), force=True)
             try:
-                r = _detail_one(ctx, uuid.UUID(mid), fo)
-                results.append({k: r[k] for k in ("video_id", "manual", "auto")})
+                r = _detail_one(ctx, uuid.UUID(mid), fo, verify=_verify_enabled(ctx, settings))
+                results.append({k: r[k] for k in ("video_id", "manual", "auto", "captions_empty")})
                 done += 1
             except Cancelled:
                 raise
@@ -645,7 +694,9 @@ def media_detail(ctx: JobContext) -> dict:
                 failed.append({"media_id": mid, "code": je.code})
                 with session_scope() as s:
                     m = s.get(Media, uuid.UUID(mid))
-                    if m is not None:  # status leaves "listed", so the sweep does not loop on it
+                    # status leaves "listed", so the sweep does not loop on it; a re-detail (caption re-check)
+                    # never pushes downloaded / processed / skipped media backwards
+                    if m is not None and m.status in ("listed", "detailed"):
                         m.status = "blocked" if je.blocked else "failed"
                         m.failure_code, m.failure_message = je.code, je.message[:2000]
     more = bool(rest)
@@ -715,11 +766,29 @@ def _download(ctx, vid, settings, caption_langs, include_auto, require_captions,
             except yt_dlp.utils.DownloadCancelled as e:
                 raise Cancelled() from e
             except yt.YouTubeError as e:
+                if e.code == "empty_captions":
+                    _mark_empty_captions(ctx.media_id, e.extra)
                 raise _job_error(e, _cookies_used(fo)) from e
             if cancelled["flag"]:
                 raise Cancelled()
             ctx.progress(0.92, "store", "上傳音訊與字幕", force=True)
             return _store_download(ctx, res)
+
+
+def _mark_empty_captions(media_id: uuid.UUID, extra: dict) -> None:
+    """Download found only empty caption tracks: record them (status skipped / failure_code empty_captions follow
+    from the job failure, queue.SKIP_CODES)."""
+    with session_scope() as s:
+        m = s.get(Media, media_id)
+        if m is None:
+            return
+        meta = dict(m.metadata_ or {})
+        if extra.get("caption_tracks"):
+            meta["caption_tracks"] = extra["caption_tracks"]
+        meta["caption_check"] = yt.merge_caption_check(meta.get("caption_check"), extra.get("checked") or {},
+                                                       "download")
+        m.metadata_ = meta
+        apply_caption_state(m)
 
 
 _TRADITIONAL_SCRIPTS = ("traditional", "neutral")
@@ -745,7 +814,9 @@ def _store_download(ctx: JobContext, res: yt.DownloadResult) -> dict:
     d = yt.summarize_detail(info)
     with session_scope() as s:
         m = s.get(Media, ctx.media_id)
-        apply_detail(s, m, d, ctx)
+        check = yt.merge_caption_check((m.metadata_ or {}).get("caption_check"), res.caption_check, "download") \
+            if res.caption_check else None
+        apply_detail(s, m, d, ctx, caption_check=check)
         store_info_json(s, m, info)
         key = storage.media_key(m.id, f"original.{ext}")
         audio = storage.store_asset(s, res.audio_path, key, "original_audio", media_id=m.id,

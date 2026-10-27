@@ -57,6 +57,17 @@
   --series-7: #6250d6;
   --series-8: #e34948;
   --series-muted: #b9bec8;
+  /* speaker colours (timeline lane, cards, highlights) = the series palette. --spk-pill-N is the karaoke pill:
+     the series colour, nudged darker only where needed so --spk-on-N keeps ≥ 4.5:1 text contrast. */
+  --spk-pill-1: #2468c0; --spk-on-1: #ffffff;
+  --spk-pill-2: var(--series-2); --spk-on-2: #0b0f14;
+  --spk-pill-3: var(--series-3); --spk-on-3: #0b0f14;
+  --spk-pill-4: var(--series-4); --spk-on-4: #0b0f14;
+  --spk-pill-5: var(--series-5); --spk-on-5: #0b0f14;
+  --spk-pill-6: var(--series-6); --spk-on-6: #ffffff;
+  --spk-pill-7: var(--series-7); --spk-on-7: #ffffff;
+  --spk-pill-8: var(--series-8); --spk-on-8: #0b0f14;
+  --spk-soft-mix: 20%;
   --seq-1: #cde2fb;
   --seq-3: #86b6ef;
   --seq-5: #3987e5;
@@ -114,6 +125,15 @@
   --series-7: #9085e9;
   --series-8: #e66767;
   --series-muted: #4a5261;
+  --spk-pill-1: var(--series-1); --spk-on-1: #0b0f14;
+  --spk-pill-2: var(--series-2); --spk-on-2: #0b0f14;
+  --spk-pill-3: var(--series-3); --spk-on-3: #0b0f14;
+  --spk-pill-4: var(--series-4); --spk-on-4: #0b0f14;
+  --spk-pill-5: var(--series-5); --spk-on-5: #0b0f14;
+  --spk-pill-6: var(--series-6); --spk-on-6: #ffffff;
+  --spk-pill-7: var(--series-7); --spk-on-7: #0b0f14;
+  --spk-pill-8: var(--series-8); --spk-on-8: #0b0f14;
+  --spk-soft-mix: 30%;
   --seq-1: #184f95;
   --seq-3: #256abf;
   --seq-5: #3987e5;
@@ -253,5 +273,45 @@
   .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
   .hatch {
     background-image: repeating-linear-gradient(135deg, currentColor 0 1.5px, transparent 1.5px 6px);
+  }
+}
+
+/* ─────────────── speaker-coloured highlights ───────────────
+   A row/sentence sets --spk, --spk-pill, --spk-on, --spk-soft (speakerVars()); without them everything falls back
+   to the primary colour. Background + box-shadow only, so highlighting never reflows text. */
+@layer components {
+  .hl-current {
+    background-color: var(--spk-pill, var(--primary));
+    color: var(--spk-on, var(--primary-fg));
+    box-shadow: 0 0 0 2px var(--spk-pill, var(--primary));
+  }
+  .hl-sentence {
+    background-color: var(--spk-soft, var(--primary-soft));
+    color: var(--spk-soft-fg, var(--primary-soft-fg));
+    box-shadow: 0 0 0 2px var(--spk-soft, var(--primary-soft));
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+  }
+  /* clickable (seekable) characters */
+  .hl-seek {
+    cursor: pointer;
+    border-radius: 3px;
+  }
+  @media (hover: hover) {
+    .hl-seek:not(.hl-current):hover {
+      background-color: var(--spk-soft, var(--primary-soft));
+      box-shadow: 0 0 0 2px var(--spk-soft, var(--primary-soft));
+      text-decoration: underline;
+      text-decoration-color: var(--spk, var(--primary));
+      text-underline-offset: 4px;
+    }
+  }
+  .hl-seek:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 1px;
+  }
+  .hl-row-active {
+    background-color: color-mix(in oklab, var(--spk, var(--primary)) 8%, transparent);
+    box-shadow: inset 3px 0 0 var(--spk, var(--primary));
   }
 }

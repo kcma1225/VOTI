@@ -2,7 +2,7 @@ import { useNavigate } from 'react-router'
 import { BadgeCheck, Info } from 'lucide-react'
 import type { Dist, Speaker, VoiceProfile } from '@/api/types'
 import { fmtHours, fmtInt } from '@/lib/format'
-import { ageGroupLabel, emotionLabel, sexLabel, speechFlowLabel, voiceQualityLabel } from '@/lib/labels'
+import { ageGroupLabel, emotionLabel, sexLabel, speechFlowLabel, traitLabel, voiceQualityLabel } from '@/lib/labels'
 import { cn } from '@/lib/cn'
 import { t } from '@/i18n'
 import { DataTable, type Column } from '@/components/ui/data-table'
@@ -83,7 +83,7 @@ export function SpeakerList({ items, className }: { items: Speaker[]; className?
       hideBelow: 'xl',
       cell: (s) => {
         const top = topOf(s.profile.emotion)
-        return <span className="text-fg-2">{top ? emotionLabel[top.key] ?? top.key : '—'}</span>
+        return <span className="text-fg-2">{top ? traitLabel(emotionLabel, top.key) : '—'}</span>
       },
     },
   ]
@@ -123,7 +123,7 @@ function toDist(d: unknown): Dist {
   return Object.fromEntries(Object.entries(src).filter((e): e is [string, number] => typeof e[1] === 'number' && Number.isFinite(e[1])))
 }
 
-function DistBars({ d, labels, max = 4 }: { d: unknown; labels: Record<string, string>; max?: number }) {
+export function DistBars({ d, labels, max = 4, color = 'var(--series-1)' }: { d: unknown; labels: Record<string, string>; max?: number; color?: string }) {
   const entries = Object.entries(toDist(d))
     .sort((a, b) => b[1] - a[1])
     .slice(0, max)
@@ -132,9 +132,9 @@ function DistBars({ d, labels, max = 4 }: { d: unknown; labels: Record<string, s
     <ul className="space-y-1.5">
       {entries.map(([k, v], i) => (
         <li key={k} className="grid grid-cols-[5.5rem_minmax(0,1fr)_2.5rem] items-center gap-2 text-xs">
-          <span className={cn('truncate', i === 0 ? 'font-medium text-fg' : 'text-fg-2')}>{labels[k] ?? k}</span>
+          <span className={cn('truncate', i === 0 ? 'font-medium text-fg' : 'text-fg-2')}>{traitLabel(labels, k)}</span>
           <div className="h-1.5 rounded-full bg-surface-3">
-            <div className="h-full rounded-full" style={{ width: `${(v / (top || 1)) * 100}%`, background: i === 0 ? 'var(--series-1)' : 'var(--seq-3)' }} />
+            <div className="h-full rounded-full" style={{ width: `${(v / (top || 1)) * 100}%`, background: i === 0 ? color : color === 'var(--series-1)' ? 'var(--seq-3)' : `color-mix(in oklab, ${color} 45%, transparent)` }} />
           </div>
           <span className="text-right tabular text-fg-3">{Math.round(v * 100)}%</span>
         </li>
