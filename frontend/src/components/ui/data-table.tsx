@@ -1,3 +1,4 @@
+import { intlLocale, t } from '@/i18n'
 import type { ReactNode } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/cn'
@@ -60,7 +61,7 @@ export function DataTable<T extends { id: string }>({
               <th className={cn('sticky z-10 w-11 border-b border-border bg-surface-2/95 pl-4 backdrop-blur', stickyTop)}>
                 <span data-shot="select-all-page" className="inline-grid">
                 <Checkbox
-                  aria-label="選取本頁全部"
+                  aria-label={t('common.selectPage')}
                   checked={allOn ? true : someOn ? 'indeterminate' : false}
                   onCheckedChange={(v) => onToggleAll?.(v)}
                 />
@@ -100,7 +101,7 @@ export function DataTable<T extends { id: string }>({
               >
                 {selectable && (
                   <td className="border-b border-border pl-4" onClick={(e) => e.stopPropagation()}>
-                    <Checkbox aria-label="選取" checked={isSel} onCheckedChange={() => onToggle!(r.id)} />
+                    <Checkbox aria-label={t('common.select')} checked={isSel} onCheckedChange={() => onToggle!(r.id)} />
                   </td>
                 )}
                 {columns.map((c) => (
@@ -136,7 +137,7 @@ export function DataTable<T extends { id: string }>({
               >
                 {selectable && (
                   <div className="-my-1 -ml-1 flex items-start pt-1" onClick={(e) => e.stopPropagation()}>
-                    <Checkbox aria-label="選取" checked={isSel} onCheckedChange={() => onToggle!(r.id)} className="size-10" />
+                    <Checkbox aria-label={t('common.select')} checked={isSel} onCheckedChange={() => onToggle!(r.id)} className="size-10" />
                   </div>
                 )}
                 <div className="min-w-0 flex-1">{card(r)}</div>
@@ -169,16 +170,16 @@ export function Pagination({
   return (
     <div className={cn('flex items-center justify-between gap-3 px-4 py-3 text-[13px] text-fg-3', className)}>
       <span className="tabular">
-        {from.toLocaleString('zh-TW')}–{to.toLocaleString('zh-TW')}，共 {total.toLocaleString('zh-TW')} 筆
+        {t('common.pageRange', from.toLocaleString(intlLocale()), to.toLocaleString(intlLocale()), total.toLocaleString(intlLocale()))}
       </span>
       <div className="flex items-center gap-1">
-        <Button size="icon-sm" variant="ghost" aria-label="上一頁" disabled={page <= 1} onClick={() => onChange(Math.max(0, offset - limit))}>
+        <Button size="icon-sm" variant="ghost" aria-label={t('common.prevPage')} disabled={page <= 1} onClick={() => onChange(Math.max(0, offset - limit))}>
           <ChevronLeft />
         </Button>
         <span className="min-w-16 text-center tabular text-fg-2">
           {page} / {pages}
         </span>
-        <Button size="icon-sm" variant="ghost" aria-label="下一頁" disabled={page >= pages} onClick={() => onChange(offset + limit)}>
+        <Button size="icon-sm" variant="ghost" aria-label={t('common.nextPage')} disabled={page >= pages} onClick={() => onChange(offset + limit)}>
           <ChevronRight />
         </Button>
       </div>

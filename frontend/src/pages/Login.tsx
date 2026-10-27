@@ -7,6 +7,9 @@ import { errMsg, qk } from '@/api/queries'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/form'
 import { useTitle } from '@/components/layout/page'
+import { BrandMark, Logo } from '@/components/brand/logo'
+import { LanguageSwitcher } from '@/components/layout/language-switcher'
+import { useT } from '@/i18n'
 
 function Bars() {
   // decorative waveform built from deterministic heights
@@ -21,7 +24,8 @@ function Bars() {
 }
 
 export default function Login() {
-  useTitle('登入')
+  const t = useT()
+  useTitle(t('shell.login.title'))
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [show, setShow] = useState(false)
@@ -35,7 +39,7 @@ export default function Login() {
     e.preventDefault()
     setError(null)
     if (!username || !password) {
-      setError('請輸入帳號與密碼')
+      setError(t('shell.login.missing'))
       return
     }
     setBusy(true)
@@ -53,57 +57,49 @@ export default function Login() {
 
   return (
     <div className="grid min-h-dvh lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)]">
-      <aside className="relative hidden overflow-hidden bg-[#2b44b8] text-white lg:flex lg:flex-col lg:justify-between lg:p-12 dark:bg-[#1c2c78]">
+      <aside className="relative hidden overflow-hidden bg-[#0f5f57] text-white lg:flex lg:flex-col lg:justify-between lg:p-12 dark:bg-[#0a3d38]">
         <div
           className="pointer-events-none absolute inset-0 opacity-90"
           style={{
             background:
-              'radial-gradient(1200px 500px at 0% 0%, rgba(255,255,255,0.18), transparent 60%), radial-gradient(800px 400px at 100% 100%, rgba(27,175,122,0.35), transparent 60%)',
+              'radial-gradient(1200px 500px at 0% 0%, rgba(255,255,255,0.16), transparent 60%), radial-gradient(800px 400px at 100% 100%, rgba(42,157,143,0.55), transparent 60%)',
           }}
         />
+        <Logo variant="solid" className="pointer-events-none absolute -right-16 top-1/2 h-[118%] w-auto -translate-y-1/2 text-white opacity-[0.07]" title="" />
         <div className="relative flex items-center gap-3">
-          <div className="grid size-10 place-items-center rounded-xl bg-white/15 backdrop-blur">
-            <svg viewBox="0 0 24 24" className="size-5" fill="currentColor" aria-hidden>
-              <rect x="3" y="9.5" width="2.6" height="5" rx="1.3" />
-              <rect x="7.6" y="6.5" width="2.6" height="11" rx="1.3" />
-              <rect x="12.2" y="3.5" width="2.6" height="17" rx="1.3" />
-              <rect x="16.8" y="8" width="2.6" height="8" rx="1.3" />
-            </svg>
-          </div>
-          <span className="text-lg font-semibold tracking-tight">VOTI</span>
+          <span className="grid size-11 place-items-center rounded-xl bg-white/12 ring-1 ring-inset ring-white/20 backdrop-blur">
+            <Logo className="h-8 w-auto text-white" strokeWidth={14} />
+          </span>
+          <span className="min-w-0">
+            <span className="block text-lg font-semibold leading-6 tracking-tight">{t('common.brand.name')}</span>
+            <span className="block text-xs leading-4 text-white/65">{t('common.brand.tagline')}</span>
+          </span>
         </div>
         <div className="relative max-w-lg">
           <Bars />
           <h2 className="mt-8 text-3xl font-semibold leading-tight tracking-tight text-balance">
-            從 YouTube 收集台語語音，
-            <br />
-            建立語者多元的研究語料。
+            <span className="block text-balance">{t('shell.login.heroLine1')}</span>
+            <span className="block text-balance">{t('shell.login.heroLine2')}</span>
           </h2>
-          <p className="mt-4 text-[15px] leading-7 text-white/75">
-            原生字幕篩選、音質分析、語者分段與分群、重複片頭偵測、人工審查，到可追溯的資料集匯出——全部在同一個工作台完成。
-          </p>
+          <p className="mt-4 text-[15px] leading-7 text-white/75">{t('shell.login.heroBody')}</p>
         </div>
-        <p className="relative text-xs text-white/55">僅供研究用途 · 請遵守各影片的授權條款</p>
+        <p className="relative text-xs text-white/55">{t('shell.login.footer')}</p>
       </aside>
 
-      <main className="flex items-center justify-center px-5 py-10 sm:px-8">
+      <main className="relative flex items-center justify-center px-5 pb-10 pt-20 sm:px-8 lg:py-10">
+        <div className="absolute right-4 top-4 sm:right-6 sm:top-6">
+          <LanguageSwitcher />
+        </div>
         <div className="w-full max-w-[380px]">
           <div className="mb-8 flex items-center gap-3 lg:hidden">
-            <div className="grid size-10 place-items-center rounded-xl bg-primary text-primary-fg">
-              <svg viewBox="0 0 24 24" className="size-5" fill="currentColor" aria-hidden>
-                <rect x="3" y="9.5" width="2.6" height="5" rx="1.3" />
-                <rect x="7.6" y="6.5" width="2.6" height="11" rx="1.3" />
-                <rect x="12.2" y="3.5" width="2.6" height="17" rx="1.3" />
-                <rect x="16.8" y="8" width="2.6" height="8" rx="1.3" />
-              </svg>
-            </div>
-            <div>
-              <div className="text-lg font-semibold leading-6">VOTI</div>
-              <div className="text-xs text-fg-3">台語語料工作台</div>
+            <BrandMark size={44} className="rounded-xl" />
+            <div className="min-w-0">
+              <div className="text-lg font-semibold leading-6">{t('common.brand.name')}</div>
+              <div className="text-xs text-fg-3">{t('common.brand.tagline')}</div>
             </div>
           </div>
-          <h1 className="text-2xl font-semibold tracking-tight">登入</h1>
-          <p className="mt-1.5 text-sm text-fg-3">使用管理員建立的帳號登入。沒有帳號請聯絡管理員。</p>
+          <h1 className="text-2xl font-semibold tracking-tight">{t('shell.login.title')}</h1>
+          <p className="mt-1.5 text-sm text-fg-3">{t('shell.login.subtitle')}</p>
 
           <form onSubmit={submit} className="mt-8 space-y-4" noValidate>
             {error && (
@@ -112,10 +108,10 @@ export default function Login() {
                 {error}
               </div>
             )}
-            <Field label="帳號" htmlFor="username">
+            <Field label={t('shell.login.username')} htmlFor="username">
               <Input id="username" autoComplete="username" autoCapitalize="none" spellCheck={false} value={username} onChange={(e) => setUsername(e.target.value)} className="h-11 sm:h-10" autoFocus />
             </Field>
-            <Field label="密碼" htmlFor="password">
+            <Field label={t('shell.login.password')} htmlFor="password">
               <div className="relative">
                 <Input
                   id="password"
@@ -129,19 +125,19 @@ export default function Login() {
                   type="button"
                   onClick={() => setShow((s) => !s)}
                   className="absolute right-1 top-1/2 grid size-9 -translate-y-1/2 place-items-center rounded-md text-fg-3 hover:bg-surface-2 hover:text-fg"
-                  aria-label={show ? '隱藏密碼' : '顯示密碼'}
+                  aria-label={show ? t('shell.login.hidePassword') : t('shell.login.showPassword')}
                 >
                   {show ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
                 </button>
               </div>
             </Field>
             <Button type="submit" variant="primary" size="lg" className="w-full" loading={busy}>
-              登入
+              {t('shell.login.submit')}
             </Button>
           </form>
           {import.meta.env.VITE_MOCK === '1' && (
             <p className="mt-6 rounded-lg bg-surface-2 px-3 py-2 text-xs leading-5 text-fg-3">
-              展示模式：帳號 <code className="font-mono text-fg-2">brian</code>（管理員）或 <code className="font-mono text-fg-2">yijun</code>（標註員），任意密碼。
+              {t('shell.login.demoPrefix')}<code className="font-mono text-fg-2">brian</code>{t('shell.login.demoAdmin')}<code className="font-mono text-fg-2">yijun</code>{t('shell.login.demoAnnotator')}
             </p>
           )}
         </div>

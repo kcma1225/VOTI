@@ -1,3 +1,4 @@
+import { intlLocale, t } from '@/i18n'
 import { forwardRef, useId, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from 'react'
 import { Checkbox as CheckboxP, Slider as SliderP, Switch as SwitchP, ToggleGroup } from 'radix-ui'
 import { Check, ChevronDown, Minus, Search, X } from 'lucide-react'
@@ -22,7 +23,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<H
 export function SearchInput({
   value,
   onChange,
-  placeholder = '搜尋',
+  placeholder,
   className,
   autoFocus,
 }: {
@@ -40,13 +41,13 @@ export function SearchInput({
         value={value}
         autoFocus={autoFocus}
         onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
+        placeholder={placeholder ?? t('common.search')}
         className={cn(fieldBase, 'h-10 pl-9 pr-9 text-sm sm:h-9 [&::-webkit-search-cancel-button]:hidden')}
       />
       {value && (
         <button
           type="button"
-          aria-label="清除搜尋"
+          aria-label={t('common.clearSearch')}
           onClick={() => onChange('')}
           className="absolute right-1 top-1/2 grid size-8 -translate-y-1/2 place-items-center rounded-md text-fg-3 hover:bg-surface-2 hover:text-fg sm:size-7"
         >
@@ -276,7 +277,7 @@ export function Segmented<V extends string>({
           )}
         >
           {o.label}
-          {o.count !== undefined && <span className="text-xs tabular text-fg-3">{o.count.toLocaleString('zh-TW')}</span>}
+          {o.count !== undefined && <span className="text-xs tabular text-fg-3">{o.count.toLocaleString(intlLocale())}</span>}
         </ToggleGroup.Item>
       ))}
     </ToggleGroup.Root>
@@ -317,7 +318,7 @@ export function Chip({
       {active && <Check className="-ml-0.5 size-3.5" />}
       {children}
       {count !== undefined && (
-        <span className={cn('tabular text-xs', active ? 'text-primary-soft-fg/80' : 'text-fg-3')}>{count.toLocaleString('zh-TW')}</span>
+        <span className={cn('tabular text-xs', active ? 'text-primary-soft-fg/80' : 'text-fg-3')}>{count.toLocaleString(intlLocale())}</span>
       )}
     </button>
   )
@@ -354,7 +355,7 @@ export function NumberInput({
         min={min}
         max={max}
         step={step}
-        placeholder={placeholder ?? '不限'}
+        placeholder={placeholder ?? t('common.any')}
         onChange={(e) => onChange(e.target.value === '' ? null : Number(e.target.value))}
         className={cn(fieldBase, 'h-10 px-3 text-sm tabular sm:h-9', suffix && 'pr-12')}
       />

@@ -1,6 +1,7 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { api, ApiError } from './client'
+import { getLang, msgs, t } from '@/i18n'
 import type * as T from './types'
 
 export const qk = {
@@ -29,7 +30,22 @@ export const qk = {
   settings: ['settings'] as const,
 }
 
-export const errMsg = (e: unknown) => (e instanceof ApiError ? e.message : e instanceof Error ? e.message : '操作失敗')
+/** User-facing error text in the active language. Server `detail` messages are zh-TW, so in English
+ * known error codes are mapped client-side, then generic per-status text, then the server text. */
+export function errMsg(e: unknown): string {
+  if (e instanceof ApiError) {
+    if (e.code === 'network') return t('errors.network')
+    if (getLang() === 'zh-TW') return e.message
+    const m = msgs().errors
+    const byCode = (m.codes as Record<string, string>)[e.code]
+    if (byCode) return byCode
+    const byStatus = (m.status as Record<number, string>)[e.status]
+    if (byStatus) return byStatus
+    return e.message
+  }
+  if (e instanceof Error && e.message) return e.message
+  return t('common.actionFailed')
+}
 const onErr = (e: unknown) => toast.error(errMsg(e))
 
 export const useMe = () =>
@@ -120,7 +136,7 @@ export function useJobAction() {
     mutationFn: ({ id, action }: { id: string; action: 'retry' | 'cancel' }) =>
       action === 'retry' ? api.retryJob(id) : api.cancelJob(id),
     onSuccess: (_d, v) => {
-      toast.success(v.action === 'retry' ? '已重新排入佇列' : '已要求取消')
+      toast.success(v.action === 'retry' ? t('common.requeued') : t('common.cancelRequested'))
       qc.invalidateQueries({ queryKey: ['jobs'] })
     },
     onError: onErr,

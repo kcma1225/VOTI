@@ -7,12 +7,14 @@ import {
   ChevronsLeft,
   ChevronsRight,
   KeyRound,
+  Languages,
   LogOut,
   Menu as MenuIcon,
   Monitor,
   Moon,
   MoreHorizontal,
   Sun,
+  UserRound,
 } from 'lucide-react'
 import { api } from '@/api/client'
 import { qk, useJobs, useMe } from '@/api/queries'
@@ -28,20 +30,8 @@ import { PillTabs } from '@/components/ui/tabs'
 import { EmptyState } from '@/components/ui/states'
 import { JobRow } from '@/components/domain/job-row'
 import { navGroups, phoneTabs, type NavItem } from './nav'
-
-/* ───────────── brand ───────────── */
-function BrandMark({ className }: { className?: string }) {
-  return (
-    <div className={cn('grid size-8 shrink-0 place-items-center rounded-lg bg-primary text-primary-fg shadow-sm', className)}>
-      <svg viewBox="0 0 24 24" className="size-[18px]" fill="currentColor" aria-hidden>
-        <rect x="3" y="9.5" width="2.6" height="5" rx="1.3" />
-        <rect x="7.6" y="6.5" width="2.6" height="11" rx="1.3" />
-        <rect x="12.2" y="3.5" width="2.6" height="17" rx="1.3" />
-        <rect x="16.8" y="8" width="2.6" height="8" rx="1.3" />
-      </svg>
-    </div>
-  )
-}
+import { BrandMark } from '@/components/brand/logo'
+import { LANGS, msgs, t, useI18n, type Lang } from '@/i18n'
 
 /* ───────────── jobs: watcher (toasts) + activity summary ───────────── */
 const ACTIVE = ['queued', 'running']
@@ -66,12 +56,12 @@ function useJobsWatcher() {
       const subject = j.media_title ?? j.channel_title ?? ''
       const go = j.media_id ? `/media/${j.media_id}` : j.channel_id ? `/channels/${j.channel_id}` : '/jobs'
       if (j.status === 'completed') {
-        toast.success(`${label}完成`, { description: subject, action: { label: '查看', onClick: () => navigate(go) } })
+        toast.success(t('shell.jobs.toastDone', label), { description: subject, action: { label: t('common.view'), onClick: () => navigate(go) } })
         if (j.kind === 'dataset.export') qc.invalidateQueries({ queryKey: ['exports'] })
         if (j.kind === 'speakers.cluster') qc.invalidateQueries({ queryKey: ['speakers'] })
         if (j.media_id) qc.invalidateQueries({ queryKey: ['mediaDetail', j.media_id] })
       } else if (j.status === 'failed') {
-        toast.error(`${label}失敗`, { description: j.error_message ?? subject, action: { label: '查看', onClick: () => navigate('/jobs?status=failed') } })
+        toast.error(t('shell.jobs.toastFailed', label), { description: j.error_message ?? subject, action: { label: t('common.view'), onClick: () => navigate('/jobs?status=failed') } })
       }
     }
   }, [recent.data, navigate, qc])
@@ -91,7 +81,7 @@ function ActivityButton({ collapsed, onOpen }: { collapsed?: boolean; onOpen: ()
         'group flex w-full items-center gap-3 rounded-lg border border-border bg-surface text-left shadow-xs transition-colors hover:border-border-strong',
         collapsed ? 'size-11 justify-center p-0' : 'p-2.5',
       )}
-      aria-label="工作佇列"
+      aria-label={t('shell.jobs.queue')}
     >
       <span className="relative grid size-6 shrink-0 place-items-center">
         <Activity className={cn('size-4', running ? 'text-primary' : 'text-fg-3')} />
@@ -101,28 +91,26 @@ function ActivityButton({ collapsed, onOpen }: { collapsed?: boolean; onOpen: ()
       {!collapsed && (
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline justify-between gap-2 text-[13px] font-medium text-fg">
-            <span>工作</span>
-            <span className="text-xs font-normal tabular text-fg-3">
-              {running} 執行 · {queued} 排隊
-            </span>
+            <span className="shrink-0">{t('shell.jobs.title')}</span>
+            <span className="truncate text-[11px] font-normal tabular text-fg-3">{t('shell.jobs.summary', running, queued)}</span>
           </span>
           {top ? (
             <span className="mt-1.5 block">
               <Progress value={top.progress} className="h-1" />
               <span className="mt-1 block truncate text-[11px] text-fg-3">
                 {jobKind[top.kind]}
-                {top.media_title ? `：${top.media_title}` : ''}
+                {top.media_title ? `${t('common.colon')}${top.media_title}` : ''}
               </span>
             </span>
           ) : (
-            <span className="mt-0.5 block text-[11px] text-fg-3">{failed ? `${failed} 個失敗待處理` : '佇列閒置中'}</span>
+            <span className="mt-0.5 block truncate text-[11px] text-fg-3">{failed ? t('shell.jobs.failedPending', failed) : t('shell.jobs.idle')}</span>
           )}
         </span>
       )}
     </button>
   )
   return collapsed ? (
-    <Tooltip content={`工作：${running} 執行中、${queued} 排隊`} side="right">
+    <Tooltip content={t('shell.jobs.tooltip', running, queued)} side="right">
       {btn}
     </Tooltip>
   ) : (
@@ -139,12 +127,12 @@ export function JobsDrawer({ open, onOpenChange }: { open: boolean; onOpenChange
     <Sheet
       open={open}
       onOpenChange={onOpenChange}
-      title="工作佇列"
-      description="即時更新 · 每 2.5 秒"
+      title={t('shell.jobs.queue')}
+      description={t('shell.jobs.drawerDesc')}
       headerActions={
         <Button asChild size="sm" variant="ghost">
           <Link to="/jobs" onClick={() => onOpenChange(false)}>
-            全部
+            {t('shell.jobs.viewAll')}
           </Link>
         </Button>
       }
@@ -154,9 +142,9 @@ export function JobsDrawer({ open, onOpenChange }: { open: boolean; onOpenChange
           value={tab}
           onChange={setTab}
           items={[
-            { value: 'active', label: '進行中', count: (counts.running ?? 0) + (counts.queued ?? 0) },
-            { value: 'failed', label: '失敗', count: (counts.failed ?? 0) + (counts.blocked ?? 0) + (counts.interrupted ?? 0) },
-            { value: 'done', label: '已完成' },
+            { value: 'active', label: t('shell.jobs.tabActive'), count: (counts.running ?? 0) + (counts.queued ?? 0) },
+            { value: 'failed', label: t('shell.jobs.tabFailed'), count: (counts.failed ?? 0) + (counts.blocked ?? 0) + (counts.interrupted ?? 0) },
+            { value: 'done', label: t('shell.jobs.tabDone') },
           ]}
         />
       </div>
@@ -173,7 +161,7 @@ export function JobsDrawer({ open, onOpenChange }: { open: boolean; onOpenChange
           ))}
         </div>
       ) : (
-        <EmptyState compact icon={<Activity />} title={tab === 'failed' ? '沒有失敗的工作' : '目前沒有工作'} description="新增來源或下載影片後，處理進度會即時出現在這裡。" />
+        <EmptyState compact icon={<Activity />} title={tab === 'failed' ? t('shell.jobs.emptyFailed') : t('shell.jobs.empty')} description={t('shell.jobs.emptyDesc')} />
       )}
     </Sheet>
   )
@@ -185,19 +173,19 @@ function ThemeMenu({ collapsed }: { collapsed?: boolean }) {
   const { pref, setPref } = useTheme()
   return (
     <Menu>
-      <Tooltip content="外觀主題" side={collapsed ? 'right' : 'top'}>
+      <Tooltip content={t('shell.theme.title')} side={collapsed ? 'right' : 'top'}>
         <MenuTrigger asChild>
-          <Button variant="ghost" size="icon" aria-label="外觀主題">
+          <Button variant="ghost" size="icon" aria-label={t('shell.theme.title')}>
             {themeIcon[pref]}
           </Button>
         </MenuTrigger>
       </Tooltip>
       <MenuContent align={collapsed ? 'start' : 'end'}>
-        <MenuLabel>外觀</MenuLabel>
+        <MenuLabel>{t('shell.theme.label')}</MenuLabel>
         <MenuRadioGroup value={pref} onValueChange={(v) => setPref(v as ThemePref)}>
-          <MenuRadioItem value="system" icon={<Monitor />}>跟隨系統</MenuRadioItem>
-          <MenuRadioItem value="light" icon={<Sun />}>淺色</MenuRadioItem>
-          <MenuRadioItem value="dark" icon={<Moon />}>深色</MenuRadioItem>
+          <MenuRadioItem value="system" icon={<Monitor />}>{t('shell.theme.system')}</MenuRadioItem>
+          <MenuRadioItem value="light" icon={<Sun />}>{t('shell.theme.light')}</MenuRadioItem>
+          <MenuRadioItem value="dark" icon={<Moon />}>{t('shell.theme.dark')}</MenuRadioItem>
         </MenuRadioGroup>
       </MenuContent>
     </Menu>
@@ -205,6 +193,7 @@ function ThemeMenu({ collapsed }: { collapsed?: boolean }) {
 }
 
 function UserMenu({ user, collapsed }: { user: User; collapsed?: boolean }) {
+  const { lang, setLang } = useI18n()
   const qc = useQueryClient()
   const navigate = useNavigate()
   const logout = async () => {
@@ -221,27 +210,44 @@ function UserMenu({ user, collapsed }: { user: User; collapsed?: boolean }) {
             'flex min-w-0 items-center gap-2.5 rounded-lg text-left hover:bg-surface-2',
             collapsed ? 'size-11 justify-center' : 'h-11 flex-1 px-1.5',
           )}
-          aria-label="帳號選單"
+          aria-label={t('shell.user.menu')}
         >
           <Avatar name={user.display_name || user.username} size={30} />
           {!collapsed && (
             <span className="min-w-0 flex-1">
               <span className="block truncate text-[13px] font-medium leading-4 text-fg">{user.display_name || user.username}</span>
-              <span className="block truncate text-[11px] leading-4 text-fg-3">{user.role === 'admin' ? '管理員' : '標註員'}</span>
+              <span className="block truncate text-[11px] leading-4 text-fg-3">{user.role === 'admin' ? t('common.admin') : t('common.annotator')}</span>
             </span>
           )}
         </button>
       </MenuTrigger>
       <MenuContent align={collapsed ? 'start' : 'end'}>
         <MenuLabel>
-          {user.display_name}（@{user.username}）
+          {user.display_name} (@{user.username})
         </MenuLabel>
+        <MenuItem icon={<UserRound />} onSelect={() => navigate('/settings/account')}>
+          {t('shell.user.account')}
+        </MenuItem>
         <MenuItem icon={<KeyRound />} onSelect={() => navigate('/settings/account')}>
-          變更密碼
+          {t('shell.user.changePassword')}
         </MenuItem>
         <MenuSeparator />
+        <MenuLabel>
+          <span className="inline-flex items-center gap-1.5">
+            <Languages className="size-3.5" />
+            {t('common.language')}
+          </span>
+        </MenuLabel>
+        <MenuRadioGroup value={lang} onValueChange={(v) => setLang(v as Lang)}>
+          {LANGS.map((l) => (
+            <MenuRadioItem key={l} value={l}>
+              <span lang={l === 'en' ? 'en' : 'zh-Hant-TW'}>{msgs().common.languageNames[l]}</span>
+            </MenuRadioItem>
+          ))}
+        </MenuRadioGroup>
+        <MenuSeparator />
         <MenuItem icon={<LogOut />} danger onSelect={logout}>
-          登出
+          {t('shell.user.logout')}
         </MenuItem>
       </MenuContent>
     </Menu>
@@ -279,8 +285,8 @@ function NavItemLink({ item, collapsed, onNavigate }: { item: NavItem; collapsed
 
 function NavList({ user, collapsed, onNavigate }: { user: User; collapsed?: boolean; onNavigate?: () => void }) {
   return (
-    <nav className={cn('flex flex-col', collapsed ? 'items-center gap-1' : 'gap-4')} aria-label="主選單">
-      {navGroups.map((g, gi) => {
+    <nav className={cn('flex flex-col', collapsed ? 'items-center gap-1' : 'gap-4')} aria-label={t('shell.nav.main')}>
+      {navGroups().map((g, gi) => {
         const items = g.items.filter((i) => !i.adminOnly || user.role === 'admin')
         if (!items.length) return null
         return (
@@ -308,12 +314,12 @@ function Sidebar({ user, collapsed, onToggle, onOpenJobs }: { user: User; collap
     >
     <aside className="sticky top-0 flex h-dvh flex-col">
       <div className={cn('flex h-16 shrink-0 items-center gap-2.5', collapsed ? 'justify-center' : 'px-4')}>
-        <Link to="/" className="flex min-w-0 items-center gap-2.5" aria-label="VOTI 首頁">
-          <BrandMark />
+        <Link to="/" className="flex min-w-0 items-center gap-2.5" aria-label={t('common.brand.home')}>
+          <BrandMark size={34} />
           {!collapsed && (
             <span className="min-w-0">
-              <span className="block text-[15px] font-semibold leading-5 tracking-tight">VOTI</span>
-              <span className="block truncate text-[11px] leading-4 text-fg-3">台語語料工作台</span>
+              <span className="block truncate text-[15px] font-semibold leading-5 tracking-tight">{t('common.brand.name')}</span>
+              <span className="block truncate text-[11px] leading-4 text-fg-3">{t('common.brand.tagline')}</span>
             </span>
           )}
         </Link>
@@ -326,8 +332,8 @@ function Sidebar({ user, collapsed, onToggle, onOpenJobs }: { user: User; collap
         <div className={cn('flex items-center gap-1', collapsed && 'flex-col')}>
           <UserMenu user={user} collapsed={collapsed} />
           <ThemeMenu collapsed={collapsed} />
-          <Tooltip content={collapsed ? '展開側欄' : '收合側欄'} side="right">
-            <Button variant="ghost" size="icon" onClick={onToggle} aria-label={collapsed ? '展開側欄' : '收合側欄'}>
+          <Tooltip content={collapsed ? t('shell.nav.expandSidebar') : t('shell.nav.collapseSidebar')} side="right">
+            <Button variant="ghost" size="icon" onClick={onToggle} aria-label={collapsed ? t('shell.nav.expandSidebar') : t('shell.nav.collapseSidebar')}>
               {collapsed ? <ChevronsRight /> : <ChevronsLeft />}
             </Button>
           </Tooltip>
@@ -344,14 +350,14 @@ function PhoneTopBar({ user, onMenu, onOpenJobs }: { user: User; onMenu: () => v
   const running = active.data?.counts.running ?? 0
   return (
     <header className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-border bg-surface/85 px-2 backdrop-blur-xl md:hidden">
-      <Button variant="ghost" size="icon" onClick={onMenu} aria-label="開啟選單">
+      <Button variant="ghost" size="icon" onClick={onMenu} aria-label={t('shell.nav.openMenu')}>
         <MenuIcon />
       </Button>
-      <Link to="/" className="flex min-w-0 flex-1 items-center gap-2">
-        <BrandMark className="size-7" />
-        <span className="truncate text-[15px] font-semibold tracking-tight">VOTI</span>
+      <Link to="/" className="flex min-w-0 flex-1 items-center gap-2" aria-label={t('common.brand.home')}>
+        <BrandMark size={28} />
+        <span className="truncate text-[15px] font-semibold tracking-tight">{t('common.brand.name')}</span>
       </Link>
-      <Button variant="ghost" size="icon" onClick={onOpenJobs} aria-label="工作佇列" className="relative">
+      <Button variant="ghost" size="icon" onClick={onOpenJobs} aria-label={t('shell.jobs.queue')} className="relative">
         <Activity className={running ? 'text-primary' : undefined} />
         {running > 0 && (
           <span className="absolute right-1 top-1 grid h-4 min-w-4 place-items-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-fg">
@@ -369,25 +375,25 @@ function BottomTabs({ onMore }: { onMore: () => void }) {
   return (
     <nav
       className="sticky bottom-0 z-30 border-t border-border bg-surface/90 backdrop-blur-xl pb-safe md:hidden"
-      aria-label="主要分頁"
+      aria-label={t('shell.nav.phoneTabs')}
     >
       <div className="grid h-16 grid-cols-5">
-        {phoneTabs.map((t) => (
+        {phoneTabs().map((tab) => (
           <NavLink
-            key={t.to}
-            to={t.to}
-            end={t.end}
+            key={tab.to}
+            to={tab.to}
+            end={tab.end}
             className={({ isActive }) =>
-              cn('flex flex-col items-center justify-center gap-1 text-[11px] font-medium', isActive ? 'text-primary' : 'text-fg-3')
+              cn('flex min-w-0 flex-col items-center justify-center gap-1 px-0.5 text-[11px] font-medium', isActive ? 'text-primary' : 'text-fg-3')
             }
           >
-            <t.icon className="size-[22px]" strokeWidth={1.8} />
-            {t.label}
+            <tab.icon className="size-[22px]" strokeWidth={1.8} />
+            <span className="max-w-full truncate">{tab.label}</span>
           </NavLink>
         ))}
         <button onClick={onMore} className="flex flex-col items-center justify-center gap-1 text-[11px] font-medium text-fg-3">
           <MoreHorizontal className="size-[22px]" strokeWidth={1.8} />
-          更多
+          {t('shell.nav.more')}
         </button>
       </div>
     </nav>
@@ -424,7 +430,20 @@ export function AppShell() {
         </div>
         <BottomTabs onMore={() => setDrawer(true)} />
       </div>
-      <Sheet open={drawer} onOpenChange={setDrawer} side="left" title="VOTI" description="台語語料工作台">
+      <Sheet
+        open={drawer}
+        onOpenChange={setDrawer}
+        side="left"
+        title={
+          <span className="flex items-center gap-2.5">
+            <BrandMark size={30} />
+            <span className="min-w-0">
+              <span className="block truncate">{t('common.brand.name')}</span>
+              <span className="block truncate text-[11px] font-normal leading-4 text-fg-3">{t('common.brand.tagline')}</span>
+            </span>
+          </span>
+        }
+      >
         <div className="p-3">
           <NavList user={user} onNavigate={() => setDrawer(false)} />
         </div>

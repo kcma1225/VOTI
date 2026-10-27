@@ -7,18 +7,19 @@ import { Avatar, Card, CardBody, CardHeader, Skeleton, Stat } from '@/components
 import { CardsSkeleton, EmptyState, ErrorState } from '@/components/ui/states'
 import { JobRow } from '@/components/domain/job-row'
 import { ORDINAL, StackBar } from '@/components/charts/charts'
-import { fmt1, fmtBytes, fmtHours, fmtInt, fmtPct, fmtRelative } from '@/lib/format'
+import { fmt1, fmtBytes, fmtHours, fmtInt, fmtPct, fmtRelative, hoursUnit } from '@/lib/format'
 import { queueLabel } from '@/lib/labels'
 import { cn } from '@/lib/cn'
+import { useT } from '@/i18n'
 
 function Funnel({ hours }: { hours: { listed: number; downloaded: number; speech: number; segments: number; reviewed: number } }) {
-  const steps = [
-    { key: 'listed', label: '已列出影片', v: hours.listed, hint: '頻道內所有影片長度' },
-    { key: 'downloaded', label: '已下載', v: hours.downloaded, hint: '已取得音訊與字幕' },
-    { key: 'speech', label: '偵測到語音', v: hours.speech, hint: 'Brouhaha VAD' },
-    { key: 'segments', label: '切分音段', v: hours.segments, hint: '字幕對齊後的音段' },
-    { key: 'reviewed', label: '審查通過', v: hours.reviewed, hint: '人工確認' },
-  ]
+  const t = useT()
+  const steps = (['listed', 'downloaded', 'speech', 'segments', 'reviewed'] as const).map((key) => ({
+    key,
+    label: t(`collect.overview.funnel.${key}`),
+    v: hours[key],
+    hint: t(`collect.overview.funnel.${key}Hint`),
+  }))
   const max = Math.max(...steps.map((s) => s.v), 1)
   return (
     <ol className="space-y-3.5">
@@ -39,7 +40,7 @@ function Funnel({ hours }: { hours: { listed: number; downloaded: number; speech
             </div>
             <div className="hidden text-right sm:block">
               <div className="text-[13px] font-medium tabular text-fg">{fmtHours(s.v * 3600)}</div>
-              {prev !== null && <div className="text-[11px] tabular text-fg-3">{fmtPct(prev ? s.v / prev : 0)} 留存</div>}
+              {prev !== null && <div className="text-[11px] tabular text-fg-3">{t('collect.overview.funnel.retained', fmtPct(prev ? s.v / prev : 0))}</div>}
             </div>
           </li>
         )
@@ -53,16 +54,17 @@ export default function Overview() {
   const jobs = useJobs({ limit: 8 }, 4000)
   const channels = useChannels()
   const d = ov.data
+  const t = useT()
 
   return (
     <Page>
       <PageHeader
-        title="總覽"
-        description="語料收集與處理的整體進度。數字每 10 秒更新。"
+        title={t('collect.overview.title')}
+        description={t('collect.overview.description')}
         actions={
           <Button asChild variant="primary">
             <Link to="/sources/new">
-              <Plus /> 新增來源
+              <Plus /> {t('collect.overview.addSource')}
             </Link>
           </Button>
         }
@@ -78,10 +80,10 @@ export default function Overview() {
         <>
           <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
             {[
-              { icon: <AudioWaveform />, label: '可用語音', value: fmt1(d.hours.speech), unit: '小時', hint: `${fmtInt(d.media.ready)} 部影片處理完成` },
-              { icon: <CheckCircle2 />, label: '審查通過', value: fmt1(d.hours.reviewed), unit: '小時', hint: `${fmtInt(d.segments.passed)} / ${fmtInt(d.segments.total)} 音段` },
-              { icon: <Users />, label: '候選語者', value: fmtInt(d.speakers.candidates), unit: '群', hint: `${fmtInt(d.speakers.verified)} 位已人工確認` },
-              { icon: <HardDrive />, label: '物件儲存', value: fmtBytes(d.storage_bytes).split(' ')[0], unit: fmtBytes(d.storage_bytes).split(' ')[1], hint: `${fmtInt(d.channels)} 個頻道 · ${fmtInt(d.media.listed)} 部影片` },
+              { icon: <AudioWaveform />, label: t('collect.overview.stats.speech'), value: fmt1(d.hours.speech), unit: hoursUnit(), hint: t('collect.overview.stats.speechHint', d.media.ready) },
+              { icon: <CheckCircle2 />, label: t('collect.overview.stats.reviewed'), value: fmt1(d.hours.reviewed), unit: hoursUnit(), hint: t('collect.overview.stats.reviewedHint', d.segments.passed, d.segments.total) },
+              { icon: <Users />, label: t('collect.overview.stats.candidates'), value: fmtInt(d.speakers.candidates), unit: t('collect.overview.stats.candidatesUnit'), hint: t('collect.overview.stats.candidatesHint', d.speakers.verified) },
+              { icon: <HardDrive />, label: t('collect.overview.stats.storage'), value: fmtBytes(d.storage_bytes).split(' ')[0], unit: fmtBytes(d.storage_bytes).split(' ')[1], hint: t('collect.overview.stats.storageHint', d.channels, d.media.listed) },
             ].map((s) => (
               <Card key={s.label} className="p-4 sm:p-5">
                 <Stat {...s} />
@@ -91,14 +93,14 @@ export default function Overview() {
 
           <div className="mt-4 grid gap-4 xl:grid-cols-3">
             <Card className="xl:col-span-2">
-              <CardHeader title="處理漏斗（時數）" description="每一階段保留下來的音訊時數；百分比為相對前一階段。" />
+              <CardHeader title={t('collect.overview.funnelTitle')} description={t('collect.overview.funnelDesc')} />
               <CardBody>
                 <Funnel hours={d.hours} />
               </CardBody>
             </Card>
 
             <Card>
-              <CardHeader title="佇列與 Worker" description="queue depth 與心跳狀態" icon={<Server />} />
+              <CardHeader title={t('collect.overview.workersTitle')} description={t('collect.overview.workersDesc')} icon={<Server />} />
               <CardBody className="space-y-4">
                 <div className="grid grid-cols-4 gap-2">
                   {(['fetch', 'audio', 'ml', 'export'] as const).map((q) => (
@@ -115,12 +117,12 @@ export default function Overview() {
                       <div className="min-w-0 flex-1">
                         <div className="truncate font-mono text-[12px] text-fg">{w.name}</div>
                         <div className="truncate text-[11px] text-fg-3">
-                          {w.queues.map((q) => queueLabel[q]).join('、')}
-                          {w.current_job ? ' · 執行中' : ' · 閒置'}
+                          {w.queues.map((q) => queueLabel[q]).join(t('common.listSep'))}
+                          {w.current_job ? t('collect.overview.workerBusy') : t('collect.overview.workerIdle')}
                         </div>
                       </div>
                       <span className={cn('shrink-0 text-[11px]', w.alive ? 'text-fg-3' : 'font-medium text-danger-fg')}>
-                        {w.alive ? '正常' : `離線 ${fmtRelative(w.last_seen_at)}`}
+                        {w.alive ? t('collect.overview.workerOk') : t('collect.overview.workerOffline', fmtRelative(w.last_seen_at))}
                       </span>
                     </li>
                   ))}
@@ -128,7 +130,7 @@ export default function Overview() {
                 {d.workers.some((w) => !w.alive) && (
                   <div className="flex gap-2 rounded-lg bg-warning-soft px-3 py-2 text-xs leading-5 text-warning-fg">
                     <XCircle className="mt-0.5 size-3.5 shrink-0" />
-                    有服務沒有回應心跳，相關工作會停在排隊狀態。請檢查 docker compose 日誌。
+                    {t('collect.overview.workersDown')}
                   </div>
                 )}
               </CardBody>
@@ -138,12 +140,12 @@ export default function Overview() {
           <div className="mt-4 grid gap-4 xl:grid-cols-3">
             <Card className="xl:col-span-2">
               <CardHeader
-                title="頻道進度"
-                description="可用時數 / 已列出時數"
+                title={t('collect.overview.channelsTitle')}
+                description={t('collect.overview.channelsDesc')}
                 actions={
                   <Button asChild size="sm" variant="ghost">
                     <Link to="/channels">
-                      全部頻道 <ArrowRight />
+                      {t('collect.overview.allChannels')} <ArrowRight />
                     </Link>
                   </Button>
                 }
@@ -167,7 +169,7 @@ export default function Overview() {
                               <div className="flex items-baseline justify-between gap-3">
                                 <span className="truncate text-[13px] font-medium">{c.title}</span>
                                 <span className="shrink-0 text-xs tabular text-fg-3">
-                                  {fmt1(c.hours.ready)} / {fmt1(c.hours.listed)} 小時
+                                  {t('collect.overview.hoursOf', fmt1(c.hours.ready), fmt1(c.hours.listed))}
                                 </span>
                               </div>
                               <div className="mt-1.5 h-1.5 rounded-full bg-surface-3">
@@ -184,19 +186,19 @@ export default function Overview() {
             </Card>
 
             <Card>
-              <CardHeader title="審查進度" description={`${fmtInt(d.segments.total)} 個音段`} />
+              <CardHeader title={t('collect.overview.reviewTitle')} description={t('collect.overview.reviewDesc', d.segments.total)} />
               <CardBody>
                 <StackBar
-                  format={(v) => `${fmtInt(v)} 段`}
+                  format={(v) => t('collect.overview.segCount', v)}
                   parts={[
-                    { key: 'passed', label: '通過', value: d.segments.passed, color: 'var(--success)' },
-                    { key: 'fix', label: '需修正', value: d.segments.needs_fix, color: 'var(--warning)' },
-                    { key: 'rest', label: '未審查／排除', value: Math.max(0, d.segments.total - d.segments.passed - d.segments.needs_fix), color: 'var(--series-muted)' },
+                    { key: 'passed', label: t('collect.overview.passed'), value: d.segments.passed, color: 'var(--success)' },
+                    { key: 'fix', label: t('collect.overview.needsFix'), value: d.segments.needs_fix, color: 'var(--warning)' },
+                    { key: 'rest', label: t('collect.overview.rest'), value: Math.max(0, d.segments.total - d.segments.passed - d.segments.needs_fix), color: 'var(--series-muted)' },
                   ]}
                 />
                 <Button asChild variant="soft" className="mt-5 w-full">
                   <Link to="/review">
-                    <AudioWaveform /> 繼續審查
+                    <AudioWaveform /> {t('collect.overview.continueReview')}
                   </Link>
                 </Button>
               </CardBody>
@@ -205,12 +207,12 @@ export default function Overview() {
 
           <Card className="mt-4">
             <CardHeader
-              title="最近的工作"
+              title={t('collect.overview.recentJobs')}
               icon={<Activity />}
               actions={
                 <Button asChild size="sm" variant="ghost">
                   <Link to="/jobs">
-                    工作佇列 <ArrowRight />
+                    {t('collect.overview.jobQueue')} <ArrowRight />
                   </Link>
                 </Button>
               }
@@ -225,12 +227,12 @@ export default function Overview() {
                   <Skeleton className="h-10" />
                 </div>
               ) : (
-                <EmptyState compact icon={<Clock />} title="還沒有任何工作" />
+                <EmptyState compact icon={<Clock />} title={t('collect.overview.noJobs')} />
               )}
             </div>
           </Card>
           <p className="mt-6 flex items-center justify-center gap-1.5 text-xs text-fg-3">
-            <Cpu className="size-3.5" /> 時數為各階段音訊長度總和；候選語者為最近一次分群的群數，不等於實際人數。
+            <Cpu className="size-3.5 shrink-0" /> {t('collect.overview.footnote')}
           </p>
         </>
       )}

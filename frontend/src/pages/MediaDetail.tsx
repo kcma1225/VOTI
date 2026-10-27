@@ -1,3 +1,4 @@
+import { t } from '@/i18n'
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
@@ -6,7 +7,7 @@ import { AlertTriangle, AudioWaveform, Check, ChevronDown, ExternalLink, Loader2
 import { api } from '@/api/client'
 import { onErr, qk, useMediaDetail, useSegments, useTimeline } from '@/api/queries'
 import type { Job, MediaDetail as TMedia, MediaQuality, SegmentSummary } from '@/api/types'
-import { fmtClock, fmtCompact, fmtDate, fmtDateTime, fmtDb, fmtInt, fmtKHz, fmtMos, fmtPct, fmtTimestamp } from '@/lib/format'
+import { fmtClock, fmtCompact, fmtDate, fmtDateTime, fmtDb, fmtInt, fmtKHz, fmtMos, fmtPct, fmtSec, fmtTimestamp } from '@/lib/format'
 import { flagLabel, jobKind, lang, licenseLabel, pipelineSteps } from '@/lib/labels'
 import { cn } from '@/lib/cn'
 import { Page, useTitle } from '@/components/layout/page'
@@ -25,10 +26,10 @@ import { speakerName } from '@/components/domain/speakers'
 function Stepper({ m }: { m: TMedia }) {
   const byKind = new Map<string, Job>()
   ;[...m.jobs].reverse().forEach((j) => byKind.set(j.kind, j))
-  const stageIdx = pipelineSteps.findIndex((s) => s.kind === m.stage)
+  const stageIdx = pipelineSteps().findIndex((s) => s.kind === m.stage)
   return (
     <ol className="flex min-w-0 items-start overflow-x-auto pb-1 no-scrollbar">
-      {pipelineSteps.map((s, i) => {
+      {pipelineSteps().map((s, i) => {
         const j = byKind.get(s.kind)
         const st =
           m.status === 'ready' ? 'completed' : j?.status === 'completed' ? 'completed' : j?.status === 'failed' || (m.status === 'failed' && i === stageIdx) ? 'failed' : j?.status === 'running' ? 'running' : j?.status === 'queued' ? 'queued' : 'pending'
@@ -36,7 +37,7 @@ function Stepper({ m }: { m: TMedia }) {
           <li key={s.kind} className="flex min-w-[38px] flex-1 flex-col items-center gap-1.5 sm:min-w-[64px]">
             <div className="flex w-full items-center">
               <span className={cn('h-px flex-1', i === 0 ? 'opacity-0' : st === 'completed' || st === 'running' ? 'bg-success' : 'bg-border-strong')} />
-              <Tooltip content={`${jobKind[s.kind]}${j?.error_message ? `：${j.error_message}` : ''}`}>
+              <Tooltip content={t('process.media.stepTip', jobKind[s.kind], j?.error_message ?? '')}>
                 <span
                   className={cn(
                     'grid size-6 shrink-0 place-items-center rounded-full border-2 text-[11px] font-semibold sm:size-7',
@@ -50,7 +51,7 @@ function Stepper({ m }: { m: TMedia }) {
                   {st === 'completed' ? <Check className="size-3.5" strokeWidth={3} /> : st === 'running' ? <Loader2 className="size-3.5 animate-spin" /> : st === 'failed' ? <X className="size-3.5" strokeWidth={3} /> : i + 1}
                 </span>
               </Tooltip>
-              <span className={cn('h-px flex-1', i === pipelineSteps.length - 1 ? 'opacity-0' : st === 'completed' ? 'bg-success' : 'bg-border-strong')} />
+              <span className={cn('h-px flex-1', i === pipelineSteps().length - 1 ? 'opacity-0' : st === 'completed' ? 'bg-success' : 'bg-border-strong')} />
             </div>
             <span className={cn('whitespace-nowrap text-[11px]', st === 'running' ? 'font-medium text-primary' : st === 'failed' ? 'font-medium text-danger-fg' : 'text-fg-3')}>{s.short}</span>
           </li>
@@ -65,15 +66,15 @@ function QualityCard({ q }: { q: MediaQuality }) {
     ['SNR', fmtDb(q.snr_mean), `P10 ${fmtDb(q.snr_p10)}`],
     ['DNSMOS OVRL', fmtMos(q.dnsmos_ovrl), `SIG ${fmtMos(q.dnsmos_sig)} · BAK ${fmtMos(q.dnsmos_bak)}`],
     ['P.808', fmtMos(q.dnsmos_p808)],
-    ['C50', fmtDb(q.c50_mean), '殘響'],
-    ['語音比例', fmtPct(q.speech_ratio), `VAD 一致 ${fmtPct(q.vad_agreement)}`],
-    ['響度', q.lufs_integrated != null ? `${q.lufs_integrated} LUFS` : '—', `峰值 ${fmtDb(q.true_peak_db)}`],
-    ['削波', fmtPct(q.clipping_ratio, 2), q.clipping_ratio && q.clipping_ratio > 0.001 ? '偏高' : '正常'],
-    ['位元率', q.bitrate ? `${Math.round(q.bitrate / 1000)} kbps` : '—', q.container ?? undefined],
+    ['C50', fmtDb(q.c50_mean), t('process.media.reverb')],
+    [t('process.media.speechRatio'), fmtPct(q.speech_ratio), t('process.media.vadAgreement', fmtPct(q.vad_agreement))],
+    [t('process.media.loudness'), q.lufs_integrated != null ? `${q.lufs_integrated} LUFS` : '—', t('process.media.peak', fmtDb(q.true_peak_db))],
+    [t('process.media.clipping'), fmtPct(q.clipping_ratio, 2), q.clipping_ratio && q.clipping_ratio > 0.001 ? t('process.media.high') : t('process.media.normal')],
+    [t('process.media.bitrate'), q.bitrate ? `${Math.round(q.bitrate / 1000)} kbps` : '—', q.container ?? undefined],
   ]
   return (
     <Card>
-      <CardHeader title="音質" description={`${q.codec ?? '—'} · ${fmtKHz(q.sample_rate)} · ${q.channels === 1 ? '單聲道' : '立體聲'}`} />
+      <CardHeader title={t('process.media.quality')} description={`${q.codec ?? '—'} · ${fmtKHz(q.sample_rate)} · ${q.channels === 1 ? t('process.media.mono') : t('process.media.stereo')}`} />
       <CardBody className="space-y-5">
         <div className="grid grid-cols-2 gap-2">
           {metrics.map(([k, v, h]) => (
@@ -86,14 +87,14 @@ function QualityCard({ q }: { q: MediaQuality }) {
         </div>
         <div>
           <div className="mb-2 flex items-center justify-between gap-2">
-            <span className="text-[13px] font-medium">頻寬 vs. 奈奎斯特</span>
+            <span className="text-[13px] font-medium">{t('process.media.bwVsNyquist')}</span>
             {q.upsampled_suspect ? (
               <Badge tone="warning">
-                <AlertTriangle className="size-3" /> 疑似升頻
+                <AlertTriangle className="size-3" /> {t('process.media.upsampled')}
               </Badge>
             ) : (
               <Badge tone="success" dot>
-                頻寬正常
+                {t('process.media.bwOk')}
               </Badge>
             )}
           </div>
@@ -101,7 +102,7 @@ function QualityCard({ q }: { q: MediaQuality }) {
           {q.details?.spectrum && (
             <div className="mt-4">
               <SpectrumChart q={q} />
-              <p className="mt-1 text-[11px] text-fg-3">原始音訊長期平均頻譜（dB）。陰影區為實際頻寬以上、取樣率可表示但沒有內容的頻段。</p>
+              <p className="mt-1 text-[11px] text-fg-3">{t('process.media.spectrumNote')}</p>
             </div>
           )}
         </div>
@@ -119,15 +120,15 @@ function TimelineCard({ id, focus }: { id: string; focus?: number }) {
   return (
     <Card>
       <CardHeader
-        title="時間軸"
-        description="語音活動、SNR、語者分段、重複片段與音段；點選音段開始審查"
+        title={t('process.media.timeline')}
+        description={t('process.media.timelineDesc')}
         actions={
           <div className="flex items-center gap-1">
-            <Button size="icon-sm" variant="ghost" aria-label="縮小" disabled={zoom <= 1} onClick={() => setZoom((z) => Math.max(1, z / 2))}>
+            <Button size="icon-sm" variant="ghost" aria-label={t('process.media.zoomOut')} disabled={zoom <= 1} onClick={() => setZoom((z) => Math.max(1, z / 2))}>
               <ZoomOut />
             </Button>
             <span className="w-8 text-center text-xs tabular text-fg-3">{zoom}×</span>
-            <Button size="icon-sm" variant="ghost" aria-label="放大" disabled={zoom >= 16} onClick={() => setZoom((z) => Math.min(16, z * 2))}>
+            <Button size="icon-sm" variant="ghost" aria-label={t('process.media.zoomIn')} disabled={zoom >= 16} onClick={() => setZoom((z) => Math.min(16, z * 2))}>
               <ZoomIn />
             </Button>
           </div>
@@ -170,21 +171,21 @@ function SegmentsCard({ id }: { id: string }) {
   const segs = useSegments({ media_id: id, limit: 25, offset })
   const navigate = useNavigate()
   const cols: Column<SegmentSummary>[] = [
-    { id: 't', header: '時間', width: 'w-28', cell: (s) => <span className="font-mono text-xs text-fg-2">{fmtTimestamp(s.start_sec)}</span> },
-    { id: 'text', header: '文字', cell: (s) => <span className="line-clamp-2 break-cjk text-[13px]">{s.text}</span> },
-    { id: 'sp', header: '語者', width: 'w-28', hideBelow: 'xl', cell: (s) => <span className="truncate text-xs text-fg-2">{s.speaker ? speakerName(s.speaker) : s.local_speaker ?? '—'}</span> },
+    { id: 't', header: t('process.media.colTime'), width: 'w-28', cell: (s) => <span className="font-mono text-xs text-fg-2">{fmtTimestamp(s.start_sec)}</span> },
+    { id: 'text', header: t('process.media.colText'), cell: (s) => <span className="line-clamp-2 break-cjk text-[13px]">{s.text}</span> },
+    { id: 'sp', header: t('process.media.colSpeaker'), width: 'w-28', hideBelow: 'xl', cell: (s) => <span className="truncate text-xs text-fg-2">{s.speaker ? speakerName(s.speaker) : s.local_speaker ?? '—'}</span> },
     { id: 'snr', header: 'SNR', width: 'w-20', align: 'right', hideBelow: 'lg', cell: (s) => <span className="text-xs">{fmtDb(s.snr)}</span> },
-    { id: 'st', header: '審查', width: 'w-24', cell: (s) => <ReviewBadge status={s.review_status} /> },
+    { id: 'st', header: t('process.media.colReview'), width: 'w-24', cell: (s) => <ReviewBadge status={s.review_status} /> },
   ]
   return (
     <Card className="overflow-clip">
       <CardHeader
-        title="音段"
-        description={segs.data ? `${fmtInt(segs.data.total)} 個音段` : undefined}
+        title={t('process.media.segments')}
+        description={segs.data ? t('process.media.segmentCount', segs.data.total) : undefined}
         actions={
           <Button asChild size="sm" variant="soft">
             <Link to={`/review?media=${id}`}>
-              <AudioWaveform /> 審查這部影片
+              <AudioWaveform /> {t('process.media.reviewThis')}
             </Link>
           </Button>
         }
@@ -193,7 +194,7 @@ function SegmentsCard({ id }: { id: string }) {
         {!segs.data ? (
           <ListSkeleton rows={5} />
         ) : !segs.data.items.length ? (
-          <EmptyState compact icon={<AudioWaveform />} title="尚未切分音段" description="影片處理完成後會依字幕與 VAD 自動切分。" />
+          <EmptyState compact icon={<AudioWaveform />} title={t('process.media.noSegments')} description={t('process.media.noSegmentsDesc')} />
         ) : (
           <>
             <DataTable
@@ -205,7 +206,7 @@ function SegmentsCard({ id }: { id: string }) {
                 <div>
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-mono text-xs text-fg-3">
-                      {fmtTimestamp(s.start_sec)} · {s.duration.toFixed(1)} 秒
+                      {fmtTimestamp(s.start_sec)} · {fmtSec(s.duration)}
                     </span>
                     <ReviewBadge status={s.review_status} />
                   </div>
@@ -238,7 +239,7 @@ export default function MediaDetail() {
   const retry = useMutation({
     mutationFn: () => api.retryMedia(id),
     onSuccess: () => {
-      toast.success('已重新排入處理')
+      toast.success(t('process.media.requeued'))
       qc.invalidateQueries({ queryKey: qk.mediaDetail(id) })
     },
     onError: onErr,
@@ -246,7 +247,7 @@ export default function MediaDetail() {
   const reprocess = useMutation({
     mutationFn: (step: string) => api.reprocess(id, step),
     onSuccess: () => {
-      toast.success('已排入重新處理')
+      toast.success(t('process.media.reprocessQueued'))
       qc.invalidateQueries({ queryKey: qk.mediaDetail(id) })
     },
     onError: onErr,
@@ -292,7 +293,7 @@ export default function MediaDetail() {
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px] text-fg-3">
             <MediaStatusBadge status={m.status} stage={m.stage} />
             <span>{fmtDate(m.published_at)}</span>
-            <span>{fmtCompact(m.view_count)} 次觀看</span>
+            <span>{t('process.media.views', fmtCompact(m.view_count))}</span>
             <span>{licenseLabel[m.license ?? 'youtube']}</span>
             {m.kind === 'short' && <Tag>Shorts</Tag>}
             <CaptionBadges manual={m.has_manual_captions} auto={m.has_auto_captions} manualLangs={m.manual_caption_langs} autoLangs={m.auto_caption_langs} />
@@ -301,25 +302,25 @@ export default function MediaDetail() {
             {m.status === 'ready' && (
               <Button asChild variant="primary">
                 <Link to={`/review?media=${m.id}`}>
-                  <AudioWaveform /> 審查音段
+                  <AudioWaveform /> {t('process.media.reviewSegments')}
                 </Link>
               </Button>
             )}
             {m.status === 'failed' && (
               <Button variant="primary" onClick={() => retry.mutate()} loading={retry.isPending}>
-                <RotateCw /> 重試失敗的步驟
+                <RotateCw /> {t('process.media.retryFailed')}
               </Button>
             )}
             {hasPipeline && (
               <Menu>
                 <MenuTrigger asChild>
                   <Button>
-                    重新處理 <ChevronDown />
+                    {t('process.media.reprocess')} <ChevronDown />
                   </Button>
                 </MenuTrigger>
                 <MenuContent align="start">
-                  <MenuLabel>從這一步重新執行</MenuLabel>
-                  {pipelineSteps.slice(1).map((s) => (
+                  <MenuLabel>{t('process.media.rerunFrom')}</MenuLabel>
+                  {pipelineSteps().slice(1).map((s) => (
                     <MenuItem key={s.kind} onSelect={() => reprocess.mutate(s.kind)}>
                       {jobKind[s.kind]}
                     </MenuItem>
@@ -341,10 +342,10 @@ export default function MediaDetail() {
           <AlertTriangle className="mt-0.5 size-4 shrink-0 text-danger" />
           <div className="min-w-0 text-[13px]">
             <div className="font-medium text-danger-fg">
-              處理失敗{m.stage ? `：${jobKind[m.stage as keyof typeof jobKind] ?? m.stage}` : ''}
+              {m.stage ? t('process.media.failedAt', jobKind[m.stage as keyof typeof jobKind] ?? m.stage) : t('process.media.failed')}
               {m.failure_code && <code className="ml-2 font-mono text-xs opacity-80">{m.failure_code}</code>}
             </div>
-            <p className="mt-0.5 leading-5 text-fg-2 break-cjk">{m.failure_message ?? '沒有提供錯誤訊息。'}</p>
+            <p className="mt-0.5 leading-5 text-fg-2 break-cjk">{m.failure_message ?? t('process.media.noErrorMessage')}</p>
           </div>
         </div>
       )}
@@ -366,46 +367,46 @@ export default function MediaDetail() {
             <Card>
               <EmptyState
                 icon={hasPipeline ? <Loader2 className="animate-spin" /> : <Minus />}
-                title={hasPipeline ? (m.status === 'failed' ? '處理在中途停止' : '處理中，完成後會顯示時間軸與音段') : '這部影片尚未下載'}
-                description={hasPipeline ? '可在下方的工作紀錄查看每一步的狀態。' : '回到頻道頁勾選後批次下載，或確認它有原生字幕。'}
+                title={hasPipeline ? (m.status === 'failed' ? t('process.media.stoppedMidway') : t('process.media.processing')) : t('process.media.notDownloaded')}
+                description={hasPipeline ? t('process.media.processingDesc') : t('process.media.notDownloadedDesc')}
               />
             </Card>
           )}
           <Card>
-            <CardHeader title="工作紀錄" description={`${m.jobs.length} 筆`} />
+            <CardHeader title={t('process.media.jobHistory')} description={t('process.media.jobCount', m.jobs.length)} />
             <div className="mt-3 divide-y divide-border border-t border-border">
-              {m.jobs.length ? m.jobs.map((j) => <JobRow key={j.id} job={j} hideSubject />) : <p className="px-5 py-6 text-center text-[13px] text-fg-3">沒有工作紀錄</p>}
+              {m.jobs.length ? m.jobs.map((j) => <JobRow key={j.id} job={j} hideSubject />) : <p className="px-5 py-6 text-center text-[13px] text-fg-3">{t('process.media.noJobs')}</p>}
             </div>
           </Card>
         </div>
         <div className="min-w-0 space-y-4">
           {m.quality && <QualityCard q={m.quality} />}
           <Card>
-            <CardHeader title="影片資訊" />
+            <CardHeader title={t('process.media.info')} />
             <CardBody className="space-y-4">
               <DescList
                 items={[
                   ['YouTube ID', <code className="font-mono text-xs">{m.platform_media_id}</code>],
-                  ['長度', fmtClock(m.duration_sec)],
-                  ['發布', fmtDateTime(m.published_at)],
-                  ['讚 / 留言', `${fmtInt(m.like_count)} / ${fmtInt(m.comment_count)}`],
-                  ['語言', m.language ? lang(m.language) : '—'],
-                  ['字幕軌', m.tracks.length ? m.tracks.map((t) => `${lang(t.language)}（${t.kind === 'manual' ? '原生' : t.kind === 'auto' ? '自動' : t.kind}）`).join('、') : '—'],
-                  ['章節', m.chapters.length ? m.chapters.map((c) => c.title).join('、') : '—'],
+                  [t('process.media.duration'), fmtClock(m.duration_sec)],
+                  [t('process.media.published'), fmtDateTime(m.published_at)],
+                  [t('process.media.likesComments'), `${fmtInt(m.like_count)} / ${fmtInt(m.comment_count)}`],
+                  [t('process.media.language'), m.language ? lang(m.language) : '—'],
+                  [t('process.media.tracks'), m.tracks.length ? m.tracks.map((tr) => t('process.media.track', lang(tr.language), tr.kind === 'manual' ? t('process.media.trackKind.manual') : tr.kind === 'auto' ? t('process.media.trackKind.auto') : tr.kind)).join(t('common.listSep')) : '—'],
+                  [t('process.media.chapters'), m.chapters.length ? m.chapters.map((c) => c.title).join(t('common.listSep')) : '—'],
                 ]}
               />
               {m.description && (
                 <div className="border-t border-border pt-3">
                   <p className={cn('whitespace-pre-line text-[13px] leading-6 text-fg-2 break-cjk', !descOpen && 'line-clamp-4')}>{m.description}</p>
                   <button onClick={() => setDescOpen((o) => !o)} className="mt-1 text-xs font-medium text-primary hover:underline">
-                    {descOpen ? '收合' : '顯示完整說明'}
+                    {descOpen ? t('process.media.collapse') : t('process.media.showDescription')}
                   </button>
                 </div>
               )}
               {m.tags.length > 0 && (
                 <div className="flex flex-wrap gap-1">
-                  {m.tags.map((t) => (
-                    <Tag key={t}>#{t}</Tag>
+                  {m.tags.map((tag) => (
+                    <Tag key={tag}>#{tag}</Tag>
                   ))}
                 </div>
               )}

@@ -1,0 +1,120 @@
+/* Labels for enum-like values coming from the API (status, job kind, flags …). */
+import type { Shape } from '../shape'
+
+export const zh = {
+  mediaStatus: {
+    listed: '已列出', detailed: '已取得資訊', queued: '排隊中', downloading: '下載中', downloaded: '已下載',
+    processing: '處理中', ready: '可用', failed: '失敗', blocked: '受阻', skipped: '已略過',
+  },
+  jobStatus: {
+    queued: '排隊中', running: '執行中', completed: '完成', failed: '失敗', blocked: '受阻', cancelled: '已取消', interrupted: '中斷',
+  },
+  jobKind: {
+    'source.resolve': '解析來源',
+    'channel.list': '列出頻道影片',
+    'playlist.list': '列出播放清單',
+    'media.detail': '取得影片資訊',
+    'media.download': '下載音訊與字幕',
+    'media.normalize': '音訊正規化',
+    'media.quality': '音質分析',
+    'media.diarize': '語者分段',
+    'media.segment': '切分音段',
+    'media.embed': '語者嵌入',
+    'media.profile': '語者特徵',
+    'media.fingerprint': '音訊指紋',
+    'channel.dedup': '重複片段偵測',
+    'speakers.cluster': '語者分群',
+    'dataset.export': '匯出資料集',
+  },
+  pipelineShort: {
+    'media.download': '下載', 'media.normalize': '正規化', 'media.quality': '音質', 'media.diarize': '分段',
+    'media.segment': '切分', 'media.embed': '嵌入', 'media.profile': '特徵', 'media.fingerprint': '指紋',
+  },
+  queue: { fetch: '擷取', audio: '音訊', ml: '模型', export: '匯出' },
+  reviewStatus: { unchecked: '未審查', passed: '通過', needs_fix: '需修正', excluded: '排除' },
+  speakerState: { unknown: '未確認', single: '單一語者', multiple: '多位語者', overlap: '語音重疊' },
+  textSource: { manual_caption: '原生字幕', auto_caption: '自動字幕', human_revision: '人工校正', none: '無文字' },
+  flag: {
+    low_speech: '語音比例低', low_snr: '訊噪比低', clipped: '削波失真', repeated: '重複片段', overlap: '語音重疊',
+    boundary_adjusted: '已調邊界', too_short: '過短', too_long: '過長', upsampled: '疑似升頻', music: '背景音樂',
+  },
+  sex: { male: '男性', female: '女性', unknown: '未知' },
+  emotion: {
+    neutral: '中性', happy: '開心', sad: '悲傷', angry: '生氣', surprise: '驚訝',
+    fear: '恐懼', disgust: '厭惡', contempt: '輕蔑', other: '其他',
+  },
+  voiceQuality: {
+    breathy: '氣聲', creaky: '嘎裂聲', hoarse: '沙啞', nasal: '鼻音', resonant: '共鳴', tense: '緊繃', smooth: '平滑', shrill: '尖細',
+  },
+  speechFlow: { fluent: '流暢', disfluent: '不流暢', slow: '慢速', fast: '快速', normal: '正常語速' },
+  ageUnknown: '未知',
+  ageUnder20: '20 歲以下',
+  age60plus: '60 歲以上',
+  ageRange: (g: string) => `${g} 歲`,
+  lang: {
+    'zh-TW': '中文（台灣）', 'zh-Hant': '繁體中文', zh: '中文', 'zh-Hans': '簡體中文', 'zh-CN': '簡體中文',
+    nan: '台語', 'nan-TW': '台語', hak: '客語', en: '英文', ja: '日文',
+  },
+  repeatPosition: { intro: '片頭', outro: '片尾', middle: '片中' },
+  mediaKind: { video: '影片', short: 'Shorts', live: '直播', upload: '上傳' },
+  license: { youtube: '標準授權', creative_commons: 'CC 授權' },
+}
+
+export const en: Shape<typeof zh> = {
+  mediaStatus: {
+    listed: 'Listed', detailed: 'Detailed', queued: 'Queued', downloading: 'Downloading', downloaded: 'Downloaded',
+    processing: 'Processing', ready: 'Ready', failed: 'Failed', blocked: 'Blocked', skipped: 'Skipped',
+  },
+  jobStatus: {
+    queued: 'Queued', running: 'Running', completed: 'Done', failed: 'Failed', blocked: 'Blocked', cancelled: 'Cancelled', interrupted: 'Interrupted',
+  },
+  jobKind: {
+    'source.resolve': 'Resolve source',
+    'channel.list': 'List channel videos',
+    'playlist.list': 'List playlist',
+    'media.detail': 'Fetch video details',
+    'media.download': 'Download audio & captions',
+    'media.normalize': 'Normalize audio',
+    'media.quality': 'Audio quality analysis',
+    'media.diarize': 'Speaker diarization',
+    'media.segment': 'Segmentation',
+    'media.embed': 'Speaker embeddings',
+    'media.profile': 'Speaker profiling',
+    'media.fingerprint': 'Audio fingerprinting',
+    'channel.dedup': 'Repeated intro/outro detection',
+    'speakers.cluster': 'Speaker clustering',
+    'dataset.export': 'Dataset export',
+  },
+  pipelineShort: {
+    'media.download': 'Download', 'media.normalize': 'Normalize', 'media.quality': 'Quality', 'media.diarize': 'Diarize',
+    'media.segment': 'Segment', 'media.embed': 'Embed', 'media.profile': 'Profile', 'media.fingerprint': 'Fingerprint',
+  },
+  queue: { fetch: 'Fetch', audio: 'Audio', ml: 'ML', export: 'Export' },
+  reviewStatus: { unchecked: 'Unreviewed', passed: 'Passed', needs_fix: 'Needs fix', excluded: 'Excluded' },
+  speakerState: { unknown: 'Unconfirmed', single: 'Single speaker', multiple: 'Multiple speakers', overlap: 'Overlapping speech' },
+  textSource: { manual_caption: 'Uploader captions', auto_caption: 'Auto captions', human_revision: 'Human revision', none: 'No text' },
+  flag: {
+    low_speech: 'Low speech ratio', low_snr: 'Low SNR', clipped: 'Clipping', repeated: 'Repeated intro/outro', overlap: 'Overlapping speech',
+    boundary_adjusted: 'Boundary adjusted', too_short: 'Too short', too_long: 'Too long', upsampled: 'Likely upsampled', music: 'Background music',
+  },
+  sex: { male: 'Male', female: 'Female', unknown: 'Unknown' },
+  emotion: {
+    neutral: 'Neutral', happy: 'Happy', sad: 'Sad', angry: 'Angry', surprise: 'Surprised',
+    fear: 'Fearful', disgust: 'Disgusted', contempt: 'Contempt', other: 'Other',
+  },
+  voiceQuality: {
+    breathy: 'Breathy', creaky: 'Creaky', hoarse: 'Hoarse', nasal: 'Nasal', resonant: 'Resonant', tense: 'Tense', smooth: 'Smooth', shrill: 'Shrill',
+  },
+  speechFlow: { fluent: 'Fluent', disfluent: 'Disfluent', slow: 'Slow', fast: 'Fast', normal: 'Normal pace' },
+  ageUnknown: 'Unknown',
+  ageUnder20: 'Under 20',
+  age60plus: '60+',
+  ageRange: (g) => g,
+  lang: {
+    'zh-TW': 'Chinese (Taiwan)', 'zh-Hant': 'Traditional Chinese', zh: 'Chinese', 'zh-Hans': 'Simplified Chinese', 'zh-CN': 'Simplified Chinese',
+    nan: 'Taiwanese', 'nan-TW': 'Taiwanese', hak: 'Hakka', en: 'English', ja: 'Japanese',
+  },
+  repeatPosition: { intro: 'Intro', outro: 'Outro', middle: 'Mid-video' },
+  mediaKind: { video: 'Video', short: 'Shorts', live: 'Live', upload: 'Upload' },
+  license: { youtube: 'Standard license', creative_commons: 'Creative Commons' },
+}

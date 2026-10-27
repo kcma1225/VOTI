@@ -1,3 +1,4 @@
+import { useT } from '@/i18n'
 import { Link } from 'react-router'
 import { RotateCw, X } from 'lucide-react'
 import type { Job } from '@/api/types'
@@ -10,6 +11,7 @@ import { JobStatusIcon } from './status'
 import { cn } from '@/lib/cn'
 
 export function JobRow({ job, className, showActions = true, hideSubject }: { job: Job; className?: string; showActions?: boolean; hideSubject?: boolean }) {
+  const t = useT()
   const action = useJobAction()
   const canRetry = ['failed', 'blocked', 'interrupted', 'cancelled'].includes(job.status)
   const canCancel = job.status === 'queued' || job.status === 'running'
@@ -21,7 +23,7 @@ export function JobRow({ job, className, showActions = true, hideSubject }: { jo
         <div className="flex min-w-0 items-baseline justify-between gap-2">
           <span className="truncate text-[13px] font-medium text-fg">{jobKind[job.kind] ?? job.kind}</span>
           <span className="shrink-0 text-xs text-fg-3 tabular">
-            {job.status === 'running' && job.eta_sec ? `剩 ${fmtEta(job.eta_sec)}` : fmtRelative(job.finished_at ?? job.started_at ?? job.created_at)}
+            {job.status === 'running' && job.eta_sec ? t('process.jobRow.remaining', fmtEta(job.eta_sec)) : fmtRelative(job.finished_at ?? job.started_at ?? job.created_at)}
           </span>
         </div>
         {subject &&
@@ -44,13 +46,14 @@ export function JobRow({ job, className, showActions = true, hideSubject }: { jo
         )}
         {job.error_message && (job.status === 'failed' || job.status === 'blocked' || job.status === 'interrupted') && (
           <div className="mt-1.5 line-clamp-2 rounded-md bg-danger-soft px-2 py-1 text-[11px] leading-4 text-danger-fg break-cjk">
-            {job.error_code && <span className="font-mono">{job.error_code}：</span>}
+            {job.error_code && <span className="font-mono">{t('process.jobRow.errorCode', job.error_code)}</span>}
             {job.error_message}
           </div>
         )}
         <div className="mt-1 truncate text-[11px] text-fg-3">
           {job.status === 'running' && (job.message || job.phase) ? `${job.message || job.phase} · ` : ''}
-          {queueLabel[job.queue] ?? job.queue}佇列{job.attempts > 1 ? ` · 第 ${job.attempts} 次嘗試` : ''}
+          {t('process.jobRow.queue', queueLabel[job.queue] ?? job.queue)}
+          {job.attempts > 1 ? ` · ${t('process.jobRow.attempt', job.attempts)}` : ''}
         </div>
       </div>
       {showActions && (canRetry || canCancel) && (
@@ -62,7 +65,7 @@ export function JobRow({ job, className, showActions = true, hideSubject }: { jo
           onClick={() => action.mutate({ id: job.id, action: canRetry ? 'retry' : 'cancel' })}
         >
           {canRetry ? <RotateCw /> : <X />}
-          {canRetry ? '重試' : '取消'}
+          {canRetry ? t('common.retry') : t('common.cancel')}
         </Button>
       )}
     </div>

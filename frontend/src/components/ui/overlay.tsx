@@ -1,3 +1,4 @@
+import { t } from '@/i18n'
 import type { ReactNode } from 'react'
 import { Dialog as D, DropdownMenu as DM, Popover as P, Tooltip as T } from 'radix-ui'
 import { X } from 'lucide-react'
@@ -48,10 +49,10 @@ export function Dialog({
               {description ? (
                 <D.Description className="mt-1 text-[13px] leading-5 text-fg-3">{description}</D.Description>
               ) : (
-                <D.Description className="sr-only">{typeof title === 'string' ? title : '對話框'}</D.Description>
+                <D.Description className="sr-only">{typeof title === 'string' ? title : t('common.dialog')}</D.Description>
               )}
             </div>
-            <D.Close className="-mr-2 -mt-1 grid size-10 shrink-0 place-items-center rounded-lg text-fg-3 hover:bg-surface-2 hover:text-fg sm:size-8" aria-label="關閉">
+            <D.Close className="-mr-2 -mt-1 grid size-10 shrink-0 place-items-center rounded-lg text-fg-3 hover:bg-surface-2 hover:text-fg sm:size-8" aria-label={t('common.close')}>
               <X className="size-4" />
             </D.Close>
           </div>
@@ -105,12 +106,12 @@ export function Sheet({
               {description ? (
                 <D.Description className="truncate text-xs text-fg-3">{description}</D.Description>
               ) : (
-                <D.Description className="sr-only">{typeof title === 'string' ? title : '面板'}</D.Description>
+                <D.Description className="sr-only">{typeof title === 'string' ? title : t('common.panel')}</D.Description>
               )}
             </div>
             <div className="flex items-center gap-1">
               {headerActions}
-              <D.Close className="grid size-10 place-items-center rounded-lg text-fg-3 hover:bg-surface-2 hover:text-fg sm:size-9" aria-label="關閉">
+              <D.Close className="grid size-10 place-items-center rounded-lg text-fg-3 hover:bg-surface-2 hover:text-fg sm:size-9" aria-label={t('common.close')}>
                 <X className="size-4" />
               </D.Close>
             </div>

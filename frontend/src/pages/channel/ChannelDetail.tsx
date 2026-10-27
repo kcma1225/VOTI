@@ -22,7 +22,7 @@ import {
 import { api } from '@/api/client'
 import { errMsg, onErr, qk, useMe, useChannel, useDiversity, usePlaylists, useRepeated, useSpeakers } from '@/api/queries'
 import type { ChannelDetail as TChannel } from '@/api/types'
-import { fmt1, fmtBytes, fmtClock, fmtCompact, fmtHours, fmtInt, fmtMos, fmtRelative, fmtSec } from '@/lib/format'
+import { fmt1, fmtBytes, fmtClock, fmtCompact, fmtHours, fmtInt, fmtMos, fmtRelative, fmtSec, hoursUnit } from '@/lib/format'
 import { ageGroupLabel, ageGroupOrder, repeatPosition, sexLabel } from '@/lib/labels'
 import { Page } from '@/components/layout/page'
 import { useTitle } from '@/components/layout/page'
@@ -37,16 +37,18 @@ import { QualityPanels } from '@/components/domain/quality-viz'
 import { SpeakerList } from '@/components/domain/speakers'
 import { HBars, ORDINAL, StackBar } from '@/components/charts/charts'
 import { cn } from '@/lib/cn'
+import { useT } from '@/i18n'
 
 function DeleteChannelDialog({ c, open, onOpenChange }: { c: TChannel; open: boolean; onOpenChange: (o: boolean) => void }) {
   const qc = useQueryClient()
   const navigate = useNavigate()
   const [typed, setTyped] = useState('')
+  const t = useT()
   const impact = useQuery({ queryKey: ['channel-delete-impact', c.id], queryFn: () => api.channelDeleteImpact(c.id), enabled: open, staleTime: 0 })
   const del = useMutation({
     mutationFn: () => api.deleteChannel(c.id, impact.data?.requires_confirmation ? typed : undefined),
     onSuccess: () => {
-      toast.success(`已刪除頻道「${c.title}」`)
+      toast.success(t('collect.channel.del.toastDone', c.title))
       onOpenChange(false)
       qc.removeQueries({ queryKey: qk.channel(c.id) })
       qc.invalidateQueries()
@@ -64,13 +66,13 @@ function DeleteChannelDialog({ c, open, onOpenChange }: { c: TChannel; open: boo
         onOpenChange(o)
         if (o) setTyped('')
       }}
-      title="刪除頻道"
-      description={<>將從系統移除「<span className="font-medium text-fg">{c.title}</span>」及其所有影片、播放清單與工作。此動作無法復原。</>}
+      title={t('collect.channel.del.title')}
+      description={t('collect.channel.del.description', <span className="font-medium text-fg">{c.title}</span>)}
       footer={
         <>
-          <Button onClick={() => onOpenChange(false)}>取消</Button>
+          <Button onClick={() => onOpenChange(false)}>{t('common.cancel')}</Button>
           <Button variant="danger" loading={del.isPending} disabled={!canDelete} onClick={() => del.mutate()}>
-            <Trash2 /> 永久刪除
+            <Trash2 /> {t('collect.channel.del.submit')}
           </Button>
         </>
       }
@@ -83,24 +85,24 @@ function DeleteChannelDialog({ c, open, onOpenChange }: { c: TChannel; open: boo
             <div className="flex gap-3 rounded-lg border border-danger/30 bg-danger-soft px-3.5 py-3 text-[13px] leading-5">
               <TriangleAlert className="mt-0.5 size-4 shrink-0 text-danger-fg" />
               <div className="min-w-0 space-y-1.5">
-                <p className="font-medium text-danger-fg">這個頻道已有下載或處理過的資料，刪除後會一併永久刪除：</p>
+                <p className="font-medium text-danger-fg">{t('collect.channel.del.warnHead')}</p>
                 <ul className="list-disc space-y-0.5 pl-4 text-fg-2">
-                  <li>{fmtInt(d.downloaded_media)} 部影片的音檔（約 {fmtHours(d.downloaded_sec)}，佔用 {fmtBytes(d.storage_bytes)}）</li>
-                  <li>音質分析、語者分段、語者向量與 Vox-Profile 結果</li>
-                  <li>{fmtInt(d.segments)} 個音段{d.reviewed_segments > 0 && <>，其中 <span className="font-medium text-danger-fg">{fmtInt(d.reviewed_segments)} 個已人工審查</span></>}</li>
-                  {d.active_jobs > 0 && <li>{fmtInt(d.active_jobs)} 個進行中或排隊中的工作會被取消</li>}
+                  <li>{t('collect.channel.del.audio', d.downloaded_media, fmtHours(d.downloaded_sec), fmtBytes(d.storage_bytes))}</li>
+                  <li>{t('collect.channel.del.analyses')}</li>
+                  <li>{t('collect.channel.del.segments', d.segments)}{d.reviewed_segments > 0 && <>{t('collect.channel.del.reviewedPart')}<span className="font-medium text-danger-fg">{t('collect.channel.del.reviewed', d.reviewed_segments)}</span></>}</li>
+                  {d.active_jobs > 0 && <li>{t('collect.channel.del.activeJobs', d.active_jobs)}</li>}
                 </ul>
               </div>
             </div>
           ) : (
-            <p className="text-[13px] leading-5 text-fg-2">這個頻道還沒有下載任何影片，只會移除 {fmtInt(d.media_total)} 筆影片資訊{d.playlists > 0 && <>與 {fmtInt(d.playlists)} 個播放清單</>}。</p>
+            <p className="text-[13px] leading-5 text-fg-2">{t('collect.channel.del.metadataOnly', d.media_total, d.playlists)}</p>
           )}
           <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 rounded-lg bg-surface-2 px-3.5 py-3 text-[13px] sm:grid-cols-4">
             {[
-              ['影片', fmtInt(d.media_total)],
-              ['已下載', fmtInt(d.downloaded_media)],
-              ['音段', fmtInt(d.segments)],
-              ['佔用空間', fmtBytes(d.storage_bytes)],
+              [t('collect.channel.del.statVideos'), fmtInt(d.media_total)],
+              [t('collect.channel.del.statDownloaded'), fmtInt(d.downloaded_media)],
+              [t('collect.channel.del.statSegments'), fmtInt(d.segments)],
+              [t('collect.channel.del.statStorage'), fmtBytes(d.storage_bytes)],
             ].map(([k, v]) => (
               <div key={k} className="min-w-0">
                 <dt className="text-fg-3">{k}</dt>
@@ -109,10 +111,10 @@ function DeleteChannelDialog({ c, open, onOpenChange }: { c: TChannel; open: boo
             ))}
           </dl>
           {d.datasets_referencing > 0 && (
-            <p className="text-[12px] leading-5 text-fg-3">有 {fmtInt(d.datasets_referencing)} 個資料集的篩選條件包含此頻道；已匯出的資料集檔案不受影響，之後重新匯出時不會再包含這個頻道。</p>
+            <p className="text-[12px] leading-5 text-fg-3">{t('collect.channel.del.datasets', d.datasets_referencing)}</p>
           )}
           {mustType && (
-            <Field label={<>請輸入頻道名稱 <span className="font-medium text-fg">{c.title}</span> 以確認</>} htmlFor="confirm-channel-title">
+            <Field label={t('collect.channel.del.typeToConfirm', <span className="font-medium text-fg">{c.title}</span>)} htmlFor="confirm-channel-title">
               <Input id="confirm-channel-title" value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" placeholder={c.title} invalid={typed.length > 0 && typed.trim() !== c.title.trim()} />
             </Field>
           )}
@@ -128,37 +130,38 @@ function Header({ c }: { c: TChannel }) {
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [notesOpen, setNotesOpen] = useState(false)
   const [notes, setNotes] = useState(c.notes)
+  const t = useT()
   const refresh = useMutation({
     mutationFn: () => api.refreshChannel(c.id),
     onSuccess: () => {
-      toast.success('已開始重新列出頻道影片')
+      toast.success(t('collect.channel.toastRelist'))
       qc.invalidateQueries({ queryKey: qk.channel(c.id) })
     },
     onError: onErr,
   })
   const detail = useMutation({
     mutationFn: () => api.detailChannel(c.id),
-    onSuccess: (r) => toast.success(r.queued ? `已排入 ${fmtInt(r.queued)} 部影片取得字幕資訊` : '所有影片都已取得詳細資訊'),
+    onSuccess: (r) => toast.success(r.queued ? t('collect.channel.toastDetailQueued', r.queued) : t('collect.channel.toastDetailAll')),
     onError: onErr,
   })
-  const dedup = useMutation({ mutationFn: () => api.dedup(c.id), onSuccess: () => toast.success('已開始偵測重複片段'), onError: onErr })
+  const dedup = useMutation({ mutationFn: () => api.dedup(c.id), onSuccess: () => toast.success(t('collect.channel.toastDedup')), onError: onErr })
   const saveNotes = useMutation({
     mutationFn: () => api.patchChannel(c.id, notes),
     onSuccess: (d) => {
       qc.setQueryData(qk.channel(c.id), d)
       setNotesOpen(false)
-      toast.success('已儲存筆記')
+      toast.success(t('collect.channel.toastNotesSaved'))
     },
     onError: (e) => toast.error(errMsg(e)),
   })
   const stats = [
-    { label: '影片', value: fmtInt(c.kind_counts?.video ?? c.counts.listed), hint: c.video_count && c.video_count > c.counts.listed ? `YouTube 顯示 ${fmtInt(c.video_count)}` : undefined },
-    { label: 'Shorts', value: fmtInt(c.kind_counts?.short ?? 0) },
-    { label: '有原生字幕', value: fmtInt(c.counts.with_manual_captions), hint: `${fmtInt(c.counts.detailed)} 部已檢查` },
-    { label: '已下載', value: fmtInt(c.counts.downloaded), hint: c.counts.failed ? `${fmtInt(c.counts.failed)} 部失敗` : undefined, warn: !!c.counts.failed },
-    { label: '可用語音', value: `${fmt1(c.hours.speech)}`, unit: '小時', hint: `影片總長 ${fmt1(c.hours.listed)} 小時` },
-    { label: '候選語者', value: fmtInt(c.speakers.candidates), hint: fmtHours(c.speakers.total_sec) },
-    { label: '平均 SNR', value: c.quality.snr_mean != null ? fmt1(c.quality.snr_mean) : '—', unit: 'dB', hint: `DNSMOS ${fmtMos(c.quality.dnsmos_ovrl)}` },
+    { label: t('collect.channel.stats.videos'), value: fmtInt(c.kind_counts?.video ?? c.counts.listed), hint: c.video_count && c.video_count > c.counts.listed ? t('collect.channel.stats.ytShows', c.video_count) : undefined },
+    { label: t('collect.channel.stats.shorts'), value: fmtInt(c.kind_counts?.short ?? 0) },
+    { label: t('collect.channel.stats.manual'), value: fmtInt(c.counts.with_manual_captions), hint: t('collect.channel.stats.checked', c.counts.detailed) },
+    { label: t('collect.channel.stats.downloaded'), value: fmtInt(c.counts.downloaded), hint: c.counts.failed ? t('collect.channel.stats.failed', c.counts.failed) : undefined, warn: !!c.counts.failed },
+    { label: t('collect.channel.stats.speech'), value: `${fmt1(c.hours.speech)}`, unit: hoursUnit(), hint: t('collect.channel.stats.totalLength', fmt1(c.hours.listed)) },
+    { label: t('collect.channel.stats.candidates'), value: fmtInt(c.speakers.candidates), hint: fmtHours(c.speakers.total_sec) },
+    { label: t('collect.channel.stats.snr'), value: c.quality.snr_mean != null ? fmt1(c.quality.snr_mean) : '—', unit: 'dB', hint: `DNSMOS ${fmtMos(c.quality.dnsmos_ovrl)}` },
   ]
   return (
     <>
@@ -172,14 +175,14 @@ function Header({ c }: { c: TChannel }) {
                 <h1 className="truncate text-[22px] font-semibold leading-8 tracking-tight sm:text-2xl">{c.title}</h1>
                 {c.list_status === 'listing' && (
                   <Badge tone="primary">
-                    <Loader2 className="size-3 animate-spin" /> 正在列出影片
+                    <Loader2 className="size-3 animate-spin" /> {t('collect.channel.listingNow')}
                   </Badge>
                 )}
               </div>
               <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-fg-3">
                 <span>{c.handle}</span>
-                <span>{fmtCompact(c.subscriber_count)} 位訂閱者</span>
-                <span>更新於{fmtRelative(c.last_listed_at)}</span>
+                <span>{t('collect.channel.subscribers', fmtCompact(c.subscriber_count))}</span>
+                <span>{t('collect.channel.updated', fmtRelative(c.last_listed_at))}</span>
                 <a href={c.url} target="_blank" rel="noreferrer noopener" className="inline-flex items-center gap-1 hover:text-primary">
                   YouTube <ExternalLink className="size-3" />
                 </a>
@@ -195,32 +198,32 @@ function Header({ c }: { c: TChannel }) {
         </div>
         <div className="flex shrink-0 flex-wrap gap-2">
           <Button onClick={() => refresh.mutate()} loading={refresh.isPending} disabled={c.list_status === 'listing'}>
-            <RefreshCw /> 重新列出
+            <RefreshCw /> {t('collect.channel.relist')}
           </Button>
           <Button onClick={() => detail.mutate()} loading={detail.isPending} className="hidden sm:inline-flex">
-            <Captions /> 檢查字幕
+            <Captions /> {t('collect.channel.checkCaptions')}
           </Button>
           <Menu>
             <MenuTrigger asChild>
-              <Button size="icon" aria-label="更多動作">
+              <Button size="icon" aria-label={t('collect.channel.moreActions')}>
                 <MoreHorizontal />
               </Button>
             </MenuTrigger>
             <MenuContent>
               <MenuItem icon={<Captions />} onSelect={() => detail.mutate()}>
-                檢查所有未檢查影片的字幕
+                {t('collect.channel.checkAllCaptions')}
               </MenuItem>
               <MenuItem icon={<ScanSearch />} onSelect={() => dedup.mutate()}>
-                重新偵測重複片段
+                {t('collect.channel.redetectRepeated')}
               </MenuItem>
               <MenuItem icon={<NotebookPen />} onSelect={() => setNotesOpen(true)}>
-                編輯研究筆記
+                {t('collect.channel.editNotes')}
               </MenuItem>
               {isAdmin && (
                 <>
                   <MenuSeparator />
                   <MenuItem danger icon={<Trash2 />} onSelect={() => setDeleteOpen(true)}>
-                    刪除頻道…
+                    {t('collect.channel.deleteChannel')}
                   </MenuItem>
                 </>
               )}
@@ -249,18 +252,18 @@ function Header({ c }: { c: TChannel }) {
           setNotesOpen(o)
           if (o) setNotes(c.notes)
         }}
-        title="研究筆記"
-        description="記錄這個頻道的語者組成、錄音環境或授權注意事項。"
+        title={t('collect.channel.notesTitle')}
+        description={t('collect.channel.notesDesc')}
         footer={
           <>
-            <Button onClick={() => setNotesOpen(false)}>取消</Button>
+            <Button onClick={() => setNotesOpen(false)}>{t('common.cancel')}</Button>
             <Button variant="primary" loading={saveNotes.isPending} onClick={() => saveNotes.mutate()}>
-              儲存
+              {t('common.save')}
             </Button>
           </>
         }
       >
-        <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={6} placeholder="例如：主持人固定兩位；來賓多為 60 歲以上漁民…" />
+        <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={6} placeholder={t('collect.channel.notesPlaceholder')} />
       </Dialog>
     </>
   )
@@ -268,12 +271,13 @@ function Header({ c }: { c: TChannel }) {
 
 function PlaylistsTab({ cid }: { cid: string }) {
   const pl = usePlaylists(cid)
+  const t = useT()
   if (pl.isError) return <ErrorState error={pl.error} onRetry={() => pl.refetch()} />
   if (!pl.data) return <ListSkeleton rows={4} />
   if (!pl.data.items.length)
     return (
       <Card>
-        <EmptyState icon={<ListVideo />} title="沒有播放清單" description="這個頻道沒有公開的播放清單，或尚未列出。" />
+        <EmptyState icon={<ListVideo />} title={t('collect.channel.playlists.emptyTitle')} description={t('collect.channel.playlists.emptyDesc')} />
       </Card>
     )
   return (
@@ -287,7 +291,7 @@ function PlaylistsTab({ cid }: { cid: string }) {
           <div className="min-w-0">
             <div className="truncate text-sm font-medium group-hover:text-primary">{p.title}</div>
             <div className="mt-0.5 text-xs text-fg-3">
-              {fmtInt(p.media_count)} 部影片 · 更新於{fmtRelative(p.last_listed_at)}
+              {t('collect.channel.playlists.meta', p.media_count, fmtRelative(p.last_listed_at))}
             </div>
           </div>
         </Link>
@@ -298,16 +302,17 @@ function PlaylistsTab({ cid }: { cid: string }) {
 
 function RepeatedTab({ cid }: { cid: string }) {
   const rep = useRepeated(cid)
+  const t = useT()
   const qc = useQueryClient()
   const toggle = useMutation({
     mutationFn: ({ id, excluded }: { id: string; excluded: boolean }) => api.patchRepeated(id, excluded),
     onSuccess: (_d, v) => {
       qc.setQueryData(qk.repeated(cid), (old: typeof rep.data) => old?.map((g) => (g.group_id === v.id ? { ...g, excluded: v.excluded } : g)))
-      toast.success(v.excluded ? '已排除此重複片段（音段的重疊比例會重新計算）' : '已取消排除')
+      toast.success(v.excluded ? t('collect.channel.repeated.toastExcluded') : t('collect.channel.repeated.toastIncluded'))
     },
     onError: onErr,
   })
-  const dedup = useMutation({ mutationFn: () => api.dedup(cid), onSuccess: () => toast.success('已開始重新偵測'), onError: onErr })
+  const dedup = useMutation({ mutationFn: () => api.dedup(cid), onSuccess: () => toast.success(t('collect.channel.repeated.toastRedetect')), onError: onErr })
   if (rep.isError) return <ErrorState error={rep.error} onRetry={() => rep.refetch()} />
   if (!rep.data) return <ListSkeleton rows={3} />
   return (
@@ -315,15 +320,15 @@ function RepeatedTab({ cid }: { cid: string }) {
       <div className="flex flex-col gap-3 rounded-xl border border-border bg-surface-2/50 p-4 sm:flex-row sm:items-center">
         <Repeat2 className="hidden size-5 shrink-0 text-fg-3 sm:block" />
         <p className="min-w-0 flex-1 text-[13px] leading-5 text-fg-2">
-          以音訊指紋比對同頻道影片，找出反覆出現的片頭、片尾與固定橋段。被排除的片段在建立資料集時會依「重疊比例」過濾，避免同一段聲音大量重複。
+          {t('collect.channel.repeated.intro')}
         </p>
         <Button size="sm" onClick={() => dedup.mutate()} loading={dedup.isPending} className="shrink-0">
-          <ScanSearch /> 重新偵測
+          <ScanSearch /> {t('collect.channel.repeated.redetect')}
         </Button>
       </div>
       {!rep.data.length ? (
         <Card>
-          <EmptyState icon={<Repeat2 />} title="沒有發現重複片段" description="需要至少數部已處理完成的影片才能比對。" />
+          <EmptyState icon={<Repeat2 />} title={t('collect.channel.repeated.emptyTitle')} description={t('collect.channel.repeated.emptyDesc')} />
         </Card>
       ) : (
         <div className="grid gap-4 lg:grid-cols-2">
@@ -337,12 +342,12 @@ function RepeatedTab({ cid }: { cid: string }) {
                       <span className="text-sm font-semibold">{fmtSec(g.duration)}</span>
                     </div>
                     <div className="mt-1.5 text-[13px] text-fg-3">
-                      出現在 <span className="font-medium text-fg">{fmtInt(g.match_count)}</span> 部影片
+                      {t('collect.channel.repeated.appearsIn', <span className="font-medium text-fg">{fmtInt(g.match_count)}</span>)}
                     </div>
                   </div>
-                  <Switch checked={g.excluded} onCheckedChange={(v) => toggle.mutate({ id: g.group_id, excluded: v })} label="排除" />
+                  <Switch checked={g.excluded} onCheckedChange={(v) => toggle.mutate({ id: g.group_id, excluded: v })} label={t('collect.channel.repeated.exclude')} />
                 </div>
-                <div className="mt-4 text-[11px] font-medium text-fg-3">範例</div>
+                <div className="mt-4 text-[11px] font-medium text-fg-3">{t('collect.channel.repeated.examples')}</div>
                 <ul className="mt-1.5 divide-y divide-border rounded-lg border border-border">
                   {g.examples.slice(0, 4).map((e) => (
                     <li key={e.media_id + e.start}>
@@ -367,19 +372,20 @@ function RepeatedTab({ cid }: { cid: string }) {
 function SpeakersTab({ cid }: { cid: string }) {
   const sp = useSpeakers({ channel_id: cid, limit: 200 })
   const div = useDiversity(cid)
+  const t = useT()
   const d = div.data
   const ch = d?.by_channel[0]
   return (
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
       <Card className="order-2 overflow-clip xl:order-1">
-        <CardHeader title="候選語者" description="最近一次分群結果中出現在此頻道的語者群" />
+        <CardHeader title={t('collect.channel.speakers.title')} description={t('collect.channel.speakers.desc')} />
         <div className="mt-3 border-t border-border">
-          {sp.isError ? <ErrorState error={sp.error} /> : !sp.data ? <ListSkeleton /> : sp.data.items.length ? <SpeakerList items={sp.data.items} /> : <EmptyState compact icon={<Users />} title="尚無語者資料" description="影片處理完成並執行語者分群後才會出現。" />}
+          {sp.isError ? <ErrorState error={sp.error} /> : !sp.data ? <ListSkeleton /> : sp.data.items.length ? <SpeakerList items={sp.data.items} /> : <EmptyState compact icon={<Users />} title={t('collect.channel.speakers.emptyTitle')} description={t('collect.channel.speakers.emptyDesc')} />}
         </div>
       </Card>
       <div className="order-1 space-y-4 xl:order-2">
         <Card>
-          <CardHeader title="語者集中度" description="時數最多的語者佔比越高，代表頻道越依賴少數人" />
+          <CardHeader title={t('collect.channel.speakers.concentration')} description={t('collect.channel.speakers.concentrationDesc')} />
           <CardBody>
             {!ch ? (
               <Skeleton className="h-16" />
@@ -387,20 +393,20 @@ function SpeakersTab({ cid }: { cid: string }) {
               <>
                 <div className="flex items-baseline gap-2">
                   <span className="text-3xl font-semibold">{Math.round(ch.top_speaker_share * 100)}%</span>
-                  <span className="text-[13px] text-fg-3">來自單一語者</span>
+                  <span className="text-[13px] text-fg-3">{t('collect.channel.speakers.fromOne')}</span>
                 </div>
                 <div className="mt-3 h-2 rounded-full bg-surface-3">
                   <div className={cn('h-full rounded-full', ch.top_speaker_share > 0.5 ? 'bg-warning' : 'bg-series-1')} style={{ width: `${ch.top_speaker_share * 100}%` }} />
                 </div>
                 <p className="mt-2 text-xs text-fg-3">
-                  {fmtInt(ch.speakers)} 位候選語者 · Gini {d!.gini.toFixed(2)}
+                  {t('collect.channel.speakers.summary', ch.speakers, d!.gini.toFixed(2))}
                 </p>
               </>
             )}
           </CardBody>
         </Card>
         <Card>
-          <CardHeader title="性別與年齡（時數）" />
+          <CardHeader title={t('collect.channel.speakers.sexAge')} />
           <CardBody className="space-y-5">
             {!d ? (
               <Skeleton className="h-24" />
@@ -432,11 +438,12 @@ export default function ChannelDetail() {
   const ch = useChannel(id)
   useTitle(ch.data?.title)
   const c = ch.data
+  const t = useT()
   const base = `/channels/${id}`
   return (
     <Page wide>
       <Link to="/channels" className="-ml-1 mb-3 inline-flex h-8 items-center gap-1 rounded-md pl-0.5 pr-2 text-[13px] text-fg-3 hover:bg-surface-2 hover:text-fg">
-        ‹ 頻道
+        ‹ {t('collect.channel.back')}
       </Link>
       {ch.isError ? (
         <Card>
@@ -459,12 +466,12 @@ export default function ChannelDetail() {
           <NavTabs
             className="mb-5 mt-6"
             items={[
-              { to: base, label: '影片', icon: <Film />, end: true, count: c.kind_counts?.video },
-              { to: `${base}/shorts`, label: 'Shorts', icon: <Smartphone />, count: c.kind_counts?.short },
-              { to: `${base}/playlists`, label: '播放清單', icon: <ListVideo />, count: c.playlist_count },
-              { to: `${base}/repeated`, label: '重複片段', icon: <Repeat2 /> },
-              { to: `${base}/speakers`, label: '語者', icon: <Users />, count: c.speakers.candidates },
-              { to: `${base}/quality`, label: '音質', icon: <Gauge /> },
+              { to: base, label: t('collect.channel.tabs.videos'), icon: <Film />, end: true, count: c.kind_counts?.video },
+              { to: `${base}/shorts`, label: t('collect.channel.tabs.shorts'), icon: <Smartphone />, count: c.kind_counts?.short },
+              { to: `${base}/playlists`, label: t('collect.channel.tabs.playlists'), icon: <ListVideo />, count: c.playlist_count },
+              { to: `${base}/repeated`, label: t('collect.channel.tabs.repeated'), icon: <Repeat2 /> },
+              { to: `${base}/speakers`, label: t('collect.channel.tabs.speakers'), icon: <Users />, count: c.speakers.candidates },
+              { to: `${base}/quality`, label: t('collect.channel.tabs.quality'), icon: <Gauge /> },
             ]}
           />
           {!tab && <MediaBrowser key="v" channelId={id} kind={['video', 'live']} />}

@@ -1,3 +1,4 @@
+import { t } from '@/i18n'
 export type UrlKind =
   | { kind: 'empty' }
   | { kind: 'invalid'; reason: string }
@@ -13,14 +14,14 @@ export function classifyUrl(raw: string): UrlKind {
   try {
     u = new URL(/^https?:\/\//i.test(s) ? s : `https://${s}`)
   } catch {
-    return { kind: 'invalid', reason: '這不是有效的網址' }
+    return { kind: 'invalid', reason: t('collect.url.invalid') }
   }
   const host = u.hostname.replace(/^(www\.|m\.|music\.)/, '')
   if (host === 'youtu.be') {
     const id = u.pathname.slice(1).split('/')[0]
-    return id ? { kind: 'video', id, short: false } : { kind: 'invalid', reason: '缺少影片 ID' }
+    return id ? { kind: 'video', id, short: false } : { kind: 'invalid', reason: t('collect.url.missingVideoId') }
   }
-  if (host !== 'youtube.com') return { kind: 'invalid', reason: '目前只支援 YouTube 網址' }
+  if (host !== 'youtube.com') return { kind: 'invalid', reason: t('collect.url.youtubeOnly') }
   const parts = u.pathname.split('/').filter(Boolean)
   const list = u.searchParams.get('list')
   const v = u.searchParams.get('v')
@@ -30,5 +31,5 @@ export function classifyUrl(raw: string): UrlKind {
   if (parts[0]?.startsWith('@')) return { kind: 'channel', handle: decodeURIComponent(parts[0]), tab: parts[1] ?? null }
   if ((parts[0] === 'channel' || parts[0] === 'c' || parts[0] === 'user') && parts[1])
     return { kind: 'channel', handle: parts[0] === 'channel' ? parts[1] : `/${parts[0]}/${parts[1]}`, tab: parts[2] ?? null }
-  return { kind: 'invalid', reason: '無法辨識這個 YouTube 網址的類型' }
+  return { kind: 'invalid', reason: t('collect.url.unknownType') }
 }

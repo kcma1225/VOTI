@@ -1,9 +1,10 @@
 import { CheckCircle2, Download, FileText, Loader2, XCircle } from 'lucide-react'
 import { audioUrl } from '@/api/client'
 import type { DatasetExport, DatasetFilters } from '@/api/types'
-import { fmtBytes, fmtHours, fmtInt, fmtRelative } from '@/lib/format'
+import { fmtBytes, fmtRelative } from '@/lib/format'
 import { Badge, Progress, Tag } from '@/components/ui/primitives'
 import { reviewStatus, textSource } from '@/lib/labels'
+import { msgs, t as tr, useT } from '@/i18n'
 
 export const DEFAULT_FILTERS: DatasetFilters = {
   channel_ids: [],
@@ -32,17 +33,17 @@ export const DEFAULT_FILTERS: DatasetFilters = {
 
 export function filterSummary(f: DatasetFilters): string[] {
   const out: string[] = []
-  out.push(f.text_sources.map((t) => textSource[t] ?? t).join(' + ') || '任何文字')
-  if (!f.text_sources.includes('auto_caption')) out.push('排除自動字幕')
+  out.push(f.text_sources.map((s) => textSource[s] ?? s).join(' + ') || tr('output.datasetCommon.anyText'))
+  if (!f.text_sources.includes('auto_caption')) out.push(tr('output.datasetCommon.excludeAuto'))
   if (f.review_status.length) out.push(f.review_status.map((r) => reviewStatus[r].label).join('/'))
-  if (f.exclude_repeated) out.push(`排除重複 > ${Math.round(f.max_repeated_overlap * 100)}%`)
+  if (f.exclude_repeated) out.push(tr('output.datasetCommon.excludeRepeated', Math.round(f.max_repeated_overlap * 100)))
   if (f.min_snr != null) out.push(`SNR ≥ ${f.min_snr} dB`)
   if (f.min_dnsmos_ovrl != null) out.push(`DNSMOS ≥ ${f.min_dnsmos_ovrl}`)
-  if (f.min_bandwidth_hz != null) out.push(`頻寬 ≥ ${f.min_bandwidth_hz / 1000} kHz`)
-  if (f.exclude_upsampled) out.push('排除升頻')
-  if (f.age_groups.length) out.push(`年齡 ${f.age_groups.join('、')}`)
-  if (f.max_sec_per_speaker) out.push(`每位語者 ≤ ${Math.round(f.max_sec_per_speaker / 60)} 分`)
-  if (f.channel_ids.length) out.push(`${f.channel_ids.length} 個頻道`)
+  if (f.min_bandwidth_hz != null) out.push(tr('output.datasetCommon.bandwidth', f.min_bandwidth_hz / 1000))
+  if (f.exclude_upsampled) out.push(tr('output.datasetCommon.excludeUpsampled'))
+  if (f.age_groups.length) out.push(tr('output.datasetCommon.age', f.age_groups.join(msgs().common.listSep)))
+  if (f.max_sec_per_speaker) out.push(tr('output.datasetCommon.perSpeaker', Math.round(f.max_sec_per_speaker / 60)))
+  if (f.channel_ids.length) out.push(tr('output.datasetCommon.channels', f.channel_ids.length))
   return out
 }
 
@@ -59,6 +60,7 @@ export function FilterTags({ f, max = 6 }: { f: DatasetFilters; max?: number }) 
 }
 
 export function ExportRow({ e }: { e: DatasetExport }) {
+  const t = useT()
   return (
     <div className="flex min-w-0 flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:gap-4 sm:px-5">
       <div className="flex min-w-0 flex-1 items-start gap-3">
@@ -72,13 +74,13 @@ export function ExportRow({ e }: { e: DatasetExport }) {
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2 text-[13px]">
             <span className="font-medium">{(e.format ?? 'jsonl').toUpperCase()}</span>
-            {e.include_audio !== false && <Tag>含音檔</Tag>}
+            {e.include_audio !== false && <Tag>{t('output.datasetCommon.withAudio')}</Tag>}
             <span className="text-fg-3">{fmtRelative(e.created_at)}</span>
           </div>
           <div className="mt-0.5 text-xs text-fg-3">
             {e.status === 'failed'
-              ? '匯出失敗，請重試'
-              : `${fmtInt(e.segment_count)} 段 · ${fmtHours(e.total_sec)}${e.size_bytes ? ` · ${fmtBytes(e.size_bytes)}` : ''}`}
+              ? t('output.datasetCommon.exportFailed')
+              : `${t('output.datasetCommon.exportStats', e.segment_count, e.total_sec)}${e.size_bytes ? ` · ${fmtBytes(e.size_bytes)}` : ''}`}
           </div>
           {(e.status === 'running' || e.status === 'queued') && <Progress className="mt-2 max-w-xs" value={e.progress ?? 0} indeterminate={e.status === 'queued'} />}
         </div>
@@ -99,7 +101,7 @@ export function ExportRow({ e }: { e: DatasetExport }) {
         </div>
       ) : (
         <Badge tone={e.status === 'failed' ? 'danger' : 'primary'} dot className="ml-7 self-start sm:ml-0 sm:self-center">
-          {e.status === 'failed' ? '失敗' : e.status === 'queued' ? '排隊中' : `匯出中 ${Math.round((e.progress ?? 0) * 100)}%`}
+          {e.status === 'failed' ? t('output.datasetCommon.failed') : e.status === 'queued' ? t('output.datasetCommon.queued') : t('output.datasetCommon.exporting', Math.round((e.progress ?? 0) * 100))}
         </Badge>
       )}
     </div>

@@ -20,12 +20,15 @@
   --fg-3: #737b89;
   --fg-inverse: #ffffff;
 
-  --primary: #3b5bdb;
-  --primary-hover: #3150cc;
+  /* brand teal from the 島嶼之聲 logo (#2a9d8f), deepened for AA text contrast on buttons/links */
+  --brand: #2a9d8f;
+  --brand-soft: #e4f4f1;
+  --primary: #167a6f;
+  --primary-hover: #11685e;
   --primary-fg: #ffffff;
-  --primary-soft: #edf1ff;
-  --primary-soft-fg: #2c47b5;
-  --ring: rgba(59, 91, 219, 0.5);
+  --primary-soft: #e4f4f1;
+  --primary-soft-fg: #0f5e55;
+  --ring: rgba(22, 122, 111, 0.5);
 
   --success: #1d8a4a;
   --success-soft: #e7f6ed;
@@ -76,12 +79,14 @@
   --fg-3: #7d8593;
   --fg-inverse: #0c0f14;
 
-  --primary: #5b7cfa;
-  --primary-hover: #6e8bff;
-  --primary-fg: #ffffff;
-  --primary-soft: rgba(91, 124, 250, 0.15);
-  --primary-soft-fg: #aebdff;
-  --ring: rgba(110, 139, 255, 0.6);
+  --brand: #38b2a2;
+  --brand-soft: rgba(56, 178, 162, 0.14);
+  --primary: #34b3a3;
+  --primary-hover: #45c2b2;
+  --primary-fg: #04201c;
+  --primary-soft: rgba(52, 179, 163, 0.15);
+  --primary-soft-fg: #8be0d3;
+  --ring: rgba(69, 194, 178, 0.6);
 
   --success: #39b56c;
   --success-soft: rgba(57, 181, 108, 0.14);
@@ -133,6 +138,8 @@
   --color-fg-2: var(--fg-2);
   --color-fg-3: var(--fg-3);
   --color-fg-inverse: var(--fg-inverse);
+  --color-brand: var(--brand);
+  --color-brand-soft: var(--brand-soft);
   --color-primary: var(--primary);
   --color-primary-hover: var(--primary-hover);
   --color-primary-fg: var(--primary-fg);

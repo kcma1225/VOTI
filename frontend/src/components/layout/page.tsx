@@ -2,6 +2,7 @@ import { useEffect, type ReactNode } from 'react'
 import { Link } from 'react-router'
 import { ChevronLeft } from 'lucide-react'
 import { cn } from '@/lib/cn'
+import { t } from '@/i18n'
 
 export function Page({ children, className, wide }: { children: ReactNode; className?: string; wide?: boolean }) {
   return (
@@ -13,7 +14,7 @@ export function Page({ children, className, wide }: { children: ReactNode; class
 
 export function useTitle(title: string | undefined) {
   useEffect(() => {
-    if (title) document.title = `${title} · VOTI`
+    document.title = title ? `${title} · ${t('common.brand.name')}` : t('common.brand.name')
   }, [title])
 }
 

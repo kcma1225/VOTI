@@ -1,9 +1,11 @@
 /* Small SVG/HTML chart kit following the dataviz method:
    thin marks (≤ 24px bars, 4px rounded data-ends, square at baseline), hairline solid grid, text in ink tokens,
    categorical hues in fixed order, hover tooltips, and a table-view twin via <ChartCard>. */
+import { intlLocale, t } from '@/i18n'
 import { useCallback, useLayoutEffect, useState, type ReactNode } from 'react'
 import { Table2, BarChart3 } from 'lucide-react'
 import { cn } from '@/lib/cn'
+import { fmtCompact } from '@/lib/format'
 import { Card, CardHeader } from '@/components/ui/primitives'
 import { Button } from '@/components/ui/button'
 import { Tooltip as Tip } from '@/components/ui/overlay'
@@ -54,8 +56,8 @@ export function ChartCard({
           <>
             {actions}
             {table && (
-              <Tip content={asTable ? '顯示圖表' : '顯示表格'}>
-                <Button size="icon-sm" variant="ghost" aria-label={asTable ? '顯示圖表' : '顯示表格'} onClick={() => setAsTable((v) => !v)}>
+              <Tip content={asTable ? t('people.charts.showChart') : t('people.charts.showTable')}>
+                <Button size="icon-sm" variant="ghost" aria-label={asTable ? t('people.charts.showChart') : t('people.charts.showTable')} onClick={() => setAsTable((v) => !v)}>
                   {asTable ? <BarChart3 /> : <Table2 />}
                 </Button>
               </Tip>
@@ -88,7 +90,7 @@ function DataTableView({ columns, rows }: { columns: string[]; rows: (string | n
             <tr key={i} className="border-t border-border">
               {r.map((v, j) => (
                 <td key={j} className={cn('px-3 py-1.5', j ? 'text-right tabular text-fg-2' : 'text-fg')}>
-                  {typeof v === 'number' ? v.toLocaleString('zh-TW', { maximumFractionDigits: 2 }) : v}
+                  {typeof v === 'number' ? v.toLocaleString(intlLocale(), { maximumFractionDigits: 2 }) : v}
                 </td>
               ))}
             </tr>
@@ -118,7 +120,7 @@ function niceMax(v: number) {
   const n = v / p
   return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * p
 }
-const compactNum = (n: number) => (n >= 10000 ? `${(n / 10000).toLocaleString('zh-TW', { maximumFractionDigits: 1 })}萬` : n.toLocaleString('zh-TW', { maximumFractionDigits: 1 }))
+const compactNum = (n: number) => fmtCompact(n)
 
 /* ───────────── Histogram (columns) ───────────── */
 export function Histogram({
@@ -126,7 +128,7 @@ export function Histogram({
   binLabel,
   height = 180,
   threshold,
-  unit = '部',
+  unit,
   color = 'var(--series-1)',
   highlight,
 }: {
@@ -205,9 +207,9 @@ export function Histogram({
       )}
       {hover !== null && bins[hover] && (
         <HoverTip x={padL + hover * band + band / 2} y={y(bins[hover].count)} w={w}>
-          <div className="text-fg-3">{binLabel(bins[hover].bin, hover)} 起</div>
+          <div className="text-fg-3">{t('people.charts.binFrom', binLabel(bins[hover].bin, hover))}</div>
           <div className="font-medium tabular text-fg">
-            {bins[hover].count.toLocaleString('zh-TW')} {unit}
+            {unit ? `${bins[hover].count.toLocaleString(intlLocale())} ${unit}` : t('people.charts.videos', bins[hover].count)}
           </div>
         </HoverTip>
       )}
@@ -281,7 +283,7 @@ export function StackBar({
         {parts
           .filter((p) => p.value > 0)
           .map((p) => (
-            <Tip key={p.key} content={`${p.label}：${format(p.value)}（${((p.value / total) * 100).toFixed(1)}%）`}>
+            <Tip key={p.key} content={t('people.charts.share', String(p.label), format(p.value), ((p.value / total) * 100).toFixed(1))}>
               <div className="h-full min-w-[3px] transition-[flex-grow] duration-500" style={{ flexGrow: p.value, background: p.color }} />
             </Tip>
           ))}
@@ -353,17 +355,17 @@ export function RankColumns({
           })}
           <line x1={padL} x2={w} y1={plotH} y2={plotH} stroke="var(--chart-axis)" />
           <text x={padL} y={height - 4} className="fill-fg-3 text-[10px]">
-            時數最多
+            {t('people.charts.mostHours')}
           </text>
           <text x={w} y={height - 4} textAnchor="end" className="fill-fg-3 text-[10px]">
-            最少 →
+            {t('people.charts.least')}
           </text>
         </svg>
       )}
       {hover !== null && (
         <HoverTip x={padL + hover * band + band / 2} y={y(values[hover])} w={w}>
           <div className="text-fg-3">
-            第 {hover + 1} 名 · {labels[hover]}
+            {t('people.charts.rank', hover + 1)} · {labels[hover]}
           </div>
           <div className="font-medium tabular text-fg">{format(values[hover])}</div>
         </HoverTip>
@@ -391,7 +393,7 @@ export function Lorenz({ values, height = 200 }: { values: number[]; height?: nu
   return (
     <div ref={ref} className="w-full" style={{ height: size + 30 }}>
       {w > 0 && (
-        <svg width={w} height={size + 30} className="block" role="img" aria-label="洛倫茲曲線">
+        <svg width={w} height={size + 30} className="block" role="img" aria-label={t('people.charts.lorenz')}>
           {[0, 0.5, 1].map((t) => (
             <g key={t}>
               <line x1={X(0)} x2={X(1)} y1={Y(t)} y2={Y(t)} stroke="var(--chart-grid)" />
@@ -407,7 +409,7 @@ export function Lorenz({ values, height = 200 }: { values: number[]; height?: nu
           <path d={`${d} L${X(1)},${Y(0)} Z`} fill="var(--series-1)" opacity={0.1} />
           <path d={d} fill="none" stroke="var(--series-1)" strokeWidth={2} strokeLinejoin="round" />
           <text x={X(0.52)} y={Y(0.6)} className="fill-fg-3 text-[10px]" transform={`rotate(-${Math.atan(1) * (180 / Math.PI)} ${X(0.52)} ${Y(0.6)})`}>
-            完全平均
+            {t('people.charts.equality')}
           </text>
         </svg>
       )}

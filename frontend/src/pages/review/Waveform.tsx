@@ -1,3 +1,4 @@
+import { t } from '@/i18n'
 import { useEffect, useRef } from 'react'
 import { fmtTimestamp } from '@/lib/format'
 import { cn } from '@/lib/cn'
@@ -86,14 +87,14 @@ export function Waveform({
       }}
     >
       <div className="absolute inset-y-0 rounded-md bg-primary/[0.07]" style={{ left: X(region[0]), width: Math.max(0, X(region[1]) - X(region[0])) }} />
-      <canvas ref={canvas} style={{ width, height }} className="relative block" aria-label="波形" role="img" />
+      <canvas ref={canvas} style={{ width, height }} className="relative block" aria-label={t('process.waveform.label')} role="img" />
       {(['start', 'end'] as const).map((k) => {
         const x = X(k === 'start' ? region[0] : region[1])
         return (
           <div
             key={k}
             role="slider"
-            aria-label={k === 'start' ? '起點' : '終點'}
+            aria-label={k === 'start' ? t('process.waveform.start') : t('process.waveform.end')}
             aria-valuenow={k === 'start' ? region[0] : region[1]}
             tabIndex={-1}
             onPointerDown={(e) => {

@@ -1,3 +1,4 @@
+import { intlLocale, t } from '@/i18n'
 import type { ReactNode } from 'react'
 import { NavLink } from 'react-router'
 import { cn } from '@/lib/cn'
@@ -14,7 +15,7 @@ export interface TabItem {
 export function NavTabs({ items, className }: { items: TabItem[]; className?: string }) {
   return (
     <div className={cn('relative -mx-4 border-b border-border sm:mx-0', className)}>
-      <nav className="flex gap-1 overflow-x-auto px-4 no-scrollbar sm:px-0" aria-label="分頁">
+      <nav className="flex gap-1 overflow-x-auto px-4 no-scrollbar sm:px-0" aria-label={t('common.tabs')}>
         {items.map((t) => (
           <NavLink
             key={t.to}
@@ -34,7 +35,7 @@ export function NavTabs({ items, className }: { items: TabItem[]; className?: st
             {t.label}
             {t.count != null && (
               <span className="rounded-full bg-surface-2 px-1.5 text-[11px] leading-[18px] tabular text-fg-3">
-                {t.count.toLocaleString('zh-TW')}
+                {t.count.toLocaleString(intlLocale())}
               </span>
             )}
           </NavLink>
@@ -70,7 +71,7 @@ export function PillTabs<V extends string>({
           )}
         >
           {t.label}
-          {t.count !== undefined && <span className="tabular text-xs text-fg-3">{t.count.toLocaleString('zh-TW')}</span>}
+          {t.count !== undefined && <span className="tabular text-xs text-fg-3">{t.count.toLocaleString(intlLocale())}</span>}
         </button>
       ))}
     </div>

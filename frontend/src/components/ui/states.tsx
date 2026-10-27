@@ -1,3 +1,5 @@
+import { useT } from '@/i18n'
+import { errMsg } from '@/api/queries'
 import type { ReactNode } from 'react'
 import { AlertTriangle, RotateCw } from 'lucide-react'
 import { cn } from '@/lib/cn'
@@ -35,19 +37,20 @@ export function EmptyState({
 }
 
 export function ErrorState({ error, onRetry, className }: { error: unknown; onRetry?: () => void; className?: string }) {
-  const msg = error instanceof ApiError ? error.message : error instanceof Error ? error.message : '發生未預期的錯誤'
+  const t = useT()
+  const msg = error instanceof ApiError || (error instanceof Error && error.message) ? errMsg(error) : t('common.unexpectedError')
   const code = error instanceof ApiError ? error.code : null
   return (
     <div className={cn('flex flex-col items-center justify-center px-6 py-12 text-center', className)}>
       <div className="mb-3 grid size-11 place-items-center rounded-xl bg-danger-soft text-danger-fg">
         <AlertTriangle className="size-5" />
       </div>
-      <div className="text-[15px] font-semibold">無法載入資料</div>
+      <div className="text-[15px] font-semibold">{t('common.loadError')}</div>
       <p className="mt-1 max-w-sm text-[13px] leading-5 text-fg-3">{msg}</p>
       {code && <code className="mt-1 text-[11px] text-fg-3">{code}</code>}
       {onRetry && (
         <Button className="mt-4" size="sm" onClick={onRetry}>
-          <RotateCw /> 重試
+          <RotateCw /> {t('common.retry')}
         </Button>
       )}
     </div>

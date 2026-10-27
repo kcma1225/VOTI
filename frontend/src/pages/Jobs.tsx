@@ -1,9 +1,9 @@
+import { useT } from '@/i18n'
 import { useSearchParams } from 'react-router'
 import { ListChecks } from 'lucide-react'
 import { useJobs } from '@/api/queries'
 import type { JobKind } from '@/api/types'
 import { jobKind } from '@/lib/labels'
-import { fmtInt } from '@/lib/format'
 import { Page, PageHeader } from '@/components/layout/page'
 import { Card, Skeleton } from '@/components/ui/primitives'
 import { Select } from '@/components/ui/form'
@@ -21,6 +21,7 @@ const TABS = {
 } as const
 
 export default function Jobs() {
+  const t = useT()
   const [sp, setSp] = useSearchParams()
   const raw = sp.get('status') ?? 'active'
   const tab = (raw === 'failed' ? 'failed' : raw in TABS ? raw : 'active') as keyof typeof TABS
@@ -37,20 +38,20 @@ export default function Jobs() {
   }
   return (
     <Page>
-      <PageHeader title="工作佇列" description="所有背景工作：列出、下載、音訊處理、模型推論與匯出。每 2.5 秒自動更新。" />
+      <PageHeader title={t('process.jobs.title')} description={t('process.jobs.description')} />
       <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <PillTabs
           value={tab}
           onChange={(v) => set('status', v)}
           items={[
-            { value: 'active', label: '進行中', count: (c.running ?? 0) + (c.queued ?? 0) },
-            { value: 'failed', label: '需要處理', count: (c.failed ?? 0) + (c.blocked ?? 0) + (c.interrupted ?? 0) },
-            { value: 'done', label: '已完成', count: (c.completed ?? 0) + (c.cancelled ?? 0) },
-            { value: 'all', label: '全部' },
+            { value: 'active', label: t('process.jobs.tabActive'), count: (c.running ?? 0) + (c.queued ?? 0) },
+            { value: 'failed', label: t('process.jobs.tabFailed'), count: (c.failed ?? 0) + (c.blocked ?? 0) + (c.interrupted ?? 0) },
+            { value: 'done', label: t('process.jobs.tabDone'), count: (c.completed ?? 0) + (c.cancelled ?? 0) },
+            { value: 'all', label: t('process.jobs.tabAll') },
           ]}
         />
-        <Select value={kind} onChange={(e) => set('kind', e.target.value)} className="sm:w-48" aria-label="工作類型" size_="sm">
-          <option value="">所有類型</option>
+        <Select value={kind} onChange={(e) => set('kind', e.target.value)} className="sm:w-48" aria-label={t('process.jobs.kindLabel')} size_="sm">
+          <option value="">{t('process.jobs.allKinds')}</option>
           {(Object.keys(jobKind) as JobKind[]).map((k) => (
             <option key={k} value={k}>
               {jobKind[k]}
@@ -68,7 +69,7 @@ export default function Jobs() {
             ))}
           </div>
         ) : !q.data.items.length ? (
-          <EmptyState icon={<ListChecks />} title={tab === 'failed' ? '沒有需要處理的工作' : '沒有工作'} description={tab === 'active' ? '佇列目前是空的。' : undefined} />
+          <EmptyState icon={<ListChecks />} title={tab === 'failed' ? t('process.jobs.emptyFailed') : t('process.jobs.empty')} description={tab === 'active' ? t('process.jobs.emptyActive') : undefined} />
         ) : (
           <>
             <div className="grid divide-y divide-border lg:grid-cols-2 lg:divide-y-0 [&>*]:border-border lg:[&>*:nth-child(odd)]:border-r lg:[&>*:nth-child(n+3)]:border-t">
@@ -80,7 +81,7 @@ export default function Jobs() {
           </>
         )}
       </Card>
-      {q.data && <p className="mt-3 text-center text-xs text-fg-3">共 {fmtInt(Object.values(c).reduce((a, b) => a + (b ?? 0), 0))} 筆工作紀錄</p>}
+      {q.data && <p className="mt-3 text-center text-xs text-fg-3">{t('process.jobs.total', Object.values(c).reduce((a, b) => a + (b ?? 0), 0))}</p>}
     </Page>
   )
 }

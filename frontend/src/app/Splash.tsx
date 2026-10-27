@@ -1,7 +1,8 @@
+import { t } from '@/i18n'
 export function Splash() {
   return (
     <div className="grid min-h-dvh place-items-center">
-      <div className="flex items-end gap-1" aria-label="載入中">
+      <div className="flex items-end gap-1" aria-label={t('common.loading')}>
         {[0, 1, 2, 3, 4].map((i) => (
           <span
             key={i}

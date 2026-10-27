@@ -7,7 +7,7 @@ import { api } from '@/api/client'
 import { onErr, qk, useChannels, useDataset, useExports } from '@/api/queries'
 import type { DatasetFilters, DatasetPreview, ReviewStatus, SpeakerState } from '@/api/types'
 import { fmt1, fmtHours, fmtInt } from '@/lib/format'
-import { ageGroupLabel, ageGroupOrder, flagLabel, reviewStatus, sexLabel, speakerState } from '@/lib/labels'
+import { ageGroupLabel, ageGroupOrder, flagLabel, reviewStatus, sexLabel, speakerState, textSource } from '@/lib/labels'
 import { cn } from '@/lib/cn'
 import { Page, useTitle } from '@/components/layout/page'
 import { Button } from '@/components/ui/button'
@@ -17,6 +17,7 @@ import { Dialog } from '@/components/ui/overlay'
 import { EmptyState, ErrorState } from '@/components/ui/states'
 import { HBars, SERIES, StackBar } from '@/components/charts/charts'
 import { DEFAULT_FILTERS, ExportRow } from './common'
+import { msgs, useT } from '@/i18n'
 
 function useDebounced<T>(v: T, ms: number) {
   const [d, setD] = useState(v)
@@ -62,13 +63,14 @@ function ThresholdField({
   defaultOn: number
   hint?: string
 }) {
+  const t = useT()
   const on = value !== null
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-3">
         <Checkbox checked={on} onCheckedChange={(v) => onChange(v ? defaultOn : null)} label={label} description={hint} />
         <span className={cn('shrink-0 text-[13px] font-medium tabular', on ? 'text-fg' : 'text-fg-3')}>
-          {on ? `≥ ${step < 1 ? value!.toFixed(step < 0.1 ? 2 : 1) : fmtInt(value)}${unit ? ` ${unit}` : ''}` : '不限'}
+          {on ? `≥ ${step < 1 ? value!.toFixed(step < 0.1 ? 2 : 1) : fmtInt(value)}${unit ? ` ${unit}` : ''}` : t('common.any')}
         </span>
       </div>
       {on && <Slider aria-label={label} value={[value!]} onValueChange={([v]) => onChange(v)} min={min} max={max} step={step} className="pl-7" />}
@@ -77,6 +79,7 @@ function ThresholdField({
 }
 
 function PreviewPanel({ p, loading, error }: { p?: DatasetPreview; loading: boolean; error: unknown }) {
+  const t = useT()
   if (error) return <ErrorState error={error} />
   if (!p)
     return (
@@ -86,21 +89,21 @@ function PreviewPanel({ p, loading, error }: { p?: DatasetPreview; loading: bool
       </div>
     )
   const ex = Object.entries(p.excluded).filter(([, v]) => v > 0)
-  const exLabel: Record<string, string> = { repeated: '重複片段', auto_caption: '自動字幕', low_quality: '音質或長度不符', review: '審查/語者狀態', speaker_cap: '超過語者上限' }
+  const exLabel: Record<string, string> = msgs().output.builder.excluded
   return (
     <div className={cn('transition-opacity', loading && 'opacity-60')}>
       <CardBody className="space-y-5">
         <div>
-          <div className="text-xs text-fg-3">預估可匯出</div>
+          <div className="text-xs text-fg-3">{t('output.builder.estimate')}</div>
           <div className="mt-0.5 flex items-baseline gap-1.5">
             <span className="text-4xl font-semibold tracking-tight">{fmt1(p.total_sec / 3600)}</span>
-            <span className="text-sm text-fg-3">小時</span>
+            <span className="text-sm text-fg-3">{t('output.builder.hours')}</span>
           </div>
           <div className="mt-3 grid grid-cols-3 gap-2 text-center">
             {[
-              ['音段', fmtInt(p.segment_count)],
-              ['語者', fmtInt(p.speakers)],
-              ['頻道', fmtInt(p.channels)],
+              [t('output.builder.segmentsLabel'), fmtInt(p.segment_count)],
+              [t('output.builder.speakersLabel'), fmtInt(p.speakers)],
+              [t('output.builder.channelsLabel'), fmtInt(p.channels)],
             ].map(([k, v]) => (
               <div key={k} className="rounded-lg bg-surface-2/70 py-2">
                 <div className="text-[15px] font-semibold">{v}</div>
@@ -111,7 +114,7 @@ function PreviewPanel({ p, loading, error }: { p?: DatasetPreview; loading: bool
         </div>
         {p.total_sec > 0 && (
           <div>
-            <div className="mb-2 text-xs font-medium text-fg-3">性別（Vox-Profile 推估）</div>
+            <div className="mb-2 text-xs font-medium text-fg-3">{t('output.builder.sexChart')}</div>
             <StackBar
               format={fmtHours}
               parts={[
@@ -124,16 +127,16 @@ function PreviewPanel({ p, loading, error }: { p?: DatasetPreview; loading: bool
         )}
         {p.by_channel.length > 0 && (
           <div>
-            <div className="mb-2 text-xs font-medium text-fg-3">各頻道時數</div>
+            <div className="mb-2 text-xs font-medium text-fg-3">{t('output.builder.byChannel')}</div>
             <HBars rows={p.by_channel.map((c) => ({ key: c.channel_id, label: c.title, value: c.total_sec }))} format={fmtHours} />
           </div>
         )}
         <div>
-          <div className="mb-2 text-xs font-medium text-fg-3">被排除的音段</div>
+          <div className="mb-2 text-xs font-medium text-fg-3">{t('output.builder.excludedSegments')}</div>
           {ex.length ? (
-            <HBars rows={ex.map(([k, v], i) => ({ key: k, label: exLabel[k] ?? k, value: v, color: SERIES[[1, 3, 7, 4, 2][i % 5]] }))} format={(v) => `${fmtInt(v)} 段`} />
+            <HBars rows={ex.map(([k, v], i) => ({ key: k, label: exLabel[k] ?? k, value: v, color: SERIES[[1, 3, 7, 4, 2][i % 5]] }))} format={(v) => t('output.builder.segmentsN', v)} />
           ) : (
-            <p className="text-[13px] text-fg-3">沒有音段被排除</p>
+            <p className="text-[13px] text-fg-3">{t('output.builder.noneExcluded')}</p>
           )}
         </div>
       </CardBody>
@@ -155,7 +158,8 @@ export default function DatasetBuilder() {
   const [exportOpen, setExportOpen] = useState(false)
   const [fmt, setFmt] = useState<'jsonl' | 'csv'>('jsonl')
   const [withAudio, setWithAudio] = useState(true)
-  useTitle(isNew ? '建立資料集' : ds.data?.name)
+  const t = useT()
+  useTitle(isNew ? t('output.builder.newTitle') : ds.data?.name)
 
   useEffect(() => {
     if (ds.data) {
@@ -175,7 +179,7 @@ export default function DatasetBuilder() {
     onSuccess: (d) => {
       qc.invalidateQueries({ queryKey: qk.datasets })
       qc.setQueryData(qk.dataset(d.id), d)
-      toast.success(isNew ? '已建立資料集' : '已儲存')
+      toast.success(isNew ? t('output.builder.created') : t('common.saved'))
       if (isNew) navigate(`/datasets/${d.id}`, { replace: true })
     },
     onError: onErr,
@@ -183,7 +187,7 @@ export default function DatasetBuilder() {
   const doExport = useMutation({
     mutationFn: () => api.exportDataset(id!, fmt, withAudio),
     onSuccess: () => {
-      toast.success('已開始匯出', { description: '完成後可在下方下載 manifest 與音檔壓縮檔。' })
+      toast.success(t('output.builder.exportStarted'), { description: t('output.builder.exportStartedDesc') })
       qc.invalidateQueries({ queryKey: qk.exports(id!) })
       setExportOpen(false)
     },
@@ -204,23 +208,23 @@ export default function DatasetBuilder() {
   return (
     <Page wide>
       <Link to="/datasets" className="-ml-1 mb-3 inline-flex h-8 items-center gap-1 rounded-md pl-0.5 pr-2 text-[13px] text-fg-3 hover:bg-surface-2 hover:text-fg">
-        ‹ 資料集
+        ‹ {t('output.builder.back')}
       </Link>
       <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="min-w-0">
-          <h1 className="text-[22px] font-semibold leading-8 tracking-tight sm:text-2xl">{isNew ? '建立資料集' : name || '資料集'}</h1>
-          <p className="mt-1 text-[13px] text-fg-3">調整條件時，預估時數會即時更新。</p>
+          <h1 className="text-[22px] font-semibold leading-8 tracking-tight sm:text-2xl">{isNew ? t('output.builder.newTitle') : name || t('output.builder.fallbackTitle')}</h1>
+          <p className="mt-1 text-[13px] text-fg-3">{t('output.builder.subtitle')}</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button onClick={() => setF(DEFAULT_FILTERS)}>
-            <RotateCcw /> 預設條件
+            <RotateCcw /> {t('output.builder.defaults')}
           </Button>
           <Button variant={isNew || dirty ? 'primary' : 'secondary'} onClick={() => save.mutate()} loading={save.isPending} disabled={!name.trim() || (!isNew && !dirty)}>
-            <Save /> {isNew ? '建立' : '儲存'}
+            <Save /> {isNew ? t('output.builder.createBtn') : t('common.save')}
           </Button>
           {!isNew && (
             <Button variant="primary" onClick={() => setExportOpen(true)} disabled={dirty}>
-              <Download /> 匯出…
+              <Download /> {t('output.builder.exportBtn')}
             </Button>
           )}
         </div>
@@ -230,23 +234,23 @@ export default function DatasetBuilder() {
         <div className="min-w-0 space-y-4">
           <Card>
             <CardBody className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
-              <Field label="名稱" htmlFor="ds-name">
-                <Input id="ds-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：台語 ASR 訓練集 v2" />
+              <Field label={t('output.builder.name')} htmlFor="ds-name">
+                <Input id="ds-name" value={name} onChange={(e) => setName(e.target.value)} placeholder={t('output.builder.namePlaceholder')} />
               </Field>
-              <Field label="說明" htmlFor="ds-desc">
-                <Textarea id="ds-desc" value={desc} onChange={(e) => setDesc(e.target.value)} rows={1} className="min-h-10 sm:min-h-9" placeholder="用途、版本或注意事項" />
+              <Field label={t('output.builder.desc')} htmlFor="ds-desc">
+                <Textarea id="ds-desc" value={desc} onChange={(e) => setDesc(e.target.value)} rows={1} className="min-h-10 sm:min-h-9" placeholder={t('output.builder.descPlaceholder')} />
               </Field>
             </CardBody>
           </Card>
 
           {/* compact preview on < xl */}
           <Card className="xl:hidden">
-            <CardHeader title="即時預覽" />
+            <CardHeader title={t('output.builder.livePreview')} />
             <PreviewPanel p={p} loading={preview.isFetching} error={preview.error} />
           </Card>
 
           <Card>
-            <Section title="來源" description="不選代表全部頻道。">
+            <Section title={t('output.builder.sources')} description={t('output.builder.sourcesDesc')}>
               <div className="flex flex-wrap gap-1.5">
                 {channels.data?.items.map((c) => (
                   <Chip key={c.id} active={f.channel_ids.includes(c.id)} onClick={() => upd({ channel_ids: toggle(f.channel_ids, c.id) })}>
@@ -254,33 +258,33 @@ export default function DatasetBuilder() {
                   </Chip>
                 ))}
               </div>
-              <Field label="授權">
+              <Field label={t('output.builder.license')}>
                 <Segmented
                   value={f.licenses.length === 1 ? f.licenses[0] : 'all'}
                   onChange={(v) => upd({ licenses: v === 'all' ? [] : [v as 'youtube' | 'creative_commons'] })}
                   options={[
-                    { value: 'all', label: '全部' },
-                    { value: 'creative_commons', label: '僅 CC 授權' },
-                    { value: 'youtube', label: '僅標準授權' },
+                    { value: 'all', label: t('output.builder.licenseAll') },
+                    { value: 'creative_commons', label: t('output.builder.licenseCC') },
+                    { value: 'youtube', label: t('output.builder.licenseStd') },
                   ]}
                 />
               </Field>
             </Section>
 
-            <Section title="文字與審查" description="預設只用上傳者提供的原生字幕與人工校正文字。">
+            <Section title={t('output.builder.textReview')} description={t('output.builder.textReviewDesc')}>
               <div className="grid gap-1 sm:grid-cols-2">
-                <Checkbox checked={f.text_sources.includes('manual_caption')} onCheckedChange={() => upd({ text_sources: toggle(f.text_sources, 'manual_caption') })} label="原生字幕" />
-                <Checkbox checked={f.text_sources.includes('human_revision')} onCheckedChange={() => upd({ text_sources: toggle(f.text_sources, 'human_revision') })} label="人工校正" />
+                <Checkbox checked={f.text_sources.includes('manual_caption')} onCheckedChange={() => upd({ text_sources: toggle(f.text_sources, 'manual_caption') })} label={textSource.manual_caption} />
+                <Checkbox checked={f.text_sources.includes('human_revision')} onCheckedChange={() => upd({ text_sources: toggle(f.text_sources, 'human_revision') })} label={textSource.human_revision} />
               </div>
               <div className={cn('rounded-xl border p-3.5', includeAuto ? 'border-warning/40 bg-warning-soft/60' : 'border-border')}>
-                <Switch checked={includeAuto} onCheckedChange={() => upd({ text_sources: toggle(f.text_sources, 'auto_caption') })} label="包含 YouTube 自動字幕" description="自動語音辨識的文字對台語錯誤率高，建議只在人工校正後使用。" />
+                <Switch checked={includeAuto} onCheckedChange={() => upd({ text_sources: toggle(f.text_sources, 'auto_caption') })} label={t('output.builder.includeAuto')} description={t('output.builder.includeAutoDesc')} />
                 {includeAuto && (
                   <p className="mt-2 flex items-start gap-1.5 text-xs text-warning-fg">
-                    <AlertTriangle className="mt-0.5 size-3.5 shrink-0" /> 匯出的 manifest 會以 text_source 標示這些音段。
+                    <AlertTriangle className="mt-0.5 size-3.5 shrink-0" /> {t('output.builder.autoWarning')}
                   </p>
                 )}
               </div>
-              <Field label="審查狀態">
+              <Field label={t('output.builder.reviewStatus')}>
                 <div className="flex flex-wrap gap-1.5">
                   {(['passed', 'unchecked', 'needs_fix'] as ReviewStatus[]).map((r) => (
                     <Chip key={r} active={f.review_status.includes(r)} onClick={() => upd({ review_status: toggle(f.review_status, r) })}>
@@ -291,17 +295,17 @@ export default function DatasetBuilder() {
               </Field>
             </Section>
 
-            <Section title="音質門檻">
+            <Section title={t('output.builder.qualityThresholds')}>
               <div className="grid gap-x-8 gap-y-5 lg:grid-cols-2">
                 <ThresholdField label="SNR" unit="dB" value={f.min_snr} onChange={(v) => upd({ min_snr: v })} min={0} max={40} step={1} defaultOn={10} />
                 <ThresholdField label="DNSMOS OVRL" value={f.min_dnsmos_ovrl} onChange={(v) => upd({ min_dnsmos_ovrl: v })} min={1} max={4.5} step={0.1} defaultOn={2.8} />
                 <ThresholdField label="DNSMOS P.808" value={f.min_dnsmos_p808} onChange={(v) => upd({ min_dnsmos_p808: v })} min={1} max={4.5} step={0.1} defaultOn={3.0} />
-                <ThresholdField label="C50" unit="dB" value={f.min_c50} onChange={(v) => upd({ min_c50: v })} min={0} max={60} step={1} defaultOn={20} hint="越高殘響越少" />
-                <ThresholdField label="語音比例" value={f.min_speech_ratio} onChange={(v) => upd({ min_speech_ratio: v })} min={0} max={1} step={0.05} defaultOn={0.6} />
-                <ThresholdField label="實際頻寬" unit="Hz" value={f.min_bandwidth_hz} onChange={(v) => upd({ min_bandwidth_hz: v })} min={3000} max={20000} step={500} defaultOn={7000} />
+                <ThresholdField label="C50" unit="dB" value={f.min_c50} onChange={(v) => upd({ min_c50: v })} min={0} max={60} step={1} defaultOn={20} hint={t('output.builder.c50Hint')} />
+                <ThresholdField label={t('output.builder.speechRatio')} value={f.min_speech_ratio} onChange={(v) => upd({ min_speech_ratio: v })} min={0} max={1} step={0.05} defaultOn={0.6} />
+                <ThresholdField label={t('output.builder.bandwidth')} unit="Hz" value={f.min_bandwidth_hz} onChange={(v) => upd({ min_bandwidth_hz: v })} min={3000} max={20000} step={500} defaultOn={7000} />
               </div>
-              <Checkbox checked={f.exclude_upsampled} onCheckedChange={(v) => upd({ exclude_upsampled: v })} label="排除疑似升頻的影片" description="實際頻寬遠低於取樣率的一半。" />
-              <Field label="排除旗標">
+              <Checkbox checked={f.exclude_upsampled} onCheckedChange={(v) => upd({ exclude_upsampled: v })} label={t('output.builder.excludeUpsampled')} description={t('output.builder.excludeUpsampledDesc')} />
+              <Field label={t('output.builder.excludeFlags')}>
                 <div className="flex flex-wrap gap-1.5">
                   {['clipped', 'low_snr', 'low_speech', 'overlap', 'too_short'].map((fl) => (
                     <Chip key={fl} active={f.exclude_flags.includes(fl)} onClick={() => upd({ exclude_flags: toggle(f.exclude_flags, fl) })}>
@@ -312,25 +316,25 @@ export default function DatasetBuilder() {
               </Field>
             </Section>
 
-            <Section title="長度與重複片段">
+            <Section title={t('output.builder.lengthRepeated')}>
               <div className="grid grid-cols-2 gap-3 sm:max-w-sm">
-                <Field label="最短">
-                  <NumberInput value={f.min_duration} onChange={(v) => upd({ min_duration: v })} min={0} step={0.5} suffix="秒" />
+                <Field label={t('output.builder.minLen')}>
+                  <NumberInput value={f.min_duration} onChange={(v) => upd({ min_duration: v })} min={0} step={0.5} suffix={t('output.builder.sec')} />
                 </Field>
-                <Field label="最長">
-                  <NumberInput value={f.max_duration} onChange={(v) => upd({ max_duration: v })} min={0} step={0.5} suffix="秒" />
+                <Field label={t('output.builder.maxLen')}>
+                  <NumberInput value={f.max_duration} onChange={(v) => upd({ max_duration: v })} min={0} step={0.5} suffix={t('output.builder.sec')} />
                 </Field>
               </div>
-              <Switch checked={f.exclude_repeated} onCheckedChange={(v) => upd({ exclude_repeated: v })} label="排除重複的片頭、片尾與固定橋段" description="依各頻道「重複片段」頁中被排除的群組計算。" />
+              <Switch checked={f.exclude_repeated} onCheckedChange={(v) => upd({ exclude_repeated: v })} label={t('output.builder.excludeRepeated')} description={t('output.builder.excludeRepeatedDesc')} />
               {f.exclude_repeated && (
-                <Field label="可容許的重疊比例" aside={`≤ ${Math.round(f.max_repeated_overlap * 100)}%`}>
-                  <Slider aria-label="重疊比例" value={[f.max_repeated_overlap]} onValueChange={([v]) => upd({ max_repeated_overlap: v })} min={0} max={1} step={0.05} />
+                <Field label={t('output.builder.overlapAllowed')} aside={`≤ ${Math.round(f.max_repeated_overlap * 100)}%`}>
+                  <Slider aria-label={t('output.builder.overlapRatio')} value={[f.max_repeated_overlap]} onValueChange={([v]) => upd({ max_repeated_overlap: v })} min={0} max={1} step={0.05} />
                 </Field>
               )}
             </Section>
 
-            <Section title="語者" description="控制語者多樣性：設定每位語者的時數上限，避免少數主持人佔滿資料集。">
-              <Field label="語者狀態">
+            <Section title={t('output.builder.speakers')} description={t('output.builder.speakersDesc')}>
+              <Field label={t('output.builder.speakerState')}>
                 <div className="flex flex-wrap gap-1.5">
                   {(['single', 'unknown', 'multiple', 'overlap'] as SpeakerState[]).map((s) => (
                     <Chip key={s} active={f.speaker_states.includes(s)} onClick={() => upd({ speaker_states: toggle(f.speaker_states, s) })}>
@@ -340,7 +344,7 @@ export default function DatasetBuilder() {
                 </div>
               </Field>
               <div className="grid gap-4 lg:grid-cols-2">
-                <Field label="性別（推估）">
+                <Field label={t('output.builder.sexEst')}>
                   <div className="flex flex-wrap gap-1.5">
                     {['male', 'female'].map((s) => (
                       <Chip key={s} active={f.sex.includes(s)} onClick={() => upd({ sex: toggle(f.sex, s) })}>
@@ -349,11 +353,11 @@ export default function DatasetBuilder() {
                     ))}
                   </div>
                 </Field>
-                <Field label="每位語者上限" hint="不填代表不限">
-                  <NumberInput value={f.max_sec_per_speaker != null ? Math.round(f.max_sec_per_speaker / 60) : null} onChange={(v) => upd({ max_sec_per_speaker: v != null ? v * 60 : null })} min={1} suffix="分鐘" />
+                <Field label={t('output.builder.perSpeakerCap')} hint={t('output.builder.perSpeakerCapHint')}>
+                  <NumberInput value={f.max_sec_per_speaker != null ? Math.round(f.max_sec_per_speaker / 60) : null} onChange={(v) => upd({ max_sec_per_speaker: v != null ? v * 60 : null })} min={1} suffix={t('output.builder.minutes')} />
                 </Field>
               </div>
-              <Field label="年齡組（推估）">
+              <Field label={t('output.builder.ageEst')}>
                 <div className="flex flex-wrap gap-1.5">
                   {ageGroupOrder.map((g) => (
                     <Chip key={g} active={f.age_groups.includes(g)} onClick={() => upd({ age_groups: toggle(f.age_groups, g) })}>
@@ -368,11 +372,11 @@ export default function DatasetBuilder() {
           {!isNew && (
             <Card className="overflow-clip">
               <CardHeader
-                title="匯出紀錄"
-                description="每次匯出都是當時的快照；manifest 含 segment_id、revision 與 sha256。"
+                title={t('output.builder.exportHistory')}
+                description={t('output.builder.exportHistoryDesc')}
                 actions={
                   <Button size="sm" onClick={() => setExportOpen(true)} disabled={dirty}>
-                    <Download /> 新匯出
+                    <Download /> {t('output.builder.newExport')}
                   </Button>
                 }
               />
@@ -382,7 +386,7 @@ export default function DatasetBuilder() {
                 ) : exports.data.length ? (
                   exports.data.map((e) => <ExportRow key={e.id} e={e} />)
                 ) : (
-                  <EmptyState compact icon={<PackageOpen />} title="尚未匯出" description="儲存條件後即可匯出 JSONL 或 CSV 與音檔。" />
+                  <EmptyState compact icon={<PackageOpen />} title={t('output.builder.notExported')} description={t('output.builder.notExportedDesc')} />
                 )}
               </div>
             </Card>
@@ -391,7 +395,7 @@ export default function DatasetBuilder() {
 
         <aside className="hidden xl:block">
           <Card className="sticky top-6">
-            <CardHeader title="即時預覽" description="依目前條件計算" />
+            <CardHeader title={t('output.builder.livePreview')} description={t('output.builder.livePreviewDesc')} />
             <PreviewPanel p={p} loading={preview.isFetching} error={preview.error} />
           </Card>
         </aside>
@@ -401,13 +405,13 @@ export default function DatasetBuilder() {
       {p && (
         <div className="sticky bottom-[calc(64px+env(safe-area-inset-bottom))] z-20 -mx-4 mt-4 flex items-center justify-between gap-3 border-t border-border bg-surface/95 px-4 py-3 backdrop-blur-xl sm:-mx-6 sm:px-6 md:bottom-0 xl:hidden">
           <div className="min-w-0 text-[13px]">
-            <span className="text-lg font-semibold">{fmt1(p.total_sec / 3600)}</span> 小時
+            <span className="text-lg font-semibold">{fmt1(p.total_sec / 3600)}</span> {t('output.builder.hours')}
             <span className="ml-2 text-fg-3">
-              {fmtInt(p.segment_count)} 段 · {fmtInt(p.speakers)} 位語者
+              {t('output.builder.stickyStats', p.segment_count, p.speakers)}
             </span>
           </div>
           <Button variant="primary" size="sm" onClick={() => save.mutate()} loading={save.isPending} disabled={!name.trim() || (!isNew && !dirty)}>
-            <Save /> {isNew ? '建立' : '儲存'}
+            <Save /> {isNew ? t('output.builder.createBtn') : t('common.save')}
           </Button>
         </div>
       )}
@@ -415,19 +419,19 @@ export default function DatasetBuilder() {
       <Dialog
         open={exportOpen}
         onOpenChange={setExportOpen}
-        title="匯出資料集"
-        description={p ? `將匯出 ${fmtInt(p.segment_count)} 個音段，共 ${fmtHours(p.total_sec)}。` : undefined}
+        title={t('output.builder.exportTitle')}
+        description={p ? t('output.builder.exportDesc', p.segment_count, p.total_sec) : undefined}
         footer={
           <>
-            <Button onClick={() => setExportOpen(false)}>取消</Button>
+            <Button onClick={() => setExportOpen(false)}>{t('common.cancel')}</Button>
             <Button variant="primary" onClick={() => doExport.mutate()} loading={doExport.isPending}>
-              <Download /> 開始匯出
+              <Download /> {t('output.builder.startExport')}
             </Button>
           </>
         }
       >
         <div className="space-y-5">
-          <Field label="Manifest 格式">
+          <Field label={t('output.builder.manifestFormat')}>
             <Segmented
               value={fmt}
               onChange={setFmt}
@@ -437,7 +441,7 @@ export default function DatasetBuilder() {
               ]}
             />
           </Field>
-          <Switch checked={withAudio} onCheckedChange={setWithAudio} label="包含音檔（dataset.tar）" description="16 kHz 單聲道 WAV，依 manifest 的 audio_path 存放。" />
+          <Switch checked={withAudio} onCheckedChange={setWithAudio} label={t('output.builder.includeAudio')} description={t('output.builder.includeAudioDesc')} />
         </div>
       </Dialog>
     </Page>

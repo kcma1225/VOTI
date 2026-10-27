@@ -1,3 +1,4 @@
+import { t } from '@/i18n'
 import type * as T from './types'
 
 export const API_BASE = '/api'
@@ -45,14 +46,14 @@ async function request<R>(method: string, path: string, body?: unknown, init?: R
   try {
     res = await fetch(API_BASE + path, { method, headers, body: payload, credentials: 'same-origin', ...init })
   } catch {
-    throw new ApiError(0, '無法連線到伺服器，請檢查網路或稍後再試。', 'network')
+    throw new ApiError(0, t('errors.network'), 'network')
   }
   if (res.status === 204) return undefined as R
   const isJson = res.headers.get('content-type')?.includes('application/json')
   const data = isJson ? await res.json().catch(() => null) : null
   if (!res.ok) {
     const b = (data ?? {}) as Partial<T.ApiErrorBody>
-    const detail = typeof b.detail === 'string' ? b.detail : `伺服器錯誤（${res.status}）`
+    const detail = typeof b.detail === 'string' ? b.detail : t('errors.server', res.status)
     if (res.status === 401 && !path.startsWith('/auth/login')) onUnauthorized?.()
     throw new ApiError(res.status, detail, b.code ?? `http_${res.status}`)
   }

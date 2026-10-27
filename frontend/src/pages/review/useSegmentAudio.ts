@@ -1,3 +1,4 @@
+import { t } from '@/i18n'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { audioUrl } from '@/api/client'
 
@@ -26,7 +27,7 @@ export function useSegmentAudio(segmentId: string | undefined, revision: number 
     ;(async () => {
       try {
         const res = await fetch(audioUrl.segment(segmentId, PAD, revision), { credentials: 'same-origin' })
-        if (!res.ok) throw new Error(`音訊載入失敗（${res.status}）`)
+        if (!res.ok) throw new Error(t('process.audio.loadFailedStatus', res.status))
         const buf = await res.arrayBuffer()
         if (!alive) return
         url = URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }))
@@ -60,10 +61,10 @@ export function useSegmentAudio(segmentId: string | undefined, revision: number 
           setPeaks(p)
           setDuration(decoded.duration)
         } catch {
-          setError('無法解碼音訊')
+          setError(t('process.audio.decodeFailed'))
         }
       } catch (e) {
-        if (alive) setError(e instanceof Error ? e.message : '音訊載入失敗')
+        if (alive) setError(e instanceof Error ? e.message : t('process.audio.loadFailed'))
       }
     })()
     return () => {

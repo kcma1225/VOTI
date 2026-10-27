@@ -7,7 +7,8 @@
  *
  * Live site: BASE_URL=http://127.0.0.1:8080 VOTI_USER=admin VOTI_PASS=… npm run shots (logs in via the API).
  * Env: BASE_URL (default http://127.0.0.1:4173), OUT (default ../screenshots), ONLY=regex on screen name,
- *      VIEWPORTS=comma list of names, THEMES=light,dark, CHROMIUM=/path/to/chrome
+ *      VIEWPORTS=comma list of names, THEMES=light,dark, CHROMIUM=/path/to/chrome,
+ *      LANG=zh-TW,en (UI language(s): written to localStorage 'voti-lang' before load; part of the file name)
  */
 import { chromium } from 'playwright'
 import { mkdirSync, existsSync } from 'node:fs'
@@ -29,6 +30,14 @@ const ALL_VIEWPORTS = {
 }
 const viewports = (process.env.VIEWPORTS ?? Object.keys(ALL_VIEWPORTS).join(',')).split(',').map((n) => [n, ALL_VIEWPORTS[n]])
 const themes = (process.env.THEMES ?? 'light,dark').split(',')
+// NB: the shell's own $LANG (e.g. en_US.UTF-8) is ignored — only our two UI language codes count.
+const langs = (process.env.LANG ?? '').split(',').filter((l) => l === 'zh-TW' || l === 'en')
+if (!langs.length) langs.push('zh-TW', 'en')
+// accessible names used by screen actions, per UI language (must match src/i18n/messages/shell.ts)
+const A11Y = {
+  'zh-TW': { jobs: '工作佇列', menu: '開啟選單' },
+  en: { jobs: 'Job queue', menu: 'Open menu' },
+}
 
 // playwright@1.63.0 ↔ chromium build 1243 (uses ~/.cache/ms-playwright/chromium_headless_shell-1243 by default).
 function findChromium() {
@@ -59,7 +68,8 @@ async function discover(page) {
   })
 }
 
-function screens(ids) {
+function screens(ids, lang) {
+  const a = A11Y[lang]
   return [
     { name: '01-login', path: '/login' },
     { name: '02-overview', path: '/' },
@@ -84,13 +94,13 @@ function screens(ids) {
     { name: '21-dataset-new', path: '/datasets/new' },
     { name: '22-dataset-detail', path: `/datasets/${ids.dataset}` },
     { name: '23-jobs', path: '/jobs' },
-    { name: '24-jobs-drawer', path: '/', act: async (p, vp) => { await p.locator(vp === 'phone' ? 'header [aria-label="工作佇列"]' : 'aside [aria-label="工作佇列"]').first().click() } },
+    { name: '24-jobs-drawer', path: '/', act: async (p, vp) => { await p.locator(vp === 'phone' ? `header [aria-label="${a.jobs}"]` : `aside [aria-label="${a.jobs}"]`).first().click() } },
     { name: '25-settings-users', path: '/settings/users' },
     { name: '26-settings-youtube', path: '/settings/youtube' },
     { name: '27-settings-pipeline', path: '/settings/pipeline' },
     { name: '28-settings-account', path: '/settings/account' },
     { name: '29-not-found', path: '/nope' },
-    { name: '30-phone-menu', path: '/', phoneOnly: true, act: async (p) => { await p.locator('header [aria-label="開啟選單"]').click() } },
+    { name: '30-phone-menu', path: '/', phoneOnly: true, act: async (p) => { await p.locator(`header [aria-label="${a.menu}"]`).click() } },
   ]
 }
 
@@ -104,13 +114,14 @@ try {
   const probe = await probeCtx.newPage()
   const ids = await discover(probe)
   await probeCtx.close()
+  for (const lang of langs) {
   for (const theme of themes) {
     for (const [vpName, vp] of viewports) {
-      const ctx = await browser.newContext({ locale: 'zh-TW', timezoneId: 'Asia/Taipei', viewport: vp, deviceScaleFactor: vpName === 'phone' ? 2 : 1, colorScheme: theme, reducedMotion: 'reduce', hasTouch: vpName === 'phone', isMobile: vpName === 'phone' })
-      await ctx.addInitScript((t) => { try { localStorage.setItem('voti-theme', t); localStorage.removeItem('voti-mock-logged-out') } catch {} }, theme)
+      const ctx = await browser.newContext({ locale: lang === 'en' ? 'en-US' : 'zh-TW', timezoneId: 'Asia/Taipei', viewport: vp, deviceScaleFactor: vpName === 'phone' ? 2 : 1, colorScheme: theme, reducedMotion: 'reduce', hasTouch: vpName === 'phone', isMobile: vpName === 'phone' })
+      await ctx.addInitScript(([t, l]) => { try { localStorage.setItem('voti-theme', t); localStorage.setItem('voti-lang', l); localStorage.removeItem('voti-mock-logged-out') } catch {} }, [theme, lang])
       await login(ctx)
       const page = await ctx.newPage()
-      for (const s of screens(ids)) {
+      for (const s of screens(ids, lang)) {
         if (ONLY && !ONLY.test(s.name)) continue
         if (s.path.includes('undefined')) continue // no data of that kind on this site
         if (USER && s.name === '01-login') continue // already logged in
@@ -124,7 +135,7 @@ try {
             await s.act(page, vpName)
             await page.waitForTimeout(700)
           } catch (e) {
-            failures.push(`${s.name} @ ${vpName}/${theme}: action failed – ${e.message.split('\n')[0]}`)
+            failures.push(`${s.name} @ ${lang}/${vpName}/${theme}: action failed – ${e.message.split('\n')[0]}`)
           }
         }
         const m = await page.evaluate(() => {
@@ -141,9 +152,9 @@ try {
           }
           return { sw: d.scrollWidth, iw: innerWidth, offenders }
         })
-        if (m.sw > m.iw) failures.push(`${s.name} @ ${vpName}/${theme}: scrollWidth ${m.sw} > innerWidth ${m.iw}\n      ${m.offenders.join('\n      ')}`)
+        if (m.sw > m.iw) failures.push(`${s.name} @ ${lang}/${vpName}/${theme}: scrollWidth ${m.sw} > innerWidth ${m.iw}\n      ${m.offenders.join('\n      ')}`)
         if (!CHECK_ONLY) {
-          const file = join(OUT, `${s.name}__${vpName}-${vp.width}x${vp.height}__${theme}.png`)
+          const file = join(OUT, `${s.name}__${lang}__${vpName}-${vp.width}x${vp.height}__${theme}.png`)
           if (s.act) await page.screenshot({ path: file })
           else {
             // grow the viewport to the document height so sticky/fixed chrome (sidebar, tab bar) lands where a reader would see it
@@ -159,10 +170,11 @@ try {
       await ctx.close()
     }
   }
+  }
 } finally {
   await browser.close()
 }
-console.log(`${count} screen/viewport/theme combinations checked${CHECK_ONLY ? '' : ` · screenshots in ${OUT}`}`)
+console.log(`${count} screen/language/viewport/theme combinations checked${CHECK_ONLY ? '' : ` · screenshots in ${OUT}`}`)
 if (failures.length) {
   console.error(`\n✗ ${failures.length} problem(s):\n  ` + failures.join('\n  '))
   process.exit(1)

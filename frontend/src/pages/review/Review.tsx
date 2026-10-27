@@ -1,3 +1,4 @@
+import { msgs, t, useT } from '@/i18n'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
@@ -43,22 +44,25 @@ import { Waveform } from './Waveform'
 const LIMIT = 100
 const NUDGE = 0.05
 
-const SHORTCUTS: [string[], string][] = [
-  [['Space'], '播放 / 暫停音段'],
-  [['R'], '從頭重播'],
-  [['J', '→'], '下一段'],
-  [['K', '←'], '上一段'],
-  [['1'], '通過'],
-  [['2'], '需修正'],
-  [['3'], '排除'],
-  [['E'], '編輯文字'],
-  [['['], '起點提早 50 ms'],
-  [[']'], '起點延後 50 ms'],
-  [['{'], '終點提早 50 ms'],
-  [['}'], '終點延後 50 ms'],
-  [['Ctrl/⌘', 'Enter'], '儲存文字'],
-  [['?'], '顯示快捷鍵'],
-]
+const SHORTCUTS = (): [string[], string][] => {
+  const k = msgs().process.review.shortcuts
+  return [
+    [['Space'], k.play],
+    [['R'], k.replay],
+    [['J', '→'], k.next],
+    [['K', '←'], k.prev],
+    [['1'], k.pass],
+    [['2'], k.fix],
+    [['3'], k.exclude],
+    [['E'], k.edit],
+    [['['], k.startEarlier],
+    [[']'], k.startLater],
+    [['{'], k.endEarlier],
+    [['}'], k.endLater],
+    [['Ctrl/⌘', 'Enter'], k.saveText],
+    [['?'], k.help],
+  ]
+}
 
 /* ───────────── queue filters (URL) ───────────── */
 function useQueueParams() {
@@ -88,40 +92,40 @@ function QueueFilters({ p, set, onDone }: { p: ReturnType<typeof useQueueParams>
   return (
     <div className="flex flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-center">
       <Segmented
-        aria-label="審查狀態"
+        aria-label={t('process.review.statusFilter')}
         value={p.status}
         onChange={(v) => (set({ status: v === 'unchecked' ? null : v, segment: null, offset: null }), onDone?.())}
         options={[
-          { value: 'unchecked', label: '未審查' },
-          { value: 'needs_fix', label: '需修正' },
-          { value: 'passed', label: '已通過' },
-          { value: 'all', label: '全部' },
+          { value: 'unchecked', label: t('process.review.statusUnchecked') },
+          { value: 'needs_fix', label: t('process.review.statusFix') },
+          { value: 'passed', label: t('process.review.statusPassed') },
+          { value: 'all', label: t('process.review.statusAll') },
         ]}
       />
-      <Select aria-label="頻道" value={p.channel} onChange={(e) => set({ channel: e.target.value, media: null, segment: null, offset: null })} className="lg:w-44" size_="sm">
-        <option value="">所有頻道</option>
+      <Select aria-label={t('process.review.channel')} value={p.channel} onChange={(e) => set({ channel: e.target.value, media: null, segment: null, offset: null })} className="lg:w-44" size_="sm">
+        <option value="">{t('process.review.allChannels')}</option>
         {ch.data?.items.map((c) => (
           <option key={c.id} value={c.id}>
             {c.title}
           </option>
         ))}
       </Select>
-      <Select aria-label="文字來源" value={p.source} onChange={(e) => set({ source: e.target.value, segment: null, offset: null })} className="lg:w-36" size_="sm">
-        <option value="">所有文字來源</option>
-        <option value="manual_caption">原生字幕</option>
-        <option value="auto_caption">自動字幕</option>
-        <option value="human_revision">人工校正</option>
+      <Select aria-label={t('process.review.textSource')} value={p.source} onChange={(e) => set({ source: e.target.value, segment: null, offset: null })} className="lg:w-36" size_="sm">
+        <option value="">{t('process.review.allSources')}</option>
+        <option value="manual_caption">{textSource.manual_caption}</option>
+        <option value="auto_caption">{textSource.auto_caption}</option>
+        <option value="human_revision">{textSource.human_revision}</option>
       </Select>
-      <Select aria-label="排序" value={p.sort} onChange={(e) => set({ sort: e.target.value, segment: null, offset: null })} className="lg:w-40" size_="sm">
-        <option value="">依影片順序</option>
-        <option value="snr">SNR 低到高（先看問題）</option>
-        <option value="-snr">SNR 高到低</option>
-        <option value="-duration">長音段優先</option>
+      <Select aria-label={t('process.review.sort')} value={p.sort} onChange={(e) => set({ sort: e.target.value, segment: null, offset: null })} className="lg:w-40" size_="sm">
+        <option value="">{t('process.review.sortDefault')}</option>
+        <option value="snr">{t('process.review.sortSnrAsc')}</option>
+        <option value="-snr">{t('process.review.sortSnrDesc')}</option>
+        <option value="-duration">{t('process.review.sortLongFirst')}</option>
       </Select>
       {p.media && (
         <span className="inline-flex h-9 items-center gap-1 rounded-full border border-primary/25 bg-primary-soft pl-3 pr-1 text-xs font-medium text-primary-soft-fg sm:h-8">
-          僅此影片
-          <button aria-label="移除影片篩選" className="grid size-6 place-items-center rounded-full hover:bg-primary/15" onClick={() => set({ media: null, segment: null, offset: null })}>
+          {t('process.review.thisVideoOnly')}
+          <button aria-label={t('process.review.removeVideoFilter')} className="grid size-6 place-items-center rounded-full hover:bg-primary/15" onClick={() => set({ media: null, segment: null, offset: null })}>
             ×
           </button>
         </span>
@@ -137,8 +141,8 @@ function MetricChips({ s }: { s: SegmentDetail }) {
     ['C50', fmtDb(s.c50)],
     ['OVRL', fmtMos(s.dnsmos_ovrl), (s.dnsmos_ovrl ?? 5) < 2.5],
     ['P.808', fmtMos(s.dnsmos_p808)],
-    ['語音比例', fmtPct(s.speech_ratio), (s.speech_ratio ?? 1) < 0.5],
-    ['重複重疊', fmtPct(s.repeated_overlap), s.repeated_overlap > 0.2],
+    [t('process.media.speechRatio'), fmtPct(s.speech_ratio), (s.speech_ratio ?? 1) < 0.5],
+    [t('process.review.overlapRepeated'), fmtPct(s.repeated_overlap), s.repeated_overlap > 0.2],
   ]
   return (
     <div className="grid grid-cols-3 gap-1.5">
@@ -161,7 +165,7 @@ function SpeakerPanel({ s }: { s: SegmentDetail }) {
     onSuccess: (d) => {
       qc.setQueryData(qk.segment(s.id), d)
       setName('')
-      toast.success('已指定語者（重新分群時會保留）')
+      toast.success(t('process.review.speakerAssigned'))
     },
     onError: onErr,
   })
@@ -175,15 +179,15 @@ function SpeakerPanel({ s }: { s: SegmentDetail }) {
               {speakerName(s.speaker)}
             </Link>
           ) : (
-            <div className="text-[13px] font-medium text-fg-3">未分群</div>
+            <div className="text-[13px] font-medium text-fg-3">{t('process.review.unclustered')}</div>
           )}
           <div className="truncate text-[11px] text-fg-3">
-            {s.speaker?.label ?? '—'} · 本片 <span className="font-mono">{s.local_speaker ?? '—'}</span>
+            {s.speaker?.label ?? '—'} · {t('process.review.inThisVideo')} <span className="font-mono">{s.local_speaker ?? '—'}</span>
           </div>
         </div>
       </div>
       <Select
-        aria-label="語者狀態"
+        aria-label={t('process.review.speakerState')}
         size_="sm"
         value={s.speaker_state}
         onChange={(e) => patch.mutate({ id: s.id, patch: { speaker_state: e.target.value as SpeakerState } })}
@@ -201,9 +205,9 @@ function SpeakerPanel({ s }: { s: SegmentDetail }) {
           if (name.trim()) assign.mutate()
         }}
       >
-        <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="指定語者名稱（例如：阿嬤）" className="h-10 text-[13px] sm:h-8" />
+        <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={t('process.review.assignPlaceholder')} className="h-10 text-[13px] sm:h-8" />
         <Button type="submit" size="sm" disabled={!name.trim()} loading={assign.isPending}>
-          指定
+          {t('process.review.assign')}
         </Button>
       </form>
     </div>
@@ -214,7 +218,7 @@ function SimilarPanel({ id }: { id: string }) {
   const sim = useSimilar(id)
   const [, setSp] = useSearchParams()
   if (!sim.data) return <Skeleton className="h-24" />
-  if (!sim.data.length) return <p className="text-[13px] text-fg-3">沒有相似音段（尚未計算語者嵌入）。</p>
+  if (!sim.data.length) return <p className="text-[13px] text-fg-3">{t('process.review.noSimilar')}</p>
   return (
     <ul className="space-y-1">
       {sim.data.map(({ segment: x, similarity }) => (
@@ -239,7 +243,8 @@ function SimilarPanel({ id }: { id: string }) {
 
 /* ───────────── main ───────────── */
 export default function Review() {
-  useTitle('音段審查')
+  const t = useT()
+  useTitle(t('process.review.title'))
   const { p, set } = useQueueParams()
   const isDesktop = useIsDesktop()
   const list = useSegments({
@@ -309,7 +314,7 @@ export default function Review() {
       { id: s.id, patch: { review_status: st, ...saveExtras() } },
       {
         onSuccess: () => {
-          toast.success(`已標記為「${reviewStatus[st].label}」`, { duration: 1400 })
+          toast.success(t('process.review.markedAs', reviewStatus[st].label), { duration: 1400 })
           if (autoNext) go(1)
         },
       },
@@ -319,7 +324,7 @@ export default function Review() {
     if (!s) return
     const ex = saveExtras()
     if (!Object.keys(ex).length) return
-    patch.mutate({ id: s.id, patch: ex }, { onSuccess: () => toast.success(boundaryDirty ? '已儲存（邊界變更會重新計算嵌入與特徵）' : '已儲存') })
+    patch.mutate({ id: s.id, patch: ex }, { onSuccess: () => toast.success(boundaryDirty ? t('process.review.savedReembed') : t('common.saved')) })
   }
   const nudge = (which: 0 | 1, d: number) =>
     setRegion((r) => {
@@ -359,25 +364,23 @@ export default function Review() {
     <div className="mb-4 flex flex-col gap-3 lg:mb-5">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <h1 className="text-[22px] font-semibold leading-8 tracking-tight sm:text-2xl">音段審查</h1>
+          <h1 className="text-[22px] font-semibold leading-8 tracking-tight sm:text-2xl">{t('process.review.title')}</h1>
           <p className="text-[13px] text-fg-3">
             {list.data ? (
-              <>
-                第 <span className="font-medium tabular text-fg">{fmtInt(position)}</span> / {fmtInt(list.data.total)} 段
-              </>
+              t('process.review.position', position, list.data.total)
             ) : (
-              '載入佇列…'
+              t('process.review.loadingQueue')
             )}
           </p>
         </div>
         <div className="flex items-center gap-1.5">
           {!isDesktop && (
             <Button size="sm" onClick={() => setFiltersOpen(true)}>
-              <ListFilter /> 佇列
+              <ListFilter /> {t('process.review.queue')}
             </Button>
           )}
-          <Tooltip content="鍵盤快捷鍵（?）">
-            <Button size="icon-sm" variant="ghost" aria-label="鍵盤快捷鍵" onClick={() => setHelp(true)} className="hidden sm:inline-flex">
+          <Tooltip content={t('process.review.shortcutsTip')}>
+            <Button size="icon-sm" variant="ghost" aria-label={t('process.review.shortcutsLabel')} onClick={() => setHelp(true)} className="hidden sm:inline-flex">
               <Keyboard />
             </Button>
           </Tooltip>
@@ -403,11 +406,11 @@ export default function Review() {
         <Card>
           <EmptyState
             icon={<Check />}
-            title="這個佇列沒有待審查的音段"
-            description="換一個頻道或狀態篩選，或等待更多影片處理完成。"
+            title={t('process.review.emptyTitle')}
+            description={t('process.review.emptyDesc')}
             action={
               <Button onClick={() => set({ status: 'all', channel: null, media: null, source: null, segment: null, offset: null })}>
-                <RotateCcw /> 顯示全部音段
+                <RotateCcw /> {t('process.review.showAll')}
               </Button>
             }
           />
@@ -420,9 +423,9 @@ export default function Review() {
     <div className="grid grid-cols-3 gap-2">
       {(
         [
-          ['passed', '通過', <Check key="i" />, 'success', '1'],
-          ['needs_fix', '需修正', <TriangleAlert key="i" />, 'warning', '2'],
-          ['excluded', '排除', <CircleSlash key="i" />, 'danger', '3'],
+          ['passed', t('process.review.pass'), <Check key="i" />, 'success', '1'],
+          ['needs_fix', t('process.review.fix'), <TriangleAlert key="i" />, 'warning', '2'],
+          ['excluded', t('process.review.exclude'), <CircleSlash key="i" />, 'danger', '3'],
         ] as const
       ).map(([st, label, icon, variant, key]) => (
         <Button
@@ -434,7 +437,7 @@ export default function Review() {
           disabled={!s || patch.isPending}
         >
           {icon}
-          <span>{label}</span>
+          <span className="min-w-0 truncate">{label}</span>
           <Kbd className={cn('ml-1 hidden lg:inline-flex', s?.review_status === st && 'border-white/40 bg-white/15 text-white shadow-none')}>{key}</Kbd>
         </Button>
       ))}
@@ -460,8 +463,8 @@ export default function Review() {
                       <span className="font-mono">
                         {fmtTimestamp(s.start_sec)} – {fmtTimestamp(s.end_sec)}
                       </span>
-                      <span className="tabular">{(absRegion[1] - absRegion[0]).toFixed(2)} 秒</span>
-                      {s.revision > 1 && <Tag>第 {s.revision} 版</Tag>}
+                      <span className="tabular">{t('process.review.seconds', (absRegion[1] - absRegion[0]).toFixed(2))}</span>
+                      {s.revision > 1 && <Tag>{t('process.review.revision', s.revision)}</Tag>}
                     </div>
                   </>
                 ) : (
@@ -473,7 +476,7 @@ export default function Review() {
 
             <div className="flex gap-3 px-4 pt-7 sm:px-5">
               <div className="hidden w-14 shrink-0 sm:block">
-                <div className="flex h-28 items-center text-[11px] text-fg-3">波形</div>
+                <div className="flex h-28 items-center text-[11px] text-fg-3">{t('process.waveform.label')}</div>
                 {s && tl.data && <LaneLabels lanes={lanes} className="mt-3" />}
               </div>
               <div className="min-w-0 flex-1" ref={waveRef}>
@@ -515,21 +518,21 @@ export default function Review() {
 
             {/* transport */}
             <div className="flex flex-wrap items-center gap-2 border-t border-border px-4 py-3 sm:px-5">
-              <Button variant="primary" size="icon" className="size-12 rounded-full sm:size-10" onClick={toggle} disabled={!audio.ready} aria-label={audio.playing ? '暫停' : '播放'}>
+              <Button variant="primary" size="icon" className="size-12 rounded-full sm:size-10" onClick={toggle} disabled={!audio.ready} aria-label={audio.playing ? t('process.review.pause') : t('process.review.play')}>
                 {audio.playing ? <Pause className="!size-5" /> : <Play className="!size-5 translate-x-px" />}
               </Button>
-              <Tooltip content="重播（R）">
-                <Button size="icon" variant="ghost" onClick={() => audio.play(region[0], region[1])} disabled={!audio.ready} aria-label="重播">
+              <Tooltip content={t('process.review.replayTip')}>
+                <Button size="icon" variant="ghost" onClick={() => audio.play(region[0], region[1])} disabled={!audio.ready} aria-label={t('process.review.replay')}>
                   <RotateCcw />
                 </Button>
               </Tooltip>
-              <Tooltip content="循環播放">
-                <Button size="icon" variant={loop ? 'soft' : 'ghost'} onClick={() => setLoop((l) => !l)} aria-pressed={loop} aria-label="循環播放">
+              <Tooltip content={t('process.review.loop')}>
+                <Button size="icon" variant={loop ? 'soft' : 'ghost'} onClick={() => setLoop((l) => !l)} aria-pressed={loop} aria-label={t('process.review.loop')}>
                   <Repeat />
                 </Button>
               </Tooltip>
               <Select
-                aria-label="播放速度"
+                aria-label={t('process.review.speed')}
                 size_="sm"
                 value={String(rate)}
                 onChange={(e) => {
@@ -546,25 +549,25 @@ export default function Review() {
               </Select>
               <span className="flex-1" />
               <div className="flex items-center gap-1 rounded-lg bg-surface-2/70 p-1">
-                <span className="px-1.5 text-[11px] text-fg-3">起點</span>
-                <Button size="icon-sm" variant="ghost" aria-label="起點提早" onClick={() => nudge(0, -NUDGE)}>
+                <span className="px-1.5 text-[11px] text-fg-3">{t('process.review.start')}</span>
+                <Button size="icon-sm" variant="ghost" aria-label={t('process.review.startEarlier')} onClick={() => nudge(0, -NUDGE)}>
                   <ChevronLeft />
                 </Button>
-                <Button size="icon-sm" variant="ghost" aria-label="起點延後" onClick={() => nudge(0, NUDGE)}>
+                <Button size="icon-sm" variant="ghost" aria-label={t('process.review.startLater')} onClick={() => nudge(0, NUDGE)}>
                   <ChevronRight />
                 </Button>
                 <span className="mx-1 h-5 w-px bg-border-strong" />
-                <span className="px-1.5 text-[11px] text-fg-3">終點</span>
-                <Button size="icon-sm" variant="ghost" aria-label="終點提早" onClick={() => nudge(1, -NUDGE)}>
+                <span className="px-1.5 text-[11px] text-fg-3">{t('process.review.end')}</span>
+                <Button size="icon-sm" variant="ghost" aria-label={t('process.review.endEarlier')} onClick={() => nudge(1, -NUDGE)}>
                   <ChevronLeft />
                 </Button>
-                <Button size="icon-sm" variant="ghost" aria-label="終點延後" onClick={() => nudge(1, NUDGE)}>
+                <Button size="icon-sm" variant="ghost" aria-label={t('process.review.endLater')} onClick={() => nudge(1, NUDGE)}>
                   <ChevronRight />
                 </Button>
               </div>
               {boundaryDirty && (
                 <Button size="sm" variant="ghost" onClick={() => s && setRegion([PAD, PAD + s.end_sec - s.start_sec])}>
-                  還原邊界
+                  {t('process.review.resetBoundary')}
                 </Button>
               )}
             </div>
@@ -575,11 +578,11 @@ export default function Review() {
             <CardBody className="space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <label htmlFor="seg-text" className="flex items-center gap-2 text-[13px] font-medium">
-                  文字
+                  {t('process.review.text')}
                   {s && <Badge tone={s.text_source === 'auto_caption' ? 'warning' : s.text_source === 'human_revision' ? 'success' : 'neutral'}>{textSource[s.text_source] ?? s.text_source}</Badge>}
                 </label>
                 <span className="hidden text-[11px] text-fg-3 sm:inline">
-                  <Kbd>E</Kbd> 編輯 · <Kbd>Ctrl</Kbd>+<Kbd>Enter</Kbd> 儲存
+                  <Kbd>E</Kbd> {t('process.review.editHint')} · <Kbd>Ctrl</Kbd>+<Kbd>Enter</Kbd> {t('process.review.saveHint')}
                 </span>
               </div>
               <Textarea
@@ -599,15 +602,15 @@ export default function Review() {
               />
               {s && (textDirty || s.corrected_text) && (
                 <div className="rounded-lg bg-surface-2/70 px-3 py-2 text-[13px]">
-                  <span className="text-[11px] text-fg-3">原始字幕（不會被覆寫）</span>
+                  <span className="text-[11px] text-fg-3">{t('process.review.originalCaption')}</span>
                   <p className="mt-0.5 text-fg-2 break-cjk">{s.original_text}</p>
                 </div>
               )}
-              <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="審查備註（選填，例如：結尾被切掉一個字）" className="text-[13px]" disabled={!s} />
+              <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder={t('process.review.notePlaceholder')} className="text-[13px]" disabled={!s} />
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <Switch checked={autoNext} onCheckedChange={setAutoNext} label="標記後自動跳到下一段" className="min-h-0" />
+                <Switch checked={autoNext} onCheckedChange={setAutoNext} label={t('process.review.autoNext')} className="min-h-0" />
                 <Button size="sm" onClick={save} disabled={!s || (!textDirty && !boundaryDirty && note === s.review_note)} loading={patch.isPending}>
-                  <Save /> 儲存變更
+                  <Save /> {t('process.review.saveChanges')}
                 </Button>
               </div>
             </CardBody>
@@ -615,12 +618,12 @@ export default function Review() {
 
           {/* desktop/tablet action bar */}
           <div className="hidden items-center gap-2 md:flex">
-            <Button onClick={() => go(-1)} aria-label="上一段" disabled={position <= 1}>
-              <ChevronLeft /> 上一段
+            <Button onClick={() => go(-1)} disabled={position <= 1}>
+              <ChevronLeft /> {t('process.review.prev')}
             </Button>
             <div className="flex-1">{actionButtons()}</div>
-            <Button onClick={() => go(1)} aria-label="下一段">
-              下一段 <ChevronRight />
+            <Button onClick={() => go(1)}>
+              {t('process.review.next')} <ChevronRight />
             </Button>
           </div>
         </div>
@@ -628,7 +631,7 @@ export default function Review() {
         {/* side column */}
         <div className="min-w-0 space-y-4">
           <Card>
-            <CardHeader title="音質" description={s?.flags.length ? undefined : '沒有品質旗標'} />
+            <CardHeader title={t('process.review.quality')} description={s?.flags.length ? undefined : t('process.review.noFlags')} />
             <CardBody className="space-y-3">
               {s ? <MetricChips s={s} /> : <Skeleton className="h-24" />}
               {s && s.flags.length > 0 && (
@@ -644,30 +647,30 @@ export default function Review() {
           </Card>
           <div className="grid items-start gap-4 md:grid-cols-2 xl:grid-cols-1">
             <Card>
-              <CardHeader title="語者" icon={<UserRound />} />
+              <CardHeader title={t('process.review.speaker')} icon={<UserRound />} />
               <CardBody>{s ? <SpeakerPanel s={s} /> : <Skeleton className="h-24" />}</CardBody>
             </Card>
             <Card>
-              <CardHeader title="Vox-Profile 語者特徵" description="模型推估，僅供參考" />
+              <CardHeader title={t('process.review.profileTitle')} description={t('process.review.profileDesc')} />
               <CardBody>
-                {!s ? <Skeleton className="h-40" /> : s.profile ? <ProfileTraits p={s.profile} compact /> : <p className="text-[13px] text-fg-3">此音段沒有特徵（多語者、重疊或短於 1 秒）。</p>}
+                {!s ? <Skeleton className="h-40" /> : s.profile ? <ProfileTraits p={s.profile} compact /> : <p className="text-[13px] text-fg-3">{t('process.review.noProfile')}</p>}
               </CardBody>
             </Card>
           </div>
           <Card>
-            <CardHeader title="相似音段" description="同一語者嵌入空間的最近鄰" icon={<AudioWaveform />} />
+            <CardHeader title={t('process.review.similar')} description={t('process.review.similarDesc')} icon={<AudioWaveform />} />
             <CardBody className="pt-2">{s ? <SimilarPanel id={s.id} /> : <Skeleton className="h-24" />}</CardBody>
           </Card>
           {s && s.history.length > 0 && (
             <Card>
-              <CardHeader title="修改紀錄" />
+              <CardHeader title={t('process.review.history')} />
               <CardBody>
                 <ol className="space-y-2.5">
                   {s.history.slice(0, 5).map((h) => (
                     <li key={h.id} className="text-[13px]">
-                      <span className="font-medium">{h.user?.display_name ?? '系統'}</span>
+                      <span className="font-medium">{h.user?.display_name ?? t('process.review.system')}</span>
                       <span className="text-fg-3"> · {fmtRelative(h.at)}</span>
-                      <div className="truncate text-xs text-fg-3">{Object.keys(h.after ?? {}).join('、') || h.action}</div>
+                      <div className="truncate text-xs text-fg-3">{Object.keys(h.after ?? {}).join(t('common.listSep')) || h.action}</div>
                     </li>
                   ))}
                 </ol>
@@ -681,19 +684,19 @@ export default function Review() {
       <div className="sticky bottom-[calc(64px+env(safe-area-inset-bottom))] z-20 -mx-4 mt-4 border-t border-border bg-surface/95 px-3 pb-3 pt-2 backdrop-blur-xl sm:-mx-6 md:hidden">
         <div className="mb-2 flex items-center justify-between">
           <Button size="sm" variant="ghost" onClick={() => go(-1)} disabled={position <= 1}>
-            <ChevronLeft /> 上一段
+            <ChevronLeft /> {t('process.review.prev')}
           </Button>
           <span className="text-xs tabular text-fg-3">
             {fmtInt(position)} / {fmtInt(list.data?.total ?? 0)}
           </span>
           <Button size="sm" variant="ghost" onClick={() => go(1)}>
-            下一段 <ChevronRight />
+            {t('process.review.next')} <ChevronRight />
           </Button>
         </div>
         {actionButtons(true)}
       </div>
 
-      <Sheet open={filtersOpen} onOpenChange={setFiltersOpen} title="審查佇列" description="選擇要審查的音段範圍">
+      <Sheet open={filtersOpen} onOpenChange={setFiltersOpen} title={t('process.review.queueTitle')} description={t('process.review.queueDesc')}>
         <div className="p-4">
           <QueueFilters p={p} set={set} />
         </div>
@@ -705,9 +708,9 @@ export default function Review() {
 
 function ShortcutDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
   return (
-    <Dialog open={open} onOpenChange={onOpenChange} title="鍵盤快捷鍵" description="在文字框以外的地方都可以使用" size="sm">
+    <Dialog open={open} onOpenChange={onOpenChange} title={t('process.review.shortcutsLabel')} description={t('process.review.shortcutsDesc')} size="sm">
       <ul className="divide-y divide-border">
-        {SHORTCUTS.map(([keys, label]) => (
+        {SHORTCUTS().map(([keys, label]) => (
           <li key={label} className="flex items-center justify-between py-2 text-[13px]">
             <span className="text-fg-2">{label}</span>
             <span className="flex gap-1">

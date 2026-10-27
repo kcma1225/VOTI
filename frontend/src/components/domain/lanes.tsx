@@ -2,8 +2,10 @@
 import { useMemo, useState } from 'react'
 import type { ReviewStatus, Timeline } from '@/api/types'
 import { fmtClock, fmtTimestamp } from '@/lib/format'
+import { reviewStatus } from '@/lib/labels'
 import { SERIES } from '@/components/charts/charts'
 import { cn } from '@/lib/cn'
+import { localized, msgs, t as tr } from '@/i18n'
 
 export const reviewColor: Record<ReviewStatus, string> = {
   unchecked: 'var(--series-muted)',
@@ -13,7 +15,10 @@ export const reviewColor: Record<ReviewStatus, string> = {
 }
 
 export type LaneKey = 'vad' | 'snr' | 'speaker' | 'repeated' | 'segments'
-export const laneLabels: Record<LaneKey, string> = { vad: '語音 VAD', snr: 'SNR', speaker: '語者', repeated: '重複', segments: '音段' }
+export const laneLabels: Record<LaneKey, string> = localized(() => {
+  const l = msgs().collect.lanes
+  return { vad: l.vad, snr: l.snr, speaker: l.speaker, repeated: l.repeated, segments: l.segments }
+})
 const laneH: Record<LaneKey, number> = { vad: 28, snr: 14, speaker: 14, repeated: 12, segments: 16 }
 const GAP = 8
 
@@ -224,12 +229,12 @@ export function SpeakerLegend({ t }: { t: Timeline }) {
       {(['passed', 'needs_fix', 'excluded', 'unchecked'] as ReviewStatus[]).map((r) => (
         <span key={r} className="flex items-center gap-1.5">
           <span className="h-2.5 w-4 rounded-sm" style={{ background: reviewColor[r] }} />
-          {{ passed: '通過', needs_fix: '需修正', excluded: '排除', unchecked: '未審查' }[r]}
+          {reviewStatus[r].label}
         </span>
       ))}
       <span className="flex items-center gap-1.5">
         <span className="h-2.5 w-4 rounded-sm border border-warning" style={{ background: 'repeating-linear-gradient(135deg, var(--warning) 0 2px, var(--warning-soft) 2px 5px)' }} />
-        已排除的重複片段
+        {tr('collect.lanes.excludedRepeated')}
       </span>
     </div>
   )

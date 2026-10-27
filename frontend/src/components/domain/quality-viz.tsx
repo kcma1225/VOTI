@@ -1,3 +1,4 @@
+import { t } from '@/i18n'
 import { Link } from 'react-router'
 import { AlertTriangle, Gauge } from 'lucide-react'
 import { useMedia, useQualitySummary, useSettings } from '@/api/queries'
@@ -23,8 +24,8 @@ export function BandwidthBar({ bw, sr, compact, className }: { bw: number | null
       </div>
       {!compact && (
         <div className="mt-1 flex justify-between text-[11px] tabular text-fg-3">
-          <span>實際 {fmtKHz(bw)}</span>
-          <span>奈奎斯特 {fmtKHz(nyq)}</span>
+          <span>{t('process.qualityViz.actual', fmtKHz(bw))}</span>
+          <span>{t('process.qualityViz.nyquist', fmtKHz(nyq))}</span>
         </div>
       )}
     </div>
@@ -51,7 +52,7 @@ export function SpectrumChart({ q, height = 170 }: { q: MediaQuality; height?: n
   return (
     <div ref={ref} className="relative w-full" style={{ height }}>
       {w > 0 && (
-        <svg width={w} height={height} className="block" role="img" aria-label="頻譜">
+        <svg width={w} height={height} className="block" role="img" aria-label={t('process.qualityViz.spectrum')}>
           {[-20, -50, -80].map((d) => (
             <g key={d}>
               <line x1={padL} x2={w} y1={Y(d)} y2={Y(d)} stroke="var(--chart-grid)" />
@@ -69,12 +70,12 @@ export function SpectrumChart({ q, height = 170 }: { q: MediaQuality; height?: n
           )}
           <line x1={X(bw)} x2={X(bw)} y1={0} y2={plotH} stroke="var(--fg-2)" strokeWidth={1.5} />
           <text x={X(bw) - 4} y={11} textAnchor="end" className="fill-fg-2 text-[10px] font-medium">
-            實際頻寬 {fmtKHz(bw)}
+            {t('process.qualityViz.actualBandwidth', fmtKHz(bw))}
           </text>
           <line x1={padL} x2={w} y1={plotH} y2={plotH} stroke="var(--chart-axis)" />
-          {ticks.map((t) => (
-            <text key={t} x={X(t)} y={height - 6} textAnchor={t === 0 ? 'start' : t === nyq ? 'end' : 'middle'} className="fill-fg-3 text-[10px] tabular">
-              {fmt1(t / 1000)}k
+          {ticks.map((tk) => (
+            <text key={tk} x={X(tk)} y={height - 6} textAnchor={tk === 0 ? 'start' : tk === nyq ? 'end' : 'middle'} className="fill-fg-3 text-[10px] tabular">
+              {fmt1(tk / 1000)}k
             </text>
           ))}
         </svg>
@@ -105,61 +106,61 @@ export function QualityPanels({ channelId }: { channelId?: string }) {
   if (!n)
     return (
       <Card>
-        <EmptyState icon={<Gauge />} title="還沒有音質資料" description="影片下載並完成音質分析後，SNR、DNSMOS、頻寬等分佈會出現在這裡。" />
+        <EmptyState icon={<Gauge />} title={t('process.qualityViz.emptyTitle')} description={t('process.qualityViz.emptyDesc')} />
       </Card>
     )
   const srs = Object.entries(d.sample_rates).sort((a, b) => b[1] - a[1])
   const codecs = Object.entries(d.codecs).sort((a, b) => b[1] - a[1])
-  const tableOf = (bins: HistBin[], label: (b: number) => string) => ({ columns: ['區間', '影片數'], rows: bins.map((b) => [label(b.bin), b.count]) })
+  const tableOf = (bins: HistBin[], label: (b: number) => string) => ({ columns: [t('process.qualityViz.colRange'), t('process.qualityViz.colVideos')], rows: bins.map((b) => [label(b.bin), b.count]) })
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Card className="p-4">
-          <Stat label="已分析影片" value={fmtInt(n)} unit="部" />
+          <Stat label={t('process.qualityViz.analyzed')} value={fmtInt(n)} unit={t('process.qualityViz.videosUnit')} />
         </Card>
         <Card className="p-4">
           <Stat
-            label="疑似升頻"
+            label={t('process.qualityViz.upsampled')}
             value={fmtInt(d.upsampled_suspect)}
-            unit="部"
-            hint={`${fmtPct(d.upsampled_suspect / n, 1)} · 頻寬遠低於取樣率`}
+            unit={t('process.qualityViz.videosUnit')}
+            hint={t('process.qualityViz.upsampledHint', fmtPct(d.upsampled_suspect / n, 1))}
             icon={d.upsampled_suspect ? <AlertTriangle className="text-warning" /> : undefined}
           />
         </Card>
         <Card className="p-4">
-          <Stat label="主要取樣率" value={srs[0] ? fmt1(Number(srs[0][0]) / 1000) : '—'} unit="kHz" hint={srs[0] ? `${fmtPct(srs[0][1] / n)} 的影片` : undefined} />
+          <Stat label={t('process.qualityViz.mainSampleRate')} value={srs[0] ? fmt1(Number(srs[0][0]) / 1000) : '—'} unit="kHz" hint={srs[0] ? t('process.qualityViz.ofVideos', fmtPct(srs[0][1] / n)) : undefined} />
         </Card>
         <Card className="p-4">
-          <Stat label="主要編碼" value={codecs[0]?.[0] ?? '—'} hint={codecs[0] ? `${fmtPct(codecs[0][1] / n)} 的影片` : undefined} />
+          <Stat label={t('process.qualityViz.mainCodec')} value={codecs[0]?.[0] ?? '—'} hint={codecs[0] ? t('process.qualityViz.ofVideos', fmtPct(codecs[0][1] / n)) : undefined} />
         </Card>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <ChartCard title="訊噪比 SNR" description={`語音段平均（dB）；直線為低 SNR 門檻 ${snrTh} dB`} table={tableOf(d.histograms.snr, (b) => `${b} dB`)}>
+        <ChartCard title={t('process.qualityViz.snrTitle')} description={t('process.qualityViz.snrDesc', snrTh)} table={tableOf(d.histograms.snr, (b) => `${b} dB`)}>
           <Histogram bins={hz(d.histograms.snr)} binLabel={(b) => `${b}`} threshold={{ value: snrTh, label: `${snrTh} dB`, binWidth: 2.5, start: 0 }} highlight={(b) => b >= snrTh - 1e-9} />
         </ChartCard>
-        <ChartCard title="DNSMOS 整體品質（OVRL）" description="1–5 分，越高越乾淨" table={tableOf(d.histograms.dnsmos_ovrl, (b) => b.toFixed(1))}>
+        <ChartCard title={t('process.qualityViz.dnsmosTitle')} description={t('process.qualityViz.dnsmosDesc')} table={tableOf(d.histograms.dnsmos_ovrl, (b) => b.toFixed(1))}>
           <Histogram bins={hz(d.histograms.dnsmos_ovrl)} binLabel={(b) => b.toFixed(1)} />
         </ChartCard>
-        <ChartCard title="實際頻寬" description="原始音訊頻譜的有效上限；明顯低於奈奎斯特代表升頻" table={tableOf(d.histograms.bandwidth_hz, (b) => `${b / 1000} kHz`)}>
+        <ChartCard title={t('process.qualityViz.bandwidthTitle')} description={t('process.qualityViz.bandwidthDesc')} table={tableOf(d.histograms.bandwidth_hz, (b) => `${b / 1000} kHz`)}>
           <Histogram bins={hz(d.histograms.bandwidth_hz)} binLabel={(b) => `${b / 1000}k`} highlight={(b) => b >= 7000} />
         </ChartCard>
-        <ChartCard title="語音比例" description={`VAD 判定為語音的時間比例；門檻 ${fmtPct(srTh)}`} table={tableOf(d.histograms.speech_ratio, (b) => fmtPct(b))}>
+        <ChartCard title={t('process.qualityViz.speechTitle')} description={t('process.qualityViz.speechDesc', fmtPct(srTh))} table={tableOf(d.histograms.speech_ratio, (b) => fmtPct(b))}>
           <Histogram bins={hz(d.histograms.speech_ratio)} binLabel={(b) => `${Math.round(b * 100)}%`} threshold={{ value: srTh, label: fmtPct(srTh), binWidth: 0.05, start: 0 }} highlight={(b) => b >= srTh - 1e-9} />
         </ChartCard>
-        <ChartCard title="殘響 C50" description="早期/晚期能量比（dB），越高越乾" table={tableOf(d.histograms.c50, (b) => `${b} dB`)}>
+        <ChartCard title={t('process.qualityViz.c50Title')} description={t('process.qualityViz.c50Desc')} table={tableOf(d.histograms.c50, (b) => `${b} dB`)}>
           <Histogram bins={hz(d.histograms.c50)} binLabel={(b) => `${b}`} />
         </ChartCard>
         <Card className="flex flex-col">
-          <CardHeader title="取樣率與編碼" description="原始下載檔（ffprobe）" />
+          <CardHeader title={t('process.qualityViz.srCodecTitle')} description={t('process.qualityViz.srCodecDesc')} />
           <div className="grid flex-1 gap-6 px-4 pb-5 pt-4 sm:grid-cols-2 sm:px-5">
             <div className="min-w-0">
-              <div className="mb-3 text-xs font-medium text-fg-3">取樣率</div>
-              <HBars rows={srs.map(([k, v], i) => ({ key: k, label: `${fmt1(Number(k) / 1000)} kHz`, value: v, color: SERIES[i] }))} format={(v) => `${fmtInt(v)} 部`} />
+              <div className="mb-3 text-xs font-medium text-fg-3">{t('process.qualityViz.sampleRate')}</div>
+              <HBars rows={srs.map(([k, v], i) => ({ key: k, label: `${fmt1(Number(k) / 1000)} kHz`, value: v, color: SERIES[i] }))} format={(v) => t('process.qualityViz.videos', v)} />
             </div>
             <div className="min-w-0">
-              <div className="mb-3 text-xs font-medium text-fg-3">編碼</div>
-              <HBars rows={codecs.map(([k, v], i) => ({ key: k, label: k, value: v, color: SERIES[i] }))} format={(v) => `${fmtInt(v)} 部`} />
+              <div className="mb-3 text-xs font-medium text-fg-3">{t('process.qualityViz.codec')}</div>
+              <HBars rows={codecs.map(([k, v], i) => ({ key: k, label: k, value: v, color: SERIES[i] }))} format={(v) => t('process.qualityViz.videos', v)} />
             </div>
           </div>
         </Card>
@@ -167,8 +168,8 @@ export function QualityPanels({ channelId }: { channelId?: string }) {
 
       <Card>
         <CardHeader
-          title="疑似升頻的影片"
-          description="取樣率很高，但實際頻寬明顯偏低（例如 8 kHz 內容存成 44.1 kHz）。這類音訊不適合需要高頻細節的用途。"
+          title={t('process.qualityViz.suspectsTitle')}
+          description={t('process.qualityViz.suspectsDesc')}
           icon={<AlertTriangle className="text-warning" />}
         />
         <div className="mt-3 border-t border-border">
@@ -181,7 +182,7 @@ export function QualityPanels({ channelId }: { channelId?: string }) {
                       <div className="truncate text-[13px] font-medium">{m.title}</div>
                       <div className="truncate text-xs text-fg-3">{m.channel?.title}</div>
                     </div>
-                    <Tooltip content="橘色：實際頻寬；右側刻度：奈奎斯特頻率">
+                    <Tooltip content={t('process.qualityViz.barTip')}>
                       <div>
                         <BandwidthBar bw={m.quality?.real_bandwidth_hz ?? null} sr={m.quality?.sample_rate ?? null} />
                       </div>
@@ -191,7 +192,7 @@ export function QualityPanels({ channelId }: { channelId?: string }) {
               ))}
             </ul>
           ) : (
-            <p className="px-5 py-6 text-center text-[13px] text-fg-3">{suspects.isLoading ? '載入中…' : '沒有疑似升頻的影片'}</p>
+            <p className="px-5 py-6 text-center text-[13px] text-fg-3">{suspects.isLoading ? t('process.qualityViz.loading') : t('process.qualityViz.noSuspects')}</p>
           )}
         </div>
       </Card>

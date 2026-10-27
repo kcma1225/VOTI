@@ -9,6 +9,7 @@ import { TooltipProvider } from '@/components/ui/overlay'
 import { useTheme } from '@/hooks/useTheme'
 import { useIsPhone } from '@/hooks/useMedia'
 import { Splash } from './Splash'
+import { I18nBoundary } from '@/i18n'
 
 const Login = lazy(() => import('@/pages/Login'))
 const Overview = lazy(() => import('@/pages/Overview'))
@@ -109,12 +110,15 @@ function ThemedToaster() {
 export function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider delayDuration={300}>
-        <Suspense fallback={<PageFallback />}>
-          <RouterProvider router={router} />
-        </Suspense>
-        <ThemedToaster />
-      </TooltipProvider>
+      {/* switching language re-mounts the UI below (cached queries survive) */}
+      <I18nBoundary>
+        <TooltipProvider delayDuration={300}>
+          <Suspense fallback={<PageFallback />}>
+            <RouterProvider router={router} />
+          </Suspense>
+          <ThemedToaster />
+        </TooltipProvider>
+      </I18nBoundary>
     </QueryClientProvider>
   )
 }

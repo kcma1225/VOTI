@@ -1,3 +1,4 @@
+import { t } from '@/i18n'
 import { AlertCircle, Ban, CheckCircle2, CircleDashed, Clock, Loader2, PauseCircle } from 'lucide-react'
 import type { JobStatus, MediaStatus, ReviewStatus } from '@/api/types'
 import { jobStatus, mediaStatus, reviewStatus, type Tone } from '@/lib/labels'
@@ -72,29 +73,29 @@ export function CaptionBadges({
 }) {
   if (manual === null && auto === null)
     return (
-      <Tooltip content="尚未取得影片詳細資訊，字幕狀態未知">
-        <span className="text-xs text-fg-3">未知</span>
+      <Tooltip content={t('process.status.captionsUnknownTip')}>
+        <span className="text-xs text-fg-3">{t('process.status.unknown')}</span>
       </Tooltip>
     )
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-1">
       {manual ? (
-        <Tooltip content={`原生字幕：${manualLangs.map(lang).join('、') || '—'}`}>
+        <Tooltip content={t('process.status.manualTip', manualLangs.map(lang).join(t('common.listSep')) || '—')}>
           <Tag className="border-success/30 bg-success-soft text-success-fg">
             <Captions className="size-3" />
-            {compact ? '原生' : manualLangs.slice(0, 2).join(' · ') || '原生'}
+            {compact ? t('process.status.manualShort') : manualLangs.slice(0, 2).join(' · ') || t('process.status.manualShort')}
           </Tag>
         </Tooltip>
       ) : null}
       {auto ? (
-        <Tooltip content={`YouTube 自動字幕：${autoLangs.map(lang).join('、') || '—'}`}>
+        <Tooltip content={t('process.status.autoTip', autoLangs.map(lang).join(t('common.listSep')) || '—')}>
           <Tag className="text-fg-3">
             <Bot className="size-3" />
-            自動
+            {t('process.status.autoShort')}
           </Tag>
         </Tooltip>
       ) : null}
-      {!manual && !auto && <span className="text-xs text-fg-3">無字幕</span>}
+      {!manual && !auto && <span className="text-xs text-fg-3">{t('process.status.noCaptions')}</span>}
     </div>
   )
 }

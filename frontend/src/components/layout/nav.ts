@@ -1,3 +1,4 @@
+import { t } from '@/i18n'
 import {
   AudioWaveform,
   BarChart3,
@@ -24,38 +25,39 @@ export interface NavGroup {
   items: NavItem[]
 }
 
-export const navGroups: NavGroup[] = [
-  { label: null, items: [{ to: '/', label: '總覽', icon: LayoutDashboard, end: true }] },
+/** Built on call so labels follow the active language. */
+export const navGroups = (): NavGroup[] => [
+  { label: null, items: [{ to: '/', label: t('shell.nav.overview'), icon: LayoutDashboard, end: true }] },
   {
-    label: '收集',
+    label: t('shell.nav.groups.collect'),
     items: [
-      { to: '/sources/new', label: '新增來源', icon: PlusCircle },
-      { to: '/channels', label: '頻道', icon: Tv },
+      { to: '/sources/new', label: t('shell.nav.addSource'), icon: PlusCircle },
+      { to: '/channels', label: t('shell.nav.channels'), icon: Tv },
     ],
   },
   {
-    label: '處理',
+    label: t('shell.nav.groups.process'),
     items: [
-      { to: '/review', label: '音段審查', icon: AudioWaveform },
-      { to: '/speakers', label: '語者', icon: Users },
-      { to: '/jobs', label: '工作佇列', icon: ListChecks },
+      { to: '/review', label: t('shell.nav.review'), icon: AudioWaveform },
+      { to: '/speakers', label: t('shell.nav.speakers'), icon: Users },
+      { to: '/jobs', label: t('shell.nav.jobs'), icon: ListChecks },
     ],
   },
   {
-    label: '分析',
+    label: t('shell.nav.groups.analyze'),
     items: [
-      { to: '/diversity', label: '多樣性', icon: BarChart3 },
-      { to: '/quality', label: '音質總覽', icon: Gauge },
+      { to: '/diversity', label: t('shell.nav.diversity'), icon: BarChart3 },
+      { to: '/quality', label: t('shell.nav.quality'), icon: Gauge },
     ],
   },
-  { label: '輸出', items: [{ to: '/datasets', label: '資料集', icon: Database }] },
-  { label: '系統', items: [{ to: '/settings', label: '設定', icon: Settings }] },
+  { label: t('shell.nav.groups.output'), items: [{ to: '/datasets', label: t('shell.nav.datasets'), icon: Database }] },
+  { label: t('shell.nav.groups.system'), items: [{ to: '/settings', label: t('shell.nav.settings'), icon: Settings }] },
 ]
 
-/** Phone bottom bar (the rest lives in the「更多」drawer). */
-export const phoneTabs: NavItem[] = [
-  { to: '/', label: '總覽', icon: LayoutDashboard, end: true },
-  { to: '/channels', label: '頻道', icon: Tv },
-  { to: '/review', label: '審查', icon: AudioWaveform },
-  { to: '/datasets', label: '資料集', icon: Database },
+/** Phone bottom bar (the rest lives in the "more" drawer). */
+export const phoneTabs = (): NavItem[] => [
+  { to: '/', label: t('shell.nav.overview'), icon: LayoutDashboard, end: true },
+  { to: '/channels', label: t('shell.nav.channels'), icon: Tv },
+  { to: '/review', label: t('shell.nav.reviewShort'), icon: AudioWaveform },
+  { to: '/datasets', label: t('shell.nav.datasets'), icon: Database },
 ]

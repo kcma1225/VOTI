@@ -6,26 +6,28 @@ import { api } from '@/api/client'
 import { errMsg, useJobs } from '@/api/queries'
 import type { ResolveResult } from '@/api/types'
 import { classifyUrl } from '@/lib/url'
-import { fmtInt, fmtRelative } from '@/lib/format'
+import { fmtRelative } from '@/lib/format'
 import { jobKind } from '@/lib/labels'
 import { Page, PageHeader } from '@/components/layout/page'
 import { Button } from '@/components/ui/button'
 import { Avatar, Card, CardBody, CardHeader, Kbd } from '@/components/ui/primitives'
 import { JobStatusBadge } from '@/components/domain/status'
 import { cn } from '@/lib/cn'
+import { t as tg, useT } from '@/i18n'
 
-const EXAMPLES = [
-  { label: '頻道', url: 'https://www.youtube.com/@ptstaigi' },
-  { label: '頻道影片分頁', url: 'https://www.youtube.com/@amaskitchen/videos' },
-  { label: '播放清單', url: 'https://www.youtube.com/playlist?list=PLx9fQ0abcdEFG' },
-  { label: '影片', url: 'https://youtu.be/dQw4w9WgXcQ' },
-  { label: 'Shorts', url: 'https://www.youtube.com/shorts/aBcDeFgHiJk' },
+const EXAMPLES = () => [
+  { label: tg('collect.addSource.examples.channel'), url: 'https://www.youtube.com/@ptstaigi' },
+  { label: tg('collect.addSource.examples.channelVideos'), url: 'https://www.youtube.com/@amaskitchen/videos' },
+  { label: tg('collect.addSource.examples.playlist'), url: 'https://www.youtube.com/playlist?list=PLx9fQ0abcdEFG' },
+  { label: tg('collect.addSource.examples.video'), url: 'https://youtu.be/dQw4w9WgXcQ' },
+  { label: tg('collect.addSource.examples.shorts'), url: 'https://www.youtube.com/shorts/aBcDeFgHiJk' },
 ]
 
 function Classification({ url }: { url: string }) {
+  const t = useT()
   const c = useMemo(() => classifyUrl(url), [url])
   if (c.kind === 'empty')
-    return <p className="text-[13px] text-fg-3">貼上網址後，這裡會即時顯示辨識結果。</p>
+    return <p className="text-[13px] text-fg-3">{t('collect.addSource.emptyHint')}</p>
   if (c.kind === 'invalid')
     return (
       <p className="flex items-center gap-2 text-[13px] text-danger-fg">
@@ -34,16 +36,16 @@ function Classification({ url }: { url: string }) {
       </p>
     )
   const map = {
-    channel: { icon: <Tv />, title: '頻道', body: `${c.kind === 'channel' ? c.handle : ''}　會列出所有影片與 Shorts（不會自動下載）`, tone: 'text-series-1' },
-    playlist: { icon: <ListVideo />, title: '播放清單', body: c.kind === 'playlist' && c.withVideo ? '網址同時含影片與清單，將以整份清單為準' : '會列出清單中的所有影片', tone: 'text-series-7' },
-    video: { icon: c.kind === 'video' && c.short ? <Smartphone /> : <Film />, title: c.kind === 'video' && c.short ? 'Shorts 短影片' : '單一影片', body: `影片 ID ${c.kind === 'video' ? c.id : ''}，會一併建立所屬頻道`, tone: 'text-series-3' },
+    channel: { icon: <Tv />, title: t('collect.addSource.kindChannel'), body: t('collect.addSource.kindChannelBody', c.kind === 'channel' ? c.handle : ''), tone: 'text-series-1' },
+    playlist: { icon: <ListVideo />, title: t('collect.addSource.kindPlaylist'), body: c.kind === 'playlist' && c.withVideo ? t('collect.addSource.kindPlaylistWithVideo') : t('collect.addSource.kindPlaylistBody'), tone: 'text-series-7' },
+    video: { icon: c.kind === 'video' && c.short ? <Smartphone /> : <Film />, title: c.kind === 'video' && c.short ? t('collect.addSource.kindShort') : t('collect.addSource.kindVideo'), body: t('collect.addSource.kindVideoBody', c.kind === 'video' ? c.id : ''), tone: 'text-series-3' },
   }[c.kind]
   return (
     <div className="flex min-w-0 items-start gap-3">
       <div className={cn('grid size-9 shrink-0 place-items-center rounded-lg bg-surface-2 [&_svg]:size-[18px]', map.tone)}>{map.icon}</div>
       <div className="min-w-0">
         <div className="flex items-center gap-2 text-[13px] font-medium text-fg">
-          <CheckCircle2 className="size-3.5 text-success" /> 偵測到：{map.title}
+          <CheckCircle2 className="size-3.5 text-success" /> {t('collect.addSource.detected', map.title)}
         </div>
         <div className="mt-0.5 truncate text-xs text-fg-3">{map.body}</div>
       </div>
@@ -54,21 +56,22 @@ function Classification({ url }: { url: string }) {
 function ResultCard({ r }: { r: ResolveResult }) {
   const to = r.channel ? `/channels/${r.channel.id}` : r.media ? `/media/${r.media.id}` : r.playlist?.channel_id ? `/channels/${r.playlist.channel_id}/playlists` : '/channels'
   const title = r.channel?.title ?? r.playlist?.title ?? r.media?.title ?? ''
+  const t = useT()
   return (
     <Card className="mt-4 border-success/30 animate-slide-up">
       <CardBody className="flex flex-col gap-4 sm:flex-row sm:items-center">
         <Avatar name={title} size={44} rounded="lg" />
         <div className="min-w-0 flex-1">
-          <div className="text-xs text-fg-3">{r.type === 'channel' ? '已加入頻道' : r.type === 'playlist' ? '已加入播放清單' : '已加入影片'}</div>
+          <div className="text-xs text-fg-3">{r.type === 'channel' ? t('collect.addSource.addedChannel') : r.type === 'playlist' ? t('collect.addSource.addedPlaylist') : t('collect.addSource.addedVideo')}</div>
           <div className="truncate text-[15px] font-semibold">{title}</div>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-fg-3">
             <JobStatusBadge status={r.job.status} /> {jobKind[r.job.kind]}
-            {r.channel && <span>· 目前已知 {fmtInt(r.channel.counts.listed)} 部影片</span>}
+            {r.channel && <span>{t('collect.addSource.knownVideos', r.channel.counts.listed)}</span>}
           </div>
         </div>
         <Button asChild variant="primary">
           <Link to={to}>
-            前往篩選與下載 <ArrowRight />
+            {t('collect.addSource.goFilter')} <ArrowRight />
           </Link>
         </Button>
       </CardBody>
@@ -78,6 +81,7 @@ function ResultCard({ r }: { r: ResolveResult }) {
 
 export default function AddSource() {
   const [url, setUrl] = useState('')
+  const t = useT()
   const qc = useQueryClient()
   const c = classifyUrl(url)
   const recent = useJobs({ kind: ['source.resolve', 'channel.list', 'playlist.list'], limit: 6 }, 5000)
@@ -96,14 +100,14 @@ export default function AddSource() {
 
   return (
     <Page>
-      <PageHeader title="新增來源" description="貼上 YouTube 頻道、播放清單或影片網址。系統只會先列出影片清單，下載前你可以依字幕、長度與日期篩選。" />
+      <PageHeader title={t('collect.addSource.title')} description={t('collect.addSource.description')} />
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
         <div className="min-w-0">
           <Card>
             <form onSubmit={submit}>
               <CardBody className="space-y-4">
                 <label htmlFor="url" className="text-[13px] font-medium">
-                  YouTube 網址
+                  {t('collect.addSource.urlLabel')}
                 </label>
                 <div className="flex flex-col gap-2 sm:flex-row">
                   <div className="relative min-w-0 flex-1">
@@ -128,7 +132,7 @@ export default function AddSource() {
                     />
                   </div>
                   <Button type="submit" variant="primary" size="lg" className="h-12 sm:h-12 sm:px-6" disabled={c.kind === 'empty' || c.kind === 'invalid'} loading={m.isPending}>
-                    加入並列出影片
+                    {t('collect.addSource.submit')}
                   </Button>
                 </div>
                 <div className="min-h-10 rounded-lg bg-surface-2/70 px-3 py-2.5">
@@ -140,9 +144,9 @@ export default function AddSource() {
                   </div>
                 )}
                 <div>
-                  <div className="mb-2 text-xs text-fg-3">範例（點選填入）</div>
+                  <div className="mb-2 text-xs text-fg-3">{t('collect.addSource.examplesLabel')}</div>
                   <div className="flex flex-wrap gap-2">
-                    {EXAMPLES.map((e) => (
+                    {EXAMPLES().map((e) => (
                       <button
                         key={e.url}
                         type="button"
@@ -161,7 +165,7 @@ export default function AddSource() {
           {m.data && <ResultCard r={m.data} />}
 
           <Card className="mt-4">
-            <CardHeader title="最近的列出工作" description="頻道與播放清單的列表會在背景更新" />
+            <CardHeader title={t('collect.addSource.recentTitle')} description={t('collect.addSource.recentDesc')} />
             <ul className="mt-2 divide-y divide-border border-t border-border">
               {recent.data?.items.length ? (
                 recent.data.items.map((j) => (
@@ -176,7 +180,7 @@ export default function AddSource() {
                   </li>
                 ))
               ) : (
-                <li className="px-5 py-6 text-center text-[13px] text-fg-3">尚無列出工作</li>
+                <li className="px-5 py-6 text-center text-[13px] text-fg-3">{t('collect.addSource.recentEmpty')}</li>
               )}
             </ul>
           </Card>
@@ -184,19 +188,19 @@ export default function AddSource() {
 
         <aside className="space-y-4">
           <Card>
-            <CardHeader title="接下來會發生什麼？" />
+            <CardHeader title={t('collect.addSource.nextTitle')} />
             <CardBody>
               <ol className="space-y-4 text-[13px]">
                 {[
-                  ['列出影片', '取得頻道的影片與 Shorts 清單（標題、長度、日期）。'],
-                  ['取得詳細資訊', '逐部檢查字幕：原生（上傳者）字幕或 YouTube 自動字幕。'],
-                  ['篩選與下載', '在頻道頁篩選後批次下載；預設只下載有原生字幕的影片。'],
-                  ['自動處理', '音質分析 → 語者分段 → 切分音段 → 語者特徵 → 重複片頭偵測。'],
-                ].map(([t, d], i) => (
-                  <li key={t} className="flex gap-3">
+                  [t('collect.addSource.steps.list'), t('collect.addSource.steps.listDesc')],
+                  [t('collect.addSource.steps.detail'), t('collect.addSource.steps.detailDesc')],
+                  [t('collect.addSource.steps.filter'), t('collect.addSource.steps.filterDesc')],
+                  [t('collect.addSource.steps.process'), t('collect.addSource.steps.processDesc')],
+                ].map(([title, d], i) => (
+                  <li key={title} className="flex gap-3">
                     <span className="grid size-6 shrink-0 place-items-center rounded-full bg-primary-soft text-xs font-semibold text-primary-soft-fg">{i + 1}</span>
                     <div>
-                      <div className="font-medium">{t}</div>
+                      <div className="font-medium">{title}</div>
                       <div className="mt-0.5 text-xs leading-5 text-fg-3">{d}</div>
                     </div>
                   </li>
@@ -205,7 +209,7 @@ export default function AddSource() {
             </CardBody>
           </Card>
           <p className="px-1 text-xs leading-5 text-fg-3">
-            提示：按 <Kbd>Enter</Kbd> 送出。下載速率與間隔可在「設定 → YouTube」調整，以避免被 YouTube 限流。
+            {t('collect.addSource.tip', <Kbd>Enter</Kbd>)}
           </p>
         </aside>
       </div>
