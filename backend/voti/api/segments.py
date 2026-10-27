@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy import and_, cast, exists, func, or_, select
@@ -12,7 +13,7 @@ from sqlalchemy.types import Text
 from ..auth import current_user
 from ..db import get_session
 from ..models import (AuditLog, Embedding, Media, Segment, SpeakerAssignment, SpeakerOverride, User,
-                      VoiceProfile, utcnow)
+                      VoiceProfile, WordAlignment, utcnow)
 from ..queue import enqueue
 from . import schemas as S
 from .errors import ApiError
@@ -21,8 +22,10 @@ from .views import Paging, audit, audit_outs, get_or_404, paging, segment_summar
 router = APIRouter(prefix="/segments", tags=["segments"])
 
 _duration = Segment.end_sec - Segment.start_sec
+# "start" / "media": grouped by media (newest published first), then time within the media
+_BY_MEDIA = (Media.published_at.desc().nulls_last(), Media.id, Segment.start_sec)
 SEGMENT_SORTS = {
-    "start": (Segment.media_id, Segment.start_sec), "media": (Segment.media_id, Segment.start_sec),
+    "start": _BY_MEDIA, "media": _BY_MEDIA,
     "-created_at": (Segment.created_at.desc(),), "created_at": (Segment.created_at,),
     "-updated_at": (Segment.updated_at.desc(),),
     "snr": (Segment.snr.asc().nulls_last(),), "-snr": (Segment.snr.desc().nulls_last(),),
@@ -37,15 +40,25 @@ def jsonb_has_any(col, values: list[str]):  # noqa: ANN001, ANN201
     return col.op("?|")(cast(values, ARRAY(Text)))
 
 
-@router.get("", response_model=S.Page[S.SegmentSummary])
-def list_segments(media_id: uuid.UUID | None = None, channel_id: uuid.UUID | None = None,
-                  speaker_id: uuid.UUID | None = None, review_status: str | None = None,
-                  text_source: str | None = None, q: str | None = None, min_snr: float | None = None,
-                  min_dnsmos: float | None = None, min_speech_ratio: float | None = None,
-                  flags: str | None = Query(None, description="comma list, any-of"),
-                  exclude_flags: str | None = Query(None, description="comma list"),
-                  has_profile: bool | None = None, sort: str = "start", page: Paging = Depends(paging),
-                  _: User = Depends(current_user), s: Session = Depends(get_session)):
+@dataclass
+class SegmentFilter:
+    conds: list
+    order: tuple
+
+
+def segment_filter(media_id: uuid.UUID | None = None, channel_id: uuid.UUID | None = None,
+                   speaker_id: uuid.UUID | None = None,
+                   review_status: str | None = Query(None, description="comma list: unchecked,passed,needs_fix,excluded"),
+                   text_source: str | None = Query(None, description="comma list"),
+                   q: str | None = Query(None, description="text search (original or corrected)"),
+                   min_snr: float | None = None, min_dnsmos: float | None = None,
+                   min_speech_ratio: float | None = None, min_c50: float | None = None,
+                   min_duration: float | None = None, max_duration: float | None = None,
+                   language: str | None = Query(None, description="comma list of segment languages (prefix match)"),
+                   flags: str | None = Query(None, description="comma list, any-of"),
+                   exclude_flags: str | None = Query(None, description="comma list"),
+                   has_profile: bool | None = None, sort: str = "start") -> SegmentFilter:
+    """The filter shared by GET /segments and GET /segments/{id}/neighbors."""
     if sort not in SEGMENT_SORTS:
         raise ApiError(422, "invalid_sort", f"sort 必須是 {', '.join(SEGMENT_SORTS)} 之一")
     c: list = [Segment.active.is_(True)]
@@ -76,10 +89,46 @@ def list_segments(media_id: uuid.UUID | None = None, channel_id: uuid.UUID | Non
     if has_profile is not None:
         e = exists().where(VoiceProfile.segment_id == Segment.id, VoiceProfile.revision == Segment.revision)
         c.append(e if has_profile else ~e)
-    total = s.scalar(select(func.count()).select_from(Segment).where(*c)) or 0
-    rows = s.scalars(select(Segment).where(*c).order_by(*SEGMENT_SORTS[sort], Segment.id)
+    if min_c50 is not None:
+        c.append(Segment.c50 >= min_c50)
+    if min_duration is not None:
+        c.append(_duration >= min_duration)
+    if max_duration is not None:
+        c.append(_duration <= max_duration)
+    if language:
+        c.append(or_(*[or_(Segment.language == lang, Segment.language.ilike(f"{lang}-%"))
+                       for lang in split_csv(language)]))
+    return SegmentFilter(conds=c, order=(*SEGMENT_SORTS[sort], Segment.id))
+
+
+@router.get("", response_model=S.Page[S.SegmentSummary])
+def list_segments(f: SegmentFilter = Depends(segment_filter), page: Paging = Depends(paging),
+                  _: User = Depends(current_user), s: Session = Depends(get_session)):
+    """Review list etc. Items carry media_title / channel_title / duration; sort=start groups by media."""
+    total = s.scalar(select(func.count()).select_from(Segment).where(*f.conds)) or 0
+    rows = s.scalars(select(Segment).join(Media, Media.id == Segment.media_id).where(*f.conds).order_by(*f.order)
                      .limit(page.limit).offset(page.offset)).all()
     return S.Page[S.SegmentSummary](items=segment_summaries(s, rows), total=total)
+
+
+@router.get("/{segment_id}/neighbors", response_model=S.SegmentNeighbors)
+def segment_neighbors(segment_id: uuid.UUID, f: SegmentFilter = Depends(segment_filter),
+                      _: User = Depends(current_user), s: Session = Depends(get_session)):
+    """Position of a segment in the list GET /segments would return for the same filters/sort, with the ids of
+    the previous and next items. The segment itself is always placed in the ordering (also when it no longer
+    matches, e.g. right after it was marked passed in an `unchecked` list), so prev/next stay meaningful."""
+    get_or_404(s, Segment, segment_id, "音段")
+    matches = and_(*f.conds)
+    ranked = (select(Segment.id.label("id"), func.row_number().over(order_by=f.order).label("rn"))
+              .join(Media, Media.id == Segment.media_id)
+              .where(or_(matches, Segment.id == segment_id)).subquery())
+    rn = s.scalar(select(ranked.c.rn).where(ranked.c.id == segment_id))
+    prev_id = s.scalar(select(ranked.c.id).where(ranked.c.rn == rn - 1)) if rn else None
+    next_id = s.scalar(select(ranked.c.id).where(ranked.c.rn == rn + 1)) if rn else None
+    total = s.scalar(select(func.count()).select_from(Segment).where(*f.conds)) or 0
+    in_filter = s.scalar(select(func.count()).select_from(Segment).where(matches, Segment.id == segment_id)) > 0
+    return S.SegmentNeighbors(prev_id=prev_id, next_id=next_id, index=(rn - 1) if rn else None, total=total,
+                              in_filter=in_filter)
 
 
 def segment_detail(s: Session, g: Segment) -> S.SegmentDetail:
@@ -89,11 +138,26 @@ def segment_detail(s: Session, g: Segment) -> S.SegmentDetail:
     history = s.scalars(select(AuditLog).where(AuditLog.entity_type == "segment", AuditLog.entity_id == str(g.id))
                         .order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).limit(100)).all()
     data = summary.model_dump(exclude={"profile"})
+    words, alignment = segment_words(s, g)
     return S.SegmentDetail(**data, track_id=g.track_id, cue_ids=g.cue_ids or [], dnsmos_sig=g.dnsmos_sig,
                            dnsmos_bak=g.dnsmos_bak, clipping_ratio=g.clipping_ratio, lufs=g.lufs,
                            review_note=g.review_note or "", reviewed_by=user_ref(s, g.reviewed_by), reviewed_at=g.reviewed_at,
                            profile=S.VoiceProfileOut.model_validate(vp) if vp else None,
-                           history=audit_outs(s, history))
+                           history=audit_outs(s, history), words=words, alignment=alignment)
+
+
+def segment_words(s: Session, g: Segment) -> tuple[list[S.WordOut] | None, S.AlignmentInfo]:
+    from ..pipeline.align import segment_text, text_hash
+    wa = s.get(WordAlignment, g.id)
+    if wa is None:
+        return None, S.AlignmentInfo(status="none")
+    status = wa.status
+    if status != "pending" and (wa.revision != g.revision or wa.text_hash != text_hash(segment_text(g))):
+        status = "stale"
+    info = S.AlignmentInfo(status=status, reason=wa.reason, model_id=wa.model_id or None, updated_at=wa.created_at)
+    if status != "aligned":
+        return None, info
+    return [S.WordOut(t=u[0], s=u[1], e=u[2]) for u in (wa.units or [])], info
 
 
 @router.get("/{segment_id}", response_model=S.SegmentDetail)
@@ -151,6 +215,15 @@ def patch_segment(segment_id: uuid.UUID, body: S.SegmentPatchIn, user: User = De
         enqueue(s, "media.profile", media_id=g.media_id, payload=lazy, created_by=user.id)
     if "review_status" in changes or "corrected_text" in changes:
         g.reviewed_by, g.reviewed_at = user.id, utcnow()
+    if boundary or "corrected_text" in changes:
+        # character timing no longer matches: re-align just this segment (media.align, never the media status)
+        from ..pipeline.align import mark_pending
+        mark_pending(s, g)
+        job = enqueue(s, "media.align", media_id=g.media_id, created_by=user.id,
+                      payload={"chain": False, "segment_ids": [str(g.id)], "reason": "edit"})
+        if job.status == "queued" and job.payload.get("segment_ids") is not None and \
+                str(g.id) not in job.payload["segment_ids"]:
+            job.payload = {**job.payload, "segment_ids": [*job.payload["segment_ids"], str(g.id)]}
     audit(s, user, "segment.review", "segment", g.id, before=before, after=after)
     s.commit()
     return segment_detail(s, g)

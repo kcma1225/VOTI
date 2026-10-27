@@ -1,8 +1,8 @@
 """Job handlers for the audio and ml queues (pipeline after media.download).
 
 Every media step: Media.status="processing", Media.stage=<kind>; on success it chains the next kind in
-voti.queue.PIPELINE via ctx.then (media.embed → media.profile, implemented in pipeline/profile.py, which chains
-media.fingerprint). The last step (media.fingerprint) sets Media.status="ready" and enqueues channel.dedup
+voti.queue.PIPELINE via ctx.then (media.segment → media.align → media.embed → media.profile, implemented in pipeline/profile.py,
+which chains media.fingerprint). The last step (media.fingerprint) sets Media.status="ready" and enqueues channel.dedup
 (debounced). payload {"chain": false} runs a single step without chaining (used by the API for lazy
 re-embedding after boundary edits); payload {"force": true} on media.embed recomputes all embeddings.
 """
@@ -157,6 +157,30 @@ def h_segment(ctx: JobContext) -> dict:
     res = segment.run(ctx.media_id, _progress(ctx))
     _chain(ctx)
     _finish_single_step(ctx)
+    return res
+
+
+@handler("media.align")
+def h_align(ctx: JobContext) -> dict:
+    """Per-character timing (voti.pipeline.align). In the pipeline chain a missing aligner model never stops the
+    media: the step records why it skipped and the chain continues (re-run later with POST /media/{id}/align).
+    With payload chain=false (edit re-alignment, backfill) Media.status / stage are not touched."""
+    from . import align
+    chained = ctx.payload.get("chain") is not False
+    if ctx.media_id is None:
+        raise JobError("bad_job", "缺少 media_id", retryable=False)
+    if chained:
+        _begin(ctx)
+    try:
+        res = align.run(ctx.media_id, _progress(ctx), segment_ids=ctx.payload.get("segment_ids"),
+                        force=bool(ctx.payload.get("force")), pending_only=bool(ctx.payload.get("pending_only")))
+    except JobError as e:
+        if not chained or e.code not in ("align_unavailable", "align_model_unavailable", "out_of_memory") \
+                or ctx.will_retry(e):
+            raise
+        log.warning("media.align skipped for %s: %s %s", ctx.media_id, e.code, e.message[:200])
+        res = {"skipped": True, "code": e.code, "message": e.message[:500]}
+    _chain(ctx)
     return res
 
 

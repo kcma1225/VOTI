@@ -33,9 +33,12 @@ SHORT_HOSTS = {"youtu.be", "www.youtu.be"}
 CHANNEL_TABS = {"", "videos", "shorts", "streams", "playlists", "featured", "home"}
 LISTED_TABS = ("videos", "shorts")  # live/streams intentionally excluded
 
-# Traditional Chinese first; then any manual track. Taiwanese/Hakka tracks are always taken in addition.
-DEFAULT_CAPTION_PREFS = ("zh-TW", "zh-Hant", "zh-Hant-TW", "zh-HK", "zh-Hant-HK", "zh")
+# Primary caption preference (see caption_rank): Traditional / Taiwan Chinese first, then generic Chinese (script
+# decided by content after download), then Simplified (converted to Traditional by voti.textconv), then
+# Taiwanese/Hakka, then anything else. Taiwanese/Hakka manual tracks are always taken in addition.
+DEFAULT_CAPTION_PREFS = ("zh-TW", "zh-Hant", "zh-Hant-TW", "zh-HK", "zh-Hant-HK", "zh")  # kept for callers
 EXTRA_DEFAULT_LANG_PREFIXES = ("nan", "hak", "tw")  # nan-TW (台語), hak-TW (客語)
+SIMPLIFIED_TAGS = ("zh-hans", "zh-cn", "zh-sg", "zh-my", "cmn-hans")
 SUBTITLE_FORMAT_PREFS = ("json3", "vtt", "srt")
 
 
@@ -614,16 +617,59 @@ def _match(keys: list[str], want: str) -> str | None:
     return None
 
 
+def _tag_is(lang: str, *tags: str) -> bool:
+    return any(lang == t or lang.startswith(t + "-") for t in tags)
+
+
+def caption_rank(lang: str) -> int:
+    """Preference of a caption language tag for the primary track (lower = better).
+
+    0 zh-TW, zh-Hant-TW            Traditional, Taiwan
+    1 zh-Hant, zh-Hant-*           Traditional
+    2 zh-HK, zh-MO                 Traditional (Hong Kong / Macau)
+    3 zh, cmn, other zh-*          script unknown: decided by content after download (repick_primary_by_script)
+    4 zh-Hans*, zh-CN, zh-SG, zh-MY  Simplified → converted to Traditional (OpenCC s2twp) on ingestion
+    5 nan*, hak*                   Taiwanese / Hakka (Han characters; downloaded anyway)
+    6 anything else
+    """
+    lang = (lang or "").lower().replace("_", "-")
+    if _tag_is(lang, "zh-tw", "zh-hant-tw"):
+        return 0
+    if _tag_is(lang, "zh-hant"):
+        return 1
+    if _tag_is(lang, "zh-hk", "zh-mo"):
+        return 2
+    if _tag_is(lang, *SIMPLIFIED_TAGS):
+        return 4
+    if _tag_is(lang, "zh", "cmn"):
+        return 3
+    if lang.split("-")[0] in EXTRA_DEFAULT_LANG_PREFIXES:
+        return 5
+    return 6
+
+
+def _ranked(keys) -> list[str]:  # noqa: ANN001
+    return sorted(keys, key=lambda k: (caption_rank(k), len(k), k))
+
+
 def choose_tracks(caps: dict, caption_langs: list[str] | None = None, include_auto: bool = False) -> list[dict]:
     """Pick subtitle tracks to download. → [{"key": yt-dlp key, "language": lang, "kind": "manual"|"auto",
-    "primary": bool}]. The first item is the primary track (preferred text source)."""
+    "primary": bool, "rank": caption_rank}]. The first item is the primary track (preferred text source).
+
+    Default (no caption_langs): the best manual track by caption_rank, plus every other manual track of the same
+    rank when that rank is 3 (`zh` / `cmn`: the script is only known from the content, see
+    sources.handlers.repick_primary_by_script), plus all Taiwanese/Hakka manual tracks. include_auto adds YouTube
+    ASR tracks (original language only) ranked the same way; a manual track is always primary when present.
+    Non-Chinese tracks are never machine-translated.
+    """
     manual_keys = list(caps.get("manual") or {})
     auto = caps.get("auto") or {}
     chosen: list[dict] = []
 
     def add(key, lang, kind):
         if not any(c["key"] == key and c["kind"] == kind for c in chosen):
-            chosen.append({"key": key, "language": lang, "kind": kind, "primary": False})
+            chosen.append({"key": key, "language": lang, "kind": kind, "primary": False,
+                           "rank": caption_rank(lang)})
 
     if caption_langs:
         for want in caption_langs:
@@ -631,21 +677,20 @@ def choose_tracks(caps: dict, caption_langs: list[str] | None = None, include_au
             if k:
                 add(k, k, "manual")
     else:
-        pick = None
-        for pref in DEFAULT_CAPTION_PREFS:
-            pick = _match(manual_keys, pref)
-            if pick:
-                break
-        if pick is None and manual_keys:
-            zh = [k for k in manual_keys if k.lower().startswith("zh")]
-            pick = (zh or sorted(manual_keys))[0]
-        if pick:
-            add(pick, pick, "manual")
+        ranked = _ranked(manual_keys)
+        if ranked:
+            best = ranked[0]
+            add(best, best, "manual")
+            if caption_rank(best) == 3:
+                for k in ranked[1:]:
+                    if caption_rank(k) == 3:
+                        add(k, k, "manual")
         for k in manual_keys:  # Taiwanese / Hakka text is what the corpus is about: always keep it
             if k.lower().split("-")[0] in EXTRA_DEFAULT_LANG_PREFIXES:
                 add(k, k, "manual")
     if include_auto:
-        for base, a in auto.items():
+        for base in _ranked(auto):
+            a = auto[base]
             if caption_langs and not any(base.lower() == w.lower() or base.lower().startswith(w.lower() + "-")
                                          or w.lower().startswith(base.lower() + "-") for w in caption_langs):
                 continue

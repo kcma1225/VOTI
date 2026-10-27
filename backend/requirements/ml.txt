@@ -13,3 +13,4 @@ scipy==1.18.1                  # signal processing (bandwidth spectrum, resampli
 librosa==1.0.0                 # DNSMOS P.808 mel features exactly as Microsoft's dnsmos_local.py
 pyloudnorm==0.2.0              # EBU R128 integrated loudness per segment
 scikit-learn==1.9.1            # agglomerative clustering
+pypinyin==0.55.0               # Han → toneless pinyin for MMS_FA forced alignment (media.align, voti.pipeline.align)

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from ..auth import current_user
 from ..db import get_session
 from ..models import (Asset, Channel, ClusterRun, Job, Media, MediaQuality, Segment, Speaker, User, utcnow)
-from ..queue import KINDS, WORKER_KEY_TTL, redis_client, requeue
+from ..queue import KINDS, WORKER_KEY_TTL, is_side_job, redis_client, requeue
 from . import schemas as S
 from .errors import ApiError
 from .views import DOWNLOADED_STATES, FAILED_STATES, Paging, get_or_404, job_out, job_outs, paging, split_csv
@@ -58,7 +58,8 @@ def retry_job(job_id: uuid.UUID, _: User = Depends(current_user), s: Session = D
                                                       Job.status.in_(("queued", "running")), Job.id != job.id)):
         raise ApiError(409, "job_active", "同類型的工作已在執行中")
     requeue(s, job)
-    if job.media_id and job.kind.startswith("media."):
+    _sync_channel(s, job)
+    if job.media_id and job.kind.startswith("media.") and not is_side_job(job.kind, job.payload):
         m = s.get(Media, job.media_id)
         if m is not None and m.status in FAILED_STATES:
             m.status = "queued" if job.kind == "media.download" else "processing"
@@ -78,12 +79,23 @@ def cancel_job(job_id: uuid.UUID, _: User = Depends(current_user), s: Session = 
             m = s.get(Media, job.media_id)
             if m is not None and m.status == "queued":
                 m.status = "detailed" if m.detailed_at else "listed"
+        _sync_channel(s, job, "cancelled")
     elif job.status == "running":
         job.cancel_requested = True
     else:
         raise ApiError(409, "not_cancellable", "這個工作已經結束")
     s.commit()
     return job_out(s, job)
+
+
+def _sync_channel(s: Session, job: Job, outcome: str | None = None) -> None:
+    """Channel.list_status follows its listing job (voti.queue.sync_channel_list_status)."""
+    from ..queue import LIST_JOB_KINDS, sync_channel_list_status
+    if job.kind in LIST_JOB_KINDS and job.channel_id is not None:
+        ch = s.get(Channel, job.channel_id)
+        if ch is not None:
+            s.flush()
+            sync_channel_list_status(s, ch, job.kind, outcome)
 
 
 # ───────────────────────────── stats ─────────────────────────────

@@ -33,8 +33,8 @@ _lock = threading.Lock()
 os.environ.setdefault("PYANNOTE_METRICS_ENABLED", "false")  # no telemetry from a research server
 
 
-@lru_cache(maxsize=1)
-def _load_pipeline():
+@lru_cache(maxsize=2)
+def _load_pipeline(device: str | None = None):
     token = get_config().hf_token.strip()
     if not token:
         raise JobError("hf_token_missing", TOKEN_HELP, blocked=True)
@@ -53,7 +53,7 @@ def _load_pipeline():
     if pipe is None:  # pyannote swallows hub HTTP errors (gated / bad token) and returns None
         raise JobError("hf_unauthorized", TOKEN_HELP, blocked=True)
     from ..devices import torch_device
-    pipe.to(torch.device(torch_device()))
+    pipe.to(torch.device(device or torch_device()))
     return pipe
 
 
@@ -78,8 +78,18 @@ def split_overlaps(turns: list[tuple[str, float, float]]) -> list[tuple[str, flo
 
 
 def diarize_audio(audio: np.ndarray, progress: Callable[[str], None] | None = None) -> list[tuple[str, float, float]]:
+    """CUDA OOM: cache emptied and retried once on the GPU, then the CPU (voti.pipeline.gpu)."""
+    from .gpu import free_cuda, run_with_oom_fallback
+    try:
+        return run_with_oom_fallback(lambda dev: _diarize(audio, dev, progress), "pyannote 語者分段")
+    finally:
+        free_cuda()
+
+
+def _diarize(audio: np.ndarray, device: str, progress: Callable[[str], None] | None = None
+             ) -> list[tuple[str, float, float]]:
     import torch
-    pipe = _load_pipeline()
+    pipe = _load_pipeline(device)
     wav = torch.from_numpy(np.ascontiguousarray(audio, dtype=np.float32)).unsqueeze(0)
 
     def hook(step_name, step_artifact, file=None, total=None, completed=None):  # noqa: ANN001
@@ -99,7 +109,13 @@ def run(media_id: uuid.UUID, progress: Callable[[float, str], None] = lambda f, 
             raise JobError("not_found", "找不到媒體", retryable=False)
         if not get_setting(s, "pipeline").get("diarization_enabled", True):
             return {"skipped": True, "reason": "diarization_disabled"}
-    _load_pipeline()  # fail fast (blocked) before downloading audio
+    from ..devices import torch_device
+    from .gpu import is_cuda_oom
+    try:
+        _load_pipeline(torch_device())  # fail fast (blocked) before downloading audio
+    except Exception as e:  # noqa: BLE001
+        if not is_cuda_oom(e):
+            raise  # an OOM while moving the model is handled by diarize_audio's fallback
     with work_dir("diarize") as wd:
         with session_scope() as s:
             audio = load_normalized(s, media_id, wd)

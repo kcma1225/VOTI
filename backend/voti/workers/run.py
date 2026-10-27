@@ -4,7 +4,8 @@ Handler modules are imported individually and guarded, so a worker without optio
 (e.g. no torch on a fetch-only box) still serves the queues whose handlers did load.
 
 Startup: schema migrations (voti.db.init_db, idempotent), bucket check, then voti.queue.Worker, which first
-recovers this host's interrupted jobs and re-pushes queued jobs Redis lost. SIGTERM/SIGINT stop gracefully:
+recovers this host's interrupted jobs and re-pushes queued jobs Redis lost. Fetch workers also run
+voti.scheduler.tick (scheduled channel refresh) after every sweep. SIGTERM/SIGINT stop gracefully:
 the running job goes back to `queued` (see voti.queue "Recovery"); a second signal forces it.
 """
 from __future__ import annotations
@@ -57,7 +58,11 @@ def main(argv: list[str] | None = None) -> int:
         ensure_bucket()
     except Exception as e:  # noqa: BLE001
         log.warning("bucket check failed: %s", e)
-    worker = queue.Worker(queues)
+    ticks = []
+    if "fetch" in queues:  # scheduled channel refresh + state reconciliation (Redis-locked: one worker acts)
+        from voti.scheduler import tick
+        ticks.append(tick)
+    worker = queue.Worker(queues, ticks=ticks)
     log.info("worker %s (shutdown grace %.0fs)", worker.name, worker.shutdown_grace)
     worker.run()
     return 0

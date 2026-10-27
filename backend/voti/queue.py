@@ -12,7 +12,8 @@ A handler may call ctx.then(kind, payload) to enqueue follow-up jobs when it com
 Queues
   fetch : youtube listing / detail / download (rate limited, few workers)
   audio : normalize, probe, bandwidth, loudness, silero VAD, segmentation, text conversion (CPU)
-  ml    : brouhaha+dnsmos quality, diarization, embedding, vox-profile, fingerprint dedup, clustering (GPU if any)
+  ml    : brouhaha+dnsmos quality, diarization, alignment, embedding, vox-profile, fingerprint dedup, clustering
+          (GPU if any)
   export: dataset exports
 
 Recovery (docs/ARCHITECTURE.md "Job recovery")
@@ -67,6 +68,7 @@ KINDS: dict[str, str] = {
     "media.quality": "ml",            # brouhaha (legacy-ml) + silero + dnsmos → media_quality, speech_regions
     "media.diarize": "ml",            # pyannote → diarization_turns
     "media.segment": "audio",         # cues + VAD + diarization → segments with quality snapshot
+    "media.align": "ml",              # MMS_FA CTC forced alignment → per-character times (word_alignments)
     "media.embed": "ml",              # ECAPA → embeddings
     "media.profile": "ml",            # Vox-Profile (legacy-ml) → voice_profiles
     "media.fingerprint": "ml",        # per-media fingerprint asset; then channel.dedup
@@ -77,11 +79,17 @@ KINDS: dict[str, str] = {
 }
 
 # Pipeline order after download; each step enqueues the next on success (see pipeline.chain).
-PIPELINE = ["media.normalize", "media.quality", "media.diarize", "media.segment", "media.embed",
+PIPELINE = ["media.normalize", "media.quality", "media.diarize", "media.segment", "media.align", "media.embed",
             "media.profile", "media.fingerprint"]
 
 # media.* kinds that are not pipeline steps: their failure must not change Media.status
 SIDE_KINDS = {"media.convert_text"}
+
+
+def is_side_job(kind: str, payload: dict | None) -> bool:
+    """Side jobs never change Media.status. media.align run outside the pipeline chain (re-alignment after an
+    edit, backfill: payload chain=false) is one too."""
+    return kind in SIDE_KINDS or (kind == "media.align" and (payload or {}).get("chain") is False)
 
 # Failure codes that mean "not eligible" rather than "broken": media becomes `skipped`.
 SKIP_CODES = {"no_usable_captions"}
@@ -484,7 +492,8 @@ def _execute(ctx: JobContext) -> None:
         if stopping and not _db_retry(lambda: _cancel_requested(ctx.job_id), "cancel check"):
             _shutdown_requeue(ctx)
             return
-        _db_retry(lambda: _finish(ctx, "cancelled", code="cancelled", message="使用者取消"), "finish")
+        if _db_retry(lambda: _finish(ctx, "cancelled", code="cancelled", message="使用者取消"), "finish"):
+            _sync_entities(ctx.kind, ctx.media_id, ctx.channel_id, ctx.payload, "cancelled")
         return
     except Exception as e:  # noqa: BLE001
         err = e
@@ -535,14 +544,21 @@ def _sync_entities(kind: str, media_id: uuid.UUID | None, channel_id: uuid.UUID 
                    outcome: str, code: str | None = None, message: str | None = None) -> None:
     """Keep media / channel / playlist / export state consistent with the job outcome.
 
-    outcome: requeued (will run again) | failed | blocked | interrupted (terminal)."""
+    outcome: requeued (will run again) | failed | blocked | interrupted (terminal) | cancelled."""
     from .models import Channel, DatasetExport, Media, Playlist
     payload = payload or {}
     try:
         with session_scope() as s:
-            if kind.startswith("media.") and kind not in SIDE_KINDS and media_id is not None:
+            if kind in ("channel.list", "source.resolve"):
+                ch_id = channel_id or _uuid(payload.get("channel_id"))
+                ch = s.get(Channel, ch_id) if ch_id else None
+                if ch is not None:
+                    sync_channel_list_status(s, ch, kind, outcome)
+            if kind.startswith("media.") and not is_side_job(kind, payload) and media_id is not None:
                 m = s.get(Media, media_id)
-                if m is not None:
+                if m is not None and outcome == "cancelled":
+                    pass  # handlers / cancel endpoints restore the pre-job state themselves
+                elif m is not None:
                     if outcome == "requeued":
                         if kind == "media.download" and m.status in ("downloading", "listed", "detailed"):
                             m.status, m.stage = "queued", None
@@ -551,22 +567,48 @@ def _sync_entities(kind: str, media_id: uuid.UUID | None, channel_id: uuid.UUID 
                         status = "skipped" if code in SKIP_CODES else ("blocked" if outcome == "blocked" else "failed")
                         m.status, m.failure_code = status, code
                         m.failure_message = (message or "")[:2000]
-            elif kind == "channel.list" and outcome != "requeued":
-                ch = s.get(Channel, channel_id or _uuid(payload.get("channel_id")))
-                if ch is not None and ch.list_status == "listing":
-                    ch.list_status = "failed"
-            elif kind == "playlist.list" and outcome != "requeued":
+            elif kind == "playlist.list" and outcome not in ("requeued", "cancelled"):
                 ref = _uuid(payload.get("playlist_id"))
                 p = s.get(Playlist, ref) if ref else s.scalar(
                     select(Playlist).where(Playlist.platform_playlist_id == str(payload.get("playlist_id"))))
                 if p is not None and p.list_status == "listing":
                     p.list_status = "failed"
-            elif kind == "dataset.export":
+            elif kind == "dataset.export" and outcome != "cancelled":
                 exp = s.get(DatasetExport, _uuid(payload.get("export_id")))
                 if exp is not None and exp.status != "completed":
                     exp.status = "queued" if outcome == "requeued" else "failed"
     except Exception:  # noqa: BLE001 - entity sync is best effort; the job row is authoritative
         log.exception("could not sync entities for %s (%s)", kind, outcome)
+
+
+LIST_JOB_KINDS = ("channel.list", "source.resolve")
+
+
+def active_list_job(s: Session, channel_id: uuid.UUID, exclude: uuid.UUID | None = None) -> Job | None:
+    """The queued/running channel.list (else source.resolve) job of a channel."""
+    q = select(Job).where(Job.channel_id == channel_id, Job.kind.in_(LIST_JOB_KINDS), Job.media_id.is_(None),
+                          Job.status.in_(("queued", "running")))
+    if exclude is not None:
+        q = q.where(Job.id != exclude)
+    rows = s.scalars(q).all()
+    rows.sort(key=lambda j: (j.kind != "channel.list", j.status != "running", j.created_at))
+    return rows[0] if rows else None
+
+
+def sync_channel_list_status(s: Session, ch, kind: str | None = None, outcome: str | None = None) -> str:  # noqa: ANN001
+    """Channel.list_status follows its listing job: an active job → queued / listing; otherwise a stale
+    queued/listing (crash, cancel, final failure) becomes failed — or listed again when only a re-listing was
+    cancelled. Returns the new status."""
+    job = active_list_job(s, ch.id)
+    if job is not None:
+        ch.list_status = "listing" if (job.status == "running" and job.kind == "channel.list") else "queued"
+    elif outcome == "cancelled" or (outcome is None and ch.list_status in ("queued", "listing")):
+        if ch.list_status in ("queued", "listing"):
+            ch.list_status = "listed" if ch.last_listed_at is not None else ("new" if outcome == "cancelled"
+                                                                              else "failed")
+    elif outcome in ("failed", "blocked", "interrupted") and ch.list_status in ("queued", "listing", "new"):
+        ch.list_status = "failed"
+    return ch.list_status
 
 
 def _uuid(v) -> uuid.UUID | None:  # noqa: ANN001
@@ -677,7 +719,9 @@ def _recover(j, reason: str) -> str | None:  # noqa: ANN001
     elif outcome == "interrupted":
         _sync_entities(j.kind, j.media_id, j.channel_id, j.payload, "interrupted", "interrupted",
                        values["error_message"])
-    elif j.kind == "media.download" and j.media_id is not None:  # cancelled: back to pre-download state
+    else:  # cancelled
+        _sync_entities(j.kind, j.media_id, j.channel_id, j.payload, "cancelled")
+    if outcome == "cancelled" and j.kind == "media.download" and j.media_id is not None:  # pre-download state
         from .models import Media
         with session_scope() as s:
             m = s.get(Media, j.media_id)
@@ -748,8 +792,12 @@ class Worker:
     """One job at a time on the main thread; a daemon thread does heartbeats and the shutdown watchdog."""
 
     def __init__(self, queues: list[str], name: str | None = None, *, shutdown_grace: float = SHUTDOWN_GRACE_SEC,
-                 heartbeat_sec: float = HEARTBEAT_SEC, sweep_sec: float = SWEEP_SEC, exit_on_force: bool = True):
+                 heartbeat_sec: float = HEARTBEAT_SEC, sweep_sec: float = SWEEP_SEC, exit_on_force: bool = True,
+                 ticks: list[Callable[[], object]] | None = None):
         self.queues = list(queues)
+        # periodic callables run on the main loop after every sweep (e.g. the channel refresh scheduler);
+        # they must be short and safe to run on several workers at once (use a Redis lock)
+        self.ticks = list(ticks or [])
         self.name = name or worker_name()
         self.stop = threading.Event()
         self.current: JobContext | None = None
@@ -839,6 +887,13 @@ class Worker:
             logging.shutdown()
             os._exit(0)
 
+    def run_ticks(self) -> None:
+        for fn in self.ticks:
+            try:
+                fn()
+            except Exception:  # noqa: BLE001 - a scheduler bug must never stop the worker
+                log.exception("periodic task %s failed", getattr(fn, "__name__", fn))
+
     # ── main loop ──
     def run(self, install_signals: bool = True, max_jobs: int | None = None) -> None:
         if install_signals:
@@ -850,12 +905,14 @@ class Worker:
         self._thread.start()
         log.info("worker %s listening on %s", self.name, self.queues)
         sweep(self.queues, startup_name=self.name)  # own previous jobs + Redis loss, right away
+        self.run_ticks()
         last_sweep = time.monotonic()
         jobs = 0
         try:
             while not self.stop.is_set():
                 if time.monotonic() - last_sweep > self.sweep_sec:
                     sweep(self.queues)
+                    self.run_ticks()
                     last_sweep = time.monotonic()
                 try:
                     promote_due(self.queues)
@@ -889,5 +946,5 @@ class Worker:
             log.info("worker %s stopped", self.name)
 
 
-def worker_loop(queues: list[str]) -> None:
-    Worker(queues).run()
+def worker_loop(queues: list[str], ticks: list[Callable[[], object]] | None = None) -> None:
+    Worker(queues, ticks=ticks).run()

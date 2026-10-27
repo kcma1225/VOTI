@@ -78,6 +78,10 @@ def resolve(body: S.ResolveIn, user: User = Depends(current_user), s: Session = 
         raise ApiError(400, "unsupported_url", "不支援的網址類型")
     # for a bare @handle nothing is created; the job resolves it. Per-media jobs are deduplicated by enqueue.
     job = enqueue(s, "source.resolve", payload={"url": url}, created_by=user.id, **ids)
+    if out.get("channel") is not None:
+        from ..queue import sync_channel_list_status
+        s.flush()
+        sync_channel_list_status(s, out["channel"])  # → queued until source.resolve chains channel.list
     s.commit()
     return S.ResolveOut(
         type=kind, job=job_out(s, job),

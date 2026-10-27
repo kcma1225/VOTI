@@ -110,7 +110,9 @@ class Channel(Base):
     tags: Mapped[list] = mapped_column(JSONB, default=list)
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)  # everything else from the extractor
     notes: Mapped[str] = mapped_column(Text, default="")                      # human notes (speaker diversity etc.)
-    list_status: Mapped[str] = mapped_column(String(16), default="new")       # new | listing | listed | failed
+    # new (never queued) → queued → listing → listed | failed. Follows the channel.list job (voti.queue
+    # _sync_entities; voti.sources.handlers.reconcile_channel_status); the API derives it from the active job.
+    list_status: Mapped[str] = mapped_column(String(16), default="new")
     last_listed_at: Mapped[datetime | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = created()
 
@@ -176,6 +178,8 @@ class Media(Base):
     failure_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
     failure_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     detailed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # set when a re-listing (scheduled or manual refresh, not the channel's first listing) found this video
+    discovered_at: Mapped[datetime | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = created()
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 
@@ -367,6 +371,27 @@ class Embedding(Base):
     model_id: Mapped[str] = mapped_column(String(128))
     vector: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIM))
     created_at: Mapped[datetime] = created()
+
+
+class WordAlignment(Base):
+    """Character/word timing of one segment's text (`media.align`, voti.pipeline.align), one row per segment.
+
+    text = corrected_text if set else original_text; the row is valid only while revision == Segment.revision and
+    text_hash == voti.pipeline.align.text_hash(text). status: aligned | skipped (no usable romanizer, e.g. nan/hak,
+    or no text; `reason`) | failed (`reason`) | pending (a re-alignment was requested after a text/boundary edit).
+    units: [[unit, start_sec|null, end_sec|null, score|null], ...] in text order; "".join(unit) == text.
+    """
+    __tablename__ = "word_alignments"
+    segment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("segments.id", ondelete="CASCADE"),
+                                                  primary_key=True)
+    media_id: Mapped[uuid.UUID] = fk("media.id")
+    revision: Mapped[int] = mapped_column(Integer)
+    text_hash: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(16), default="aligned")
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model_id: Mapped[str] = mapped_column(String(64), default="")
+    units: Mapped[list] = mapped_column(JSONB, default=list)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 
 
 class VoiceProfile(Base):

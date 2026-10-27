@@ -130,7 +130,7 @@ def test_choose_auto_only_when_requested():
     caps = _caps([], ["zh"])
     assert yt.choose_tracks(caps) == []
     chosen = yt.choose_tracks(caps, include_auto=True)
-    assert chosen == [{"key": "zh-orig", "language": "zh", "kind": "auto", "primary": True}]
+    assert chosen == [{"key": "zh-orig", "language": "zh", "kind": "auto", "primary": True, "rank": 3}]
 
 
 def test_choose_manual_wins_primary_over_auto():
@@ -264,3 +264,59 @@ def test_base_opts():
     assert "cookiesfrombrowser" not in opts
     opts = yt.base_opts(yt.FetchOptions())
     assert "ratelimit" not in opts and "cookiefile" not in opts
+
+
+# ───────────────────────────── caption preference (Traditional first, Simplified converted) ─────────────────────────────
+
+@pytest.mark.parametrize("lang,rank", [
+    ("zh-TW", 0), ("zh-Hant-TW", 0), ("zh-TW-abc", 0), ("zh-Hant", 1), ("zh-Hant-HK", 1), ("zh-HK", 2), ("zh-MO", 2),
+    ("zh", 3), ("cmn", 3), ("zh-xyz", 3), ("zh-Hans", 4), ("zh-Hans-CN", 4), ("zh-CN", 4), ("zh-SG", 4),
+    ("zh-MY", 4), ("nan-TW", 5), ("hak-TW", 5), ("en", 6), ("ja", 6),
+])
+def test_caption_rank(lang, rank):
+    assert yt.caption_rank(lang) == rank
+
+
+@pytest.mark.parametrize("manual,primary", [
+    (["zh-CN", "zh-TW", "zh-HK"], "zh-TW"),
+    (["zh-Hans", "zh-HK"], "zh-HK"),
+    (["zh-Hans", "zh-Hant-HK"], "zh-Hant-HK"),
+    (["zh-Hans", "zh"], "zh"),                 # script unknown beats tagged Simplified (content decides later)
+    (["en", "zh-CN"], "zh-CN"),                # Simplified-only video: still Chinese, converted on ingestion
+    (["en", "zh-SG", "ja"], "zh-SG"),
+    (["en", "nan-TW"], "nan-TW"),              # no Chinese: Taiwanese before other languages
+    (["fr", "en"], "en"),                      # never machine-translated; shortest/alphabetical other track
+])
+def test_choose_prefers_traditional_then_simplified(manual, primary):
+    chosen = yt.choose_tracks(_caps(manual))
+    assert chosen[0]["key"] == primary and chosen[0]["primary"] is True
+
+
+def test_choose_simplified_only_keeps_taiwanese_and_marks_rank():
+    chosen = yt.choose_tracks(_caps(["zh-CN", "hak-TW", "en"]))
+    assert [(c["key"], c["primary"], c["rank"]) for c in chosen] == [("zh-CN", True, 4), ("hak-TW", False, 5)]
+
+
+def test_choose_ambiguous_zh_downloads_all_candidates_for_content_detection():
+    chosen = yt.choose_tracks(_caps(["zh", "cmn", "zh-Hans", "en"]))
+    assert [(c["key"], c["primary"]) for c in chosen] == [("zh", True), ("cmn", False)]
+
+
+def test_choose_auto_follows_same_preference():
+    chosen = yt.choose_tracks(_caps([], ["en", "zh-CN", "zh-TW"]), include_auto=True)
+    assert [(c["language"], c["primary"]) for c in chosen] == [("zh-TW", True), ("zh-CN", False), ("en", False)]
+    assert yt.choose_tracks(_caps([], ["zh-CN"])) == []  # auto captions stay opt-in
+
+
+def test_repick_primary_by_script():
+    from voti.sources.handlers import repick_primary_by_script
+    tracks = [{"language": "zh", "kind": "manual", "primary": True, "script": "simplified", "rank": 3},
+              {"language": "cmn", "kind": "manual", "primary": False, "script": "traditional", "rank": 3},
+              {"language": "nan-TW", "kind": "manual", "primary": False, "script": "traditional", "rank": 5}]
+    repick_primary_by_script(tracks)
+    assert [t["primary"] for t in tracks] == [False, True, False]
+    # a better-ranked Simplified track is never displaced by a lower tier, and Traditional primaries stay
+    tracks = [{"language": "zh-CN", "kind": "manual", "primary": True, "script": "simplified", "rank": 4},
+              {"language": "nan-TW", "kind": "manual", "primary": False, "script": "traditional", "rank": 5}]
+    repick_primary_by_script(tracks)
+    assert tracks[0]["primary"] is True

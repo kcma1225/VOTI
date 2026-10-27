@@ -122,7 +122,7 @@ def test_full_pipeline_three_episodes(infra, tmp_path, monkeypatch):
                 _episode(2, [("B", 3.5), ("A", 6.0), ("B", 3.0)]),
                 _episode(3, [("A", 5.0), ("A", 3.0), ("B", 4.0)])]
     turns_by_len = {a.size: t for a, t in episodes}
-    monkeypatch.setattr(diarize, "_load_pipeline", lambda: _FakePipeline(turns_by_len))
+    monkeypatch.setattr(diarize, "_load_pipeline", lambda *a, **k: _FakePipeline(turns_by_len))
 
     with session_scope() as s:
         s.execute(delete(Job))

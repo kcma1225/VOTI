@@ -74,7 +74,9 @@ def test_segment_review_edit_and_audit(annotator_client, factory, db):
     d = r.json()
     assert d["revision"] == 2 and "boundary_adjusted" in d["flags"] and d["start_sec"] == 1.2
     kinds = set(db.scalars(select(Job.kind).where(Job.media_id == m.id)).all())
-    assert kinds == {"media.embed", "media.profile"}
+    assert kinds == {"media.embed", "media.profile", "media.align"}  # align: queued by the text edit already
+    align = db.scalar(select(Job).where(Job.media_id == m.id, Job.kind == "media.align"))
+    assert align.payload["chain"] is False and align.payload["segment_ids"] == [str(g.id)]
     # no-op patch writes nothing
     n_audit = len(db.scalars(select(AuditLog)).all())
     assert c.patch(f"/api/segments/{g.id}", json={"review_status": "passed"}).status_code == 200

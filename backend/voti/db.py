@@ -48,6 +48,10 @@ def get_session() -> Iterator[Session]:
 MIGRATIONS: tuple[str, ...] = (
     "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS run_after TIMESTAMPTZ",
     "CREATE INDEX IF NOT EXISTS jobs_running_heartbeat ON jobs (heartbeat_at) WHERE status = 'running'",
+    "ALTER TABLE media ADD COLUMN IF NOT EXISTS discovered_at TIMESTAMPTZ",
+    "CREATE INDEX IF NOT EXISTS media_discovered ON media (discovered_at) WHERE discovered_at IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS jobs_channel_kind_active ON jobs (channel_id, kind) "
+    "WHERE status IN ('queued','running')",
 )
 
 

@@ -285,7 +285,8 @@ def test_download_stores_audio_tracks_cues(db, h, monkeypatch):  # noqa: ANN001
     job, follow = run(db, "media.download", media_id=m.id, payload={"caption_langs": ["zh-TW"]})
     assert job.status == "completed", job.error_message
     assert captured["caption_langs"] == ["zh-TW"] and captured["include_auto"] is False
-    assert [(f.kind, f.media_id) for f in follow] == [("media.normalize", m.id)]
+    # the video's channel was not in the library: it is added and listed
+    assert sorted((f.kind, f.media_id) for f in follow) == sorted([("media.normalize", m.id), ("channel.list", None)])
     db.refresh(m)
     assert m.status == "downloaded" and m.stage is None
     assert m.metadata_["download"]["primary_track"]["language"] == "zh-TW"

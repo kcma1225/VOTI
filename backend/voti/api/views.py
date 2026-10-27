@@ -7,11 +7,11 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from fastapi import Query
-from sqlalchemy import and_, case, func, select
+from sqlalchemy import and_, case, exists, func, or_, select
 from sqlalchemy.orm import Session
 
-from ..models import (AuditLog, Channel, ClusterRun, Job, Media, MediaQuality, Segment, Speaker, SpeakerAssignment,
-                      SpeakerOverride, User, VoiceProfile, utcnow)
+from ..models import (Asset, AuditLog, Channel, ClusterRun, Job, Media, MediaQuality, Segment, Speaker,
+                      SpeakerAssignment, SpeakerOverride, User, VoiceProfile, utcnow)
 from . import schemas as S
 from .errors import ApiError
 
@@ -112,11 +112,59 @@ def job_out(s: Session, job: Job) -> S.JobOut:
 
 DOWNLOADED_STATES = ("downloaded", "processing", "ready")
 FAILED_STATES = ("failed", "blocked")
+NEW_STATES = ("listed", "detailed")
+
+
+def downloaded_condition():  # noqa: ANN201
+    """Media whose audio was downloaded: an original_audio asset, or a post-download status."""
+    return or_(Media.status.in_(DOWNLOADED_STATES),
+               exists().where(Asset.media_id == Media.id, Asset.kind == "original_audio"))
+
+
+def new_condition(now=None):  # noqa: ANN001, ANN201
+    """Found by a channel refresh within the NEW_WINDOW and not downloaded (MediaSummary.is_new)."""
+    from ..scheduler import NEW_WINDOW
+    return and_(Media.discovered_at.isnot(None), Media.discovered_at >= (now or utcnow()) - NEW_WINDOW,
+                Media.status.in_(NEW_STATES))
+
+
+def is_new(m: Media, now=None) -> bool:  # noqa: ANN001
+    from ..scheduler import NEW_WINDOW
+    return bool(m.discovered_at is not None and m.discovered_at >= (now or utcnow()) - NEW_WINDOW
+                and m.status in NEW_STATES)
+
+
+def listing_jobs(s: Session, channel_ids: list) -> dict:  # noqa: ANN001
+    """channel id → its active listing Job (channel.list preferred over source.resolve, running over queued)."""
+    if not channel_ids:
+        return {}
+    from ..queue import LIST_JOB_KINDS
+    out: dict = {}
+    for j in s.scalars(select(Job).where(Job.channel_id.in_(channel_ids), Job.kind.in_(LIST_JOB_KINDS),
+                                         Job.media_id.is_(None), Job.status.in_(("queued", "running")))):
+        cur = out.get(j.channel_id)
+        key = (j.kind != "channel.list", j.status != "running", j.created_at)
+        if cur is None or key < (cur.kind != "channel.list", cur.status != "running", cur.created_at):
+            out[j.channel_id] = j
+    return out
+
+
+def effective_list_status(c: Channel, job: Job | None) -> str:
+    """list_status as the UI should see it: derived from the active listing job, so it can never stay
+    queued/listing after a crash even before the scheduler reconciles the stored value."""
+    if job is not None:
+        return "listing" if (job.status == "running" and job.kind == "channel.list") else "queued"
+    if c.list_status in ("queued", "listing"):
+        return "listed" if c.last_listed_at is not None else "failed"
+    return c.list_status
 
 
 def channel_summaries(s: Session, channels: Sequence[Channel]) -> list[S.ChannelSummary]:
+    from ..scheduler import last_list_attempts, next_refresh_at, refresh_interval
     ids = [c.id for c in channels]
     stats: dict = {}
+    detail_active: set = set()
+    now = utcnow()
     if ids:
         dur = func.coalesce(Media.duration_sec, 0.0)
         rows = s.execute(
@@ -127,6 +175,8 @@ def channel_summaries(s: Session, channels: Sequence[Channel]) -> list[S.Channel
                    func.count().filter(Media.status.in_(DOWNLOADED_STATES)),
                    func.count().filter(Media.status == "ready"),
                    func.count().filter(Media.status.in_(FAILED_STATES)),
+                   func.count().filter(new_condition(now)),
+                   func.count().filter(Media.detailed_at.is_(None), Media.status.in_(FAILED_STATES)),
                    func.sum(dur),
                    func.sum(case((Media.status == "ready", dur), else_=0.0)),
                    func.sum(func.coalesce(MediaQuality.speech_sec, 0.0)))
@@ -134,18 +184,30 @@ def channel_summaries(s: Session, channels: Sequence[Channel]) -> list[S.Channel
             .where(Media.channel_id.in_(ids)).group_by(Media.channel_id)).all()
         for r in rows:
             stats[r[0]] = r[1:]
+        detail_active = set(s.scalars(select(Job.channel_id).where(Job.channel_id.in_(ids), Job.kind == "media.detail",
+                                                                   Job.status.in_(("queued", "running")))
+                                      .distinct()))
+    jobs = listing_jobs(s, ids)
+    interval = refresh_interval(s)
+    attempts = last_list_attempts(s, ids) if interval is not None else {}
     out = []
     for c in channels:
         st = stats.get(c.id)
         counts = S.ChannelCounts(**dict(zip(("listed", "detailed", "with_manual_captions", "downloaded", "ready",
-                                             "failed"), st[:6]))) if st else S.ChannelCounts()
-        hours = S.ChannelHours(listed=round((st[6] or 0) / 3600, 3), ready=round((st[7] or 0) / 3600, 3),
-                               speech=round((st[8] or 0) / 3600, 3)) if st else S.ChannelHours()
-        out.append(S.ChannelSummary(id=c.id, platform=c.platform, platform_channel_id=c.platform_channel_id,
-                                    title=c.title, handle=c.handle, url=c.url, thumbnail_url=c.thumbnail_url,
-                                    subscriber_count=c.subscriber_count, video_count=c.video_count,
-                                    list_status=c.list_status, last_listed_at=c.last_listed_at, counts=counts,
-                                    hours=hours))
+                                             "failed", "new"), st[:7]))) if st else S.ChannelCounts()
+        hours = S.ChannelHours(listed=round((st[8] or 0) / 3600, 3), ready=round((st[9] or 0) / 3600, 3),
+                               speech=round((st[10] or 0) / 3600, 3)) if st else S.ChannelHours()
+        job = jobs.get(c.id)
+        out.append(S.ChannelSummary(
+            id=c.id, platform=c.platform, platform_channel_id=c.platform_channel_id, title=c.title, handle=c.handle,
+            url=c.url, thumbnail_url=c.thumbnail_url, subscriber_count=c.subscriber_count, video_count=c.video_count,
+            list_status=effective_list_status(c, job), last_listed_at=c.last_listed_at, counts=counts, hours=hours,
+            listing_job=S.ListingJob(id=job.id, kind=job.kind, status=job.status, progress=job.progress or 0.0,
+                                     phase=job.phase or "", message=job.message or "", run_after=job.run_after)
+            if job is not None else None,
+            detail_progress=S.DetailProgress(detailed=counts.detailed, total=counts.listed,
+                                             failed=int(st[7] or 0) if st else 0, active=c.id in detail_active),
+            next_refresh_at=next_refresh_at(c.last_listed_at, attempts.get(c.id), interval, now)))
     return out
 
 
@@ -159,17 +221,29 @@ def media_summaries(s: Session, media: Sequence[Media]) -> list[S.MediaSummary]:
     seg_counts = dict(s.execute(select(Segment.media_id, func.count()).where(Segment.media_id.in_(ids),
                                                                             Segment.active.is_(True))
                                 .group_by(Segment.media_id)).all()) if ids else {}
+    downloaded = media_downloaded(s, media)
     out = []
     for m in media:
         q = quality.get(m.id)
         out.append(S.MediaSummary(
-            **_media_base(m), channel=S.ChannelRef(id=m.channel_id, title=channels.get(m.channel_id, ""))
+            **_media_base(m), downloaded=m.id in downloaded,
+            channel=S.ChannelRef(id=m.channel_id, title=channels.get(m.channel_id, ""))
             if m.channel_id else None,
             quality=S.MediaQualityBrief(snr_mean=q.snr_mean, dnsmos_ovrl=q.dnsmos_ovrl,
                                         real_bandwidth_hz=q.real_bandwidth_hz, speech_ratio=q.speech_ratio,
                                         sample_rate=q.sample_rate, upsampled_suspect=q.upsampled_suspect)
             if q else None,
             segment_count=seg_counts.get(m.id, 0)))
+    return out
+
+
+def media_downloaded(s: Session, media: Sequence[Media]) -> set:
+    """ids of the given media whose audio was downloaded (see downloaded_condition)."""
+    ids = [m.id for m in media]
+    out = {m.id for m in media if m.status in DOWNLOADED_STATES}
+    rest = [i for i in ids if i not in out]
+    if rest:
+        out |= set(s.scalars(select(Asset.media_id).where(Asset.media_id.in_(rest), Asset.kind == "original_audio")))
     return out
 
 
@@ -180,7 +254,8 @@ def _media_base(m: Media) -> dict:
                 has_manual_captions=m.has_manual_captions, has_auto_captions=m.has_auto_captions,
                 manual_caption_langs=list(m.manual_caption_langs or []),
                 auto_caption_langs=list(m.auto_caption_langs or []), status=m.status, stage=m.stage,
-                failure_code=m.failure_code, detailed_at=m.detailed_at)
+                failure_code=m.failure_code, detailed_at=m.detailed_at, discovered_at=m.discovered_at,
+                is_new=is_new(m))
 
 
 # ───────────────────────────── segments ─────────────────────────────

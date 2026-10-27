@@ -26,13 +26,15 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
+from sqlalchemy.exc import IntegrityError
 
 from .. import storage
 from ..config import get_config
 from ..db import session_scope
 from ..models import Asset, Channel, Cue, Job, Media, Playlist, PlaylistItem, Setting, Track, utcnow
-from ..queue import Cancelled, JobContext, JobError, enqueue, handler, redis_client
+from ..queue import (Cancelled, JobContext, JobError, active_list_job, enqueue, handler, redis_client,
+                     sync_channel_list_status)
 from .. import subtitles as subs_mod
 from .. import textconv
 from . import youtube as yt
@@ -42,6 +44,8 @@ log = logging.getLogger("voti.sources")
 COOKIES_KEY = "system/cookies.txt"
 YT_DEFAULTS = {"rate_limit_kbps": 0, "sleep_between_downloads_sec": 5, "max_concurrent_downloads": 1,
                "cookies_enabled": False,
+               # re-list every channel this often to find new videos (voti.scheduler); 0 disables
+               "auto_refresh_hours": 24,
                # optional (not in the admin form yet): spacing between listing/detail job starts
                "sleep_between_requests_sec": 2.0}
 DETAIL_BATCH = 20
@@ -216,16 +220,45 @@ def upsert_channel(s, meta: dict, row: Channel | None = None) -> Channel:
     return row
 
 
+def queue_channel_listing(s, ch: Channel, *, created_by: uuid.UUID | None = None,
+                          parent_id: uuid.UUID | None = None, payload: dict | None = None):  # noqa: ANN201
+    """Enqueue channel.list for a channel unless one is already queued/running; list_status follows."""
+    job = active_list_job(s, ch.id)
+    if job is None or job.kind != "channel.list":
+        job = enqueue(s, "channel.list", channel_id=ch.id, created_by=created_by, parent_id=parent_id,
+                      payload=payload or {"tabs": list(yt.LISTED_TABS), "detail": True})
+        s.flush()
+    sync_channel_list_status(s, ch)
+    return job
+
+
 def _minimal_channel(s, pcid: str | None, title: str | None = None, handle: str | None = None,
-                     url: str | None = None) -> Channel | None:
+                     url: str | None = None, *, auto_list: bool = True, subscriber_count: int | None = None,
+                     created_by: uuid.UUID | None = None, parent_id: uuid.UUID | None = None,
+                     source: dict | None = None) -> Channel | None:
+    """Find or create the channel a video / playlist belongs to. A channel that is not in the library yet is
+    created right away (title/handle from the video's info, so the channel list can show its name) and, with
+    auto_list, gets list_status=queued and a channel.list job (adding one video adds its channel)."""
     if not pcid:
         return None
     ch = s.scalar(select(Channel).where(Channel.platform == "youtube", Channel.platform_channel_id == pcid))
     if ch is None:
-        ch = Channel(platform="youtube", platform_channel_id=pcid, title=title or "", handle=handle,
-                     url=url or yt.channel_url(pcid))
-        s.add(ch)
-        s.flush()
+        new = Channel(platform="youtube", platform_channel_id=pcid, title=title or "", handle=handle,
+                      url=url or yt.channel_url(pcid), subscriber_count=subscriber_count,
+                      metadata_={"auto_added": {"at": utcnow().isoformat(), **(source or {})}} if source else {})
+        try:
+            with s.begin_nested():
+                s.add(new)
+                s.flush()
+            ch = new
+        except IntegrityError:  # another job created it concurrently
+            ch = s.scalar(select(Channel).where(Channel.platform == "youtube", Channel.platform_channel_id == pcid))
+            if ch is None:
+                raise
+        else:
+            if auto_list:
+                queue_channel_listing(s, ch, created_by=created_by, parent_id=parent_id)
+                log.info("auto-added channel %s (%s) from %s", pcid, title, source)
     else:
         if title and not ch.title:
             ch.title = title
@@ -288,7 +321,7 @@ def upsert_listed_media(s, entries: list[dict], channel: Channel | None) -> tupl
     return rows, new
 
 
-def apply_detail(s, m: Media, d: dict) -> None:
+def apply_detail(s, m: Media, d: dict, ctx: JobContext | None = None) -> None:
     for f in ("url", "kind", "title", "description", "thumbnail_url", "duration_sec", "published_at",
               "view_count", "like_count", "comment_count", "tags", "categories", "chapters", "language", "license",
               "availability", "age_limit", "was_live", "has_manual_captions", "has_auto_captions",
@@ -303,7 +336,10 @@ def apply_detail(s, m: Media, d: dict) -> None:
     m.metadata_ = {**(m.metadata_ or {}), **(d.get("metadata") or {})}
     ch = _minimal_channel(s, d.get("channel_platform_id"), d["metadata"].get("channel"),
                           d["metadata"].get("uploader_id") if str(d["metadata"].get("uploader_id") or "")
-                          .startswith("@") else None, d["metadata"].get("channel_url"))
+                          .startswith("@") else None, d["metadata"].get("channel_url"),
+                          subscriber_count=yt._int(d["metadata"].get("channel_follower_count")),
+                          created_by=ctx.created_by if ctx else None, parent_id=ctx.job_id if ctx else None,
+                          source={"media_id": str(m.id), "video_id": m.platform_media_id})
     if ch is not None:
         m.channel_id = ch.id
     m.detailed_at = utcnow()
@@ -383,6 +419,10 @@ def resolve(ctx: JobContext) -> dict:
         ch = upsert_channel(s, res["channel"], pre)
         ch.metadata_ = {**(ch.metadata_ or {}), "tabs": res["tabs"]}
         channel_id = ch.id
+        if ch.list_status not in ("listing",):
+            ch.list_status = "queued"  # the chained channel.list commits with this job's completion
+        # this job now stands for the channel's listing until channel.list takes over (status reconciliation)
+        s.execute(update(Job).where(Job.id == ctx.job_id, Job.channel_id.is_(None)).values(channel_id=channel_id))
     tabs = [t for t in yt.LISTED_TABS if t in res["tabs"]] or list(yt.LISTED_TABS)
     ctx.then("channel.list", payload={"tabs": tabs, "detail": ctx.payload.get("detail", True)},
              channel_id=channel_id)
@@ -403,6 +443,7 @@ def channel_list(ctx: JobContext) -> dict:
             raise JobError("not_found", "頻道不存在", retryable=False)
         pcid = ch.platform_channel_id
         ch.list_status = "listing"
+        first_listing = ch.last_listed_at is None
     if not yt.CHANNEL_ID_RE.match(pcid or ""):
         raise JobError("bad_channel", f"頻道 ID 尚未解析（{pcid}）；請重新以網址加入", retryable=False)
     tabs = tuple(t for t in (ctx.payload.get("tabs") or yt.LISTED_TABS) if t in yt.LISTED_TABS)
@@ -429,10 +470,15 @@ def channel_list(ctx: JobContext) -> dict:
         if res["channel"]:
             upsert_channel(s, res["channel"], ch)
         rows, new = upsert_listed_media(s, res["entries"], ch)
+        now = utcnow()
+        if not first_listing:
+            # a re-listing (scheduled or manual refresh) found these: mark them new (MediaSummary.is_new)
+            for m in new:
+                m.discovered_at = now
         if not limit:
             ch.video_count = len(rows)
         ch.list_status = "listed"
-        ch.last_listed_at = utcnow()
+        ch.last_listed_at = now
         ch.metadata_ = {**(ch.metadata_ or {}), "listed_tabs": res["tabs"]}
         pending = s.scalar(select(Media.id).where(Media.channel_id == channel_id, Media.detailed_at.is_(None),
                                                   Media.status == "listed").limit(1)) is not None
@@ -442,6 +488,7 @@ def channel_list(ctx: JobContext) -> dict:
                     parent_id=ctx.job_id, created_by=ctx.created_by)
             detail_queued = True
         result = {"tabs": res["tabs"], "total": len(rows), "new": len(new), "detail_queued": detail_queued,
+                  "first_listing": first_listing, "scheduled": bool(ctx.payload.get("scheduled")),
                   "warnings": res.get("warnings", [])[:10]}
     ctx.progress(1.0, "done", f"共 {len(rows)} 支（新增 {len(new)}）")
     return result
@@ -492,7 +539,8 @@ def playlist_list(ctx: JobContext) -> dict:
         p.url = meta["url"]
         p.metadata_ = {**(p.metadata_ or {}), **meta["metadata"]}
         owner = _minimal_channel(s, meta.get("channel_platform_id"), meta.get("channel_title"),
-                                 meta.get("channel_handle"))
+                                 meta.get("channel_handle"), created_by=ctx.created_by, parent_id=ctx.job_id,
+                                 source={"playlist_id": str(p.id)})
         if owner is not None:
             p.channel_id = owner.id
         rows, new = upsert_listed_media(s, res["entries"], None)
@@ -534,7 +582,7 @@ def _detail_one(ctx: JobContext, media_id: uuid.UUID, fo: yt.FetchOptions) -> di
     d = yt.summarize_detail(info)
     with session_scope() as s:
         m = s.get(Media, media_id)
-        apply_detail(s, m, d)
+        apply_detail(s, m, d, ctx)
         store_info_json(s, m, info)
         if m.status in ("listed", "failed", "blocked"):
             m.status = "detailed"
@@ -664,13 +712,30 @@ def _download(ctx, vid, settings, caption_langs, include_auto, require_captions,
             return _store_download(ctx, res)
 
 
+_TRADITIONAL_SCRIPTS = ("traditional", "neutral")
+
+
+def repick_primary_by_script(tracks: list[dict]) -> None:
+    """Content detection for language tags that do not say which script they use (`zh`, `cmn`, …): when the
+    primary track turned out to be Simplified while another downloaded track of the same kind and the same
+    preference tier is Traditional, that one becomes primary (Simplified would only be converted)."""
+    cur = next((t for t in tracks if t.get("primary")), None)
+    if cur is None or cur.get("script") != "simplified" or cur.get("rank") is None:
+        return
+    for t in tracks:
+        if t is not cur and t["kind"] == cur["kind"] and t.get("rank") == cur["rank"] and \
+                t.get("script") in _TRADITIONAL_SCRIPTS:
+            cur["primary"], t["primary"] = False, True
+            return
+
+
 def _store_download(ctx: JobContext, res: yt.DownloadResult) -> dict:
     info = res.info
     ext = res.audio_path.suffix.lstrip(".").lower() or "bin"
     d = yt.summarize_detail(info)
     with session_scope() as s:
         m = s.get(Media, ctx.media_id)
-        apply_detail(s, m, d)
+        apply_detail(s, m, d, ctx)
         store_info_json(s, m, info)
         key = storage.media_key(m.id, f"original.{ext}")
         audio = storage.store_asset(s, res.audio_path, key, "original_audio", media_id=m.id,
@@ -714,8 +779,10 @@ def _store_download(ctx: JobContext, res: yt.DownloadResult) -> dict:
                            raw_text=c.raw_text, text=c.text, flags=c.flags) for c in cues])
             tracks_out.append({"track_id": str(tr.id), "language": lang, "kind": sub["kind"], "format": fmt,
                                "primary": sub["primary"], "cues": stats["cues"], "usable": stats["usable"],
-                               "s2t_converted": bool(s2t.get("converted"))})
+                               "s2t_converted": bool(s2t.get("converted")), "script": s2t.get("script"),
+                               "rank": sub.get("rank")})
             conversions.append({"track_id": str(tr.id), "language": lang, "kind": sub["kind"], **s2t})
+        repick_primary_by_script(tracks_out)
         primary = next((t for t in tracks_out if t["primary"]), None)
         m.metadata_ = {**(m.metadata_ or {}), "text_conversion": textconv.media_summary(conversions), "download": {
             "downloaded_at": utcnow().isoformat(), "audio": res.audio_format, "tracks": tracks_out,

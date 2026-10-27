@@ -67,6 +67,7 @@ class YoutubeSettings(BaseModel):
     max_concurrent_downloads: int = Field(default=1, ge=1, le=16)
     cookies_enabled: bool = False
     sleep_between_requests_sec: float = Field(default=2.0, ge=0, le=3600)  # listing/detail job spacing
+    auto_refresh_hours: float = Field(default=24, ge=0, le=24 * 365)  # scheduled channel re-listing; 0 = off
 
 
 class PipelineSettings(BaseModel):
@@ -156,6 +157,26 @@ class ChannelCounts(BaseModel):
     downloaded: int = 0
     ready: int = 0
     failed: int = 0
+    new: int = 0  # found by a refresh within the last 7 days and not downloaded (MediaSummary.is_new)
+
+
+class ListingJob(BaseModel):
+    """The active channel.list job (or the source.resolve job that will chain it)."""
+    id: uuid.UUID
+    kind: str
+    status: str
+    progress: float = 0.0
+    phase: str = ""
+    message: str = ""
+    run_after: datetime | None = None
+
+
+class DetailProgress(BaseModel):
+    """Caption-info (media.detail) progress of a channel's videos."""
+    detailed: int = 0
+    total: int = 0
+    failed: int = 0       # not detailed and failed/blocked (will not be retried by the sweep)
+    active: bool = False  # a media.detail job for the channel is queued/running
 
 
 class ChannelHours(BaseModel):
@@ -174,10 +195,13 @@ class ChannelSummary(BaseModel):
     thumbnail_url: str | None = None
     subscriber_count: int | None = None
     video_count: int | None = None
-    list_status: str
+    list_status: str          # new | queued | listing | listed | failed (follows the listing job)
     last_listed_at: datetime | None = None
     counts: ChannelCounts
     hours: ChannelHours
+    listing_job: ListingJob | None = None
+    detail_progress: DetailProgress = DetailProgress()
+    next_refresh_at: datetime | None = None  # scheduled re-listing (null: auto refresh off); past = due
 
 
 class ChannelSpeakers(BaseModel):
@@ -287,6 +311,9 @@ class MediaSummary(BaseModel):
     channel: ChannelRef | None = None
     quality: MediaQualityBrief | None = None
     segment_count: int = 0
+    discovered_at: datetime | None = None  # found by a channel re-listing (not the first listing)
+    is_new: bool = False                    # discovered within the last 7 days and not downloaded yet
+    downloaded: bool = False                # original audio stored (or status downloaded/processing/ready)
 
 
 class MediaQualityOut(ORM):
@@ -348,6 +375,9 @@ class MediaDetailOut(BaseModel):
     detailed_at: datetime | None = None
     channel: ChannelRef | None = None
     segment_count: int = 0
+    discovered_at: datetime | None = None
+    is_new: bool = False
+    downloaded: bool = False
     description: str = ""
     tags: list = []
     categories: list = []
@@ -373,6 +403,8 @@ class MediaFacets(BaseModel):
     captions: dict[str, int]
     license: dict[str, int]
     status: dict[str, int]
+    downloaded: dict[str, int] = {}  # {"yes": n, "no": n}
+    new: int = 0                     # matching media with is_new
 
 
 class MediaList(BaseModel):
@@ -478,6 +510,43 @@ class SegmentDetail(SegmentSummary):
     reviewed_at: datetime | None = None
     profile: VoiceProfileOut | None = None  # type: ignore[assignment]  (full profile in detail)
     history: list[AuditOut] = []
+    words: list[WordOut] | None = None  # per-character timing of `text` (null: not aligned / stale / skipped)
+    alignment: AlignmentInfo | None = None
+
+
+class WordOut(BaseModel):
+    t: str                 # unit text; "".join(t) == segment text
+    s: float | None = None  # start (s, media time) — null for untimed units (punctuation, digits, symbols)
+    e: float | None = None
+
+
+class AlignmentInfo(BaseModel):
+    status: str            # aligned | skipped | failed | pending | stale (text/boundaries changed since) | none
+    reason: str | None = None
+    model_id: str | None = None
+    updated_at: datetime | None = None
+
+
+SegmentDetail.model_rebuild()
+
+
+class MediaWords(BaseModel):
+    words: dict[str, list[list]] = {}  # segment_id → [[unit, start|null, end|null], ...]
+    segments: int = 0                  # active segments of the media
+    status: dict[str, int] = {}        # aligned | stale | pending | skipped | failed | none → count
+    job_active: bool = False           # a media.align job is queued/running
+
+
+class AlignIn(BaseModel):
+    force: bool = False
+
+
+class SegmentNeighbors(BaseModel):
+    prev_id: uuid.UUID | None = None
+    next_id: uuid.UUID | None = None
+    index: int | None = None   # 0-based position of this segment in the filtered list (incl. itself)
+    total: int = 0             # size of the filtered list (this segment counted only when it matches)
+    in_filter: bool = False    # the segment itself matches the filters
 
 
 ReviewStatus = Literal["unchecked", "passed", "needs_fix", "excluded"]

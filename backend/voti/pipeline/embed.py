@@ -33,8 +33,8 @@ BATCH_SAMPLES = SR * 240  # padded samples per forward pass
 _lock = threading.Lock()
 
 
-@lru_cache(maxsize=1)
-def _model():
+@lru_cache(maxsize=2)
+def _model(device: str | None = None):
     try:
         from speechbrain.inference.speaker import EncoderClassifier
         from speechbrain.utils.fetching import LocalStrategy
@@ -44,20 +44,33 @@ def _model():
     savedir = Path(get_config().model_cache) / "speechbrain" / "spkrec-ecapa-voxceleb"
     try:
         m = EncoderClassifier.from_hparams(source=MODEL_ID, savedir=str(savedir),
-                                           run_opts={"device": torch_device()}, local_strategy=LocalStrategy.COPY)
+                                           run_opts={"device": device or torch_device()},
+                                           local_strategy=LocalStrategy.COPY)
     except Exception as e:  # noqa: BLE001
+        from .gpu import is_cuda_oom
+        if is_cuda_oom(e):
+            raise  # handled by the OOM fallback (retry / CPU)
         raise JobError("embedding_model_unavailable", f"ECAPA 模型下載或載入失敗：{str(e)[:400]}", blocked=True) from e
     m.eval()
     return m
 
 
 def embed_batch(clips: list[np.ndarray]) -> np.ndarray:
-    """List of 16 kHz float32 clips → (N, 192) L2-normalised embeddings (length-sorted, padded batches)."""
-    import torch
+    """List of 16 kHz float32 clips → (N, 192) L2-normalised embeddings (length-sorted, padded batches).
+    CUDA OOM: cache emptied and retried once on the GPU, then the CPU (voti.pipeline.gpu)."""
     if not clips:
         return np.zeros((0, EMBEDDING_DIM), dtype=np.float32)
-    m = _model()
-    dev = m.device if hasattr(m, "device") else "cpu"
+    from .gpu import free_cuda, run_with_oom_fallback
+    try:
+        return run_with_oom_fallback(lambda dev: _embed_batch(clips, dev), "ECAPA 語者向量")
+    finally:
+        free_cuda()
+
+
+def _embed_batch(clips: list[np.ndarray], device: str) -> np.ndarray:
+    import torch
+    m = _model(device)
+    dev = m.device if hasattr(m, "device") else device
     order = np.argsort([c.size for c in clips])
     out = np.zeros((len(clips), EMBEDDING_DIM), dtype=np.float32)
     i = 0

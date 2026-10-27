@@ -70,10 +70,39 @@ def _active_job(s: Session, kind: str, channel_id: uuid.UUID) -> Job | None:
 
 @router.post("/channels/{channel_id}/refresh", response_model=S.JobOut)
 def refresh_channel(channel_id: uuid.UUID, user: User = Depends(current_user), s: Session = Depends(get_session)):
+    from ..sources.handlers import queue_channel_listing
     c = get_or_404(s, Channel, channel_id, "頻道")
-    job = _active_job(s, "channel.list", c.id) or enqueue(s, "channel.list", channel_id=c.id, created_by=user.id)
+    job = queue_channel_listing(s, c, created_by=user.id)  # the active listing job when there is one
     s.commit()
     return job_out(s, job)
+
+
+@router.post("/channels/{channel_id}/align", response_model=S.QueuedOut)
+def align_channel(channel_id: uuid.UUID, body: S.AlignIn | None = None, user: User = Depends(current_user),
+                  s: Session = Depends(get_session)):
+    """Queue media.align (outside the pipeline chain) for every media of the channel that has active segments
+    with text and at least one segment without a valid alignment (all of them with force=true)."""
+    from ..models import WordAlignment
+    from ..pipeline.align import text_hash
+    get_or_404(s, Channel, channel_id, "頻道")
+    force = bool(body and body.force)
+    todo: set = set()
+    rows = s.execute(select(Segment.media_id, Segment.revision, Segment.original_text, Segment.corrected_text,
+                            WordAlignment.revision, WordAlignment.text_hash, WordAlignment.status)
+                     .outerjoin(WordAlignment, WordAlignment.segment_id == Segment.id)
+                     .join(Media, Media.id == Segment.media_id)
+                     .where(Media.channel_id == channel_id, Segment.active.is_(True))).all()
+    for mid, rev, orig, corr, wrev, whash, wstatus in rows:
+        if mid in todo:
+            continue
+        text = corr if corr is not None else (orig or "")
+        if force or wstatus is None or wstatus == "pending" or wrev != rev or whash != text_hash(text):
+            todo.add(mid)
+    for mid in sorted(todo, key=str):
+        enqueue(s, "media.align", media_id=mid, channel_id=channel_id, created_by=user.id,
+                payload={"chain": False, "force": force, "reason": "backfill"})
+    s.commit()
+    return S.QueuedOut(queued=len(todo))
 
 
 @router.post("/channels/{channel_id}/detail", response_model=S.QueuedOut)

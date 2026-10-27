@@ -18,12 +18,13 @@ from .. import storage
 from ..auth import current_user
 from ..db import get_session
 from ..models import (Cue, DiarizationTurn, Job, Media, MediaQuality, PlaylistItem, RepeatedRegion, Segment,
-                      SpeechRegion, Track, User)
+                      SpeechRegion, Track, User, WordAlignment)
 from .. import textconv
-from ..queue import PIPELINE, SIDE_KINDS, enqueue, requeue
+from ..queue import PIPELINE, enqueue, is_side_job, requeue
 from . import schemas as S
 from .errors import ApiError
-from .views import Paging, _media_base, get_or_404, job_out, job_outs, media_summaries, paging, segment_summaries
+from .views import (Paging, _media_base, downloaded_condition, get_or_404, job_out, job_outs, media_summaries,
+                    new_condition, paging, segment_summaries)
 
 log = logging.getLogger("voti.api.media")
 router = APIRouter(prefix="/media", tags=["media"])
@@ -56,6 +57,8 @@ class MediaFilter(BaseModel):
     published_before: datetime | None = None
     detailed: bool | None = None
     upsampled_suspect: bool | None = None
+    downloaded: bool | None = None   # true: original audio stored / downloaded|processing|ready; false: the rest
+    is_new: bool | None = None       # found by a channel refresh within 7 days and not downloaded
     sort: str | None = None
 
     @field_validator("kind", "status", mode="before")
@@ -95,13 +98,14 @@ def media_filter_query(
         min_duration: float | None = None, max_duration: float | None = None,
         published_after: datetime | None = None, published_before: datetime | None = None,
         detailed: bool | None = None, upsampled_suspect: bool | None = None,
+        downloaded: bool | None = None, is_new: bool | None = None,
         sort: str | None = None) -> MediaFilter:
     try:
         return MediaFilter(channel_id=channel_id, playlist_id=playlist_id, q=q, kind=kind, status=status,
                            captions=captions, include_auto=include_auto, caption_lang=caption_lang, license=license,
                            min_duration=min_duration, max_duration=max_duration, published_after=published_after,
                            published_before=published_before, detailed=detailed,
-                           upsampled_suspect=upsampled_suspect, sort=sort)
+                           upsampled_suspect=upsampled_suspect, downloaded=downloaded, is_new=is_new, sort=sort)
     except ValueError as e:
         raise ApiError(422, "invalid_filter", f"篩選條件不正確：{e}") from None
 
@@ -165,6 +169,10 @@ def media_conditions(f: MediaFilter, skip: frozenset[str] | set[str] = frozenset
     if f.upsampled_suspect is not None:
         suspect = exists().where(MediaQuality.media_id == Media.id, MediaQuality.upsampled_suspect.is_(True))
         c.append(suspect if f.upsampled_suspect else ~suspect)
+    if f.downloaded is not None and "downloaded" not in skip:
+        c.append(downloaded_condition() if f.downloaded else ~downloaded_condition())
+    if f.is_new is not None and "is_new" not in skip:
+        c.append(new_condition() if f.is_new else ~new_condition())
     return c
 
 
@@ -188,9 +196,13 @@ def media_facets(s: Session, f: MediaFilter) -> S.MediaFacets:
     row = s.execute(select(func.count().filter(_manual), func.count().filter(_auto_only),
                            func.count().filter(_no_captions), func.count().filter(_unknown_captions))
                     .where(cap_where)).one()
+    dl = s.execute(select(func.count().filter(downloaded_condition()), func.count())
+                   .where(_where(media_conditions(f, {"downloaded"})))).one()
+    new = s.scalar(select(func.count()).where(_where(media_conditions(f, {"is_new"})), new_condition())) or 0
     return S.MediaFacets(kind=grouped(Media.kind, {"kind"}),
                          captions={"manual": row[0], "auto_only": row[1], "none": row[2], "unknown": row[3]},
-                         license=grouped(Media.license, {"license"}), status=grouped(Media.status, {"status"}))
+                         license=grouped(Media.license, {"license"}), status=grouped(Media.status, {"status"}),
+                         downloaded={"yes": dl[0], "no": dl[1] - dl[0]}, new=new)
 
 
 @router.get("", response_model=S.MediaList)
@@ -279,7 +291,8 @@ def media_detail(media_id: uuid.UUID, _: User = Depends(current_user), s: Sessio
                              script=s2t.get(t.id, {}).get("script"),
                              cues_converted=s2t.get(t.id, {}).get("cues_converted")) for t in tracks]
     return S.MediaDetailOut(
-        **_media_base(m), channel=summary.channel, segment_count=summary.segment_count, description=m.description,
+        **_media_base(m), channel=summary.channel, segment_count=summary.segment_count,
+        downloaded=summary.downloaded, description=m.description,
         tags=m.tags or [], categories=m.categories or [], chapters=m.chapters or [], language=m.language,
         like_count=m.like_count, comment_count=m.comment_count, availability=m.availability, age_limit=m.age_limit,
         metadata=m.metadata_ or {}, failure_message=m.failure_message, jobs=job_outs(s, jobs),
@@ -295,8 +308,8 @@ RETRYABLE = ("failed", "blocked", "interrupted", "cancelled")
 @router.post("/{media_id}/retry", response_model=S.JobOut)
 def retry_media(media_id: uuid.UUID, user: User = Depends(current_user), s: Session = Depends(get_session)):
     m = get_or_404(s, Media, media_id, "影片")
-    job = s.scalar(select(Job).where(Job.media_id == m.id, Job.kind.notin_(SIDE_KINDS))
-                   .order_by(Job.created_at.desc()).limit(1))
+    job = next((j for j in s.scalars(select(Job).where(Job.media_id == m.id).order_by(Job.created_at.desc())
+                                     .limit(50)) if not is_side_job(j.kind, j.payload)), None)
     if job is None or job.status not in RETRYABLE:
         raise ApiError(409, "nothing_to_retry", "這部影片沒有可重試的失敗步驟")
     _requeue_job(s, job)
@@ -428,6 +441,54 @@ def timeline(media_id: uuid.UUID, _: User = Depends(current_user), s: Session = 
                      .order_by(Segment.start_sec)).all()
     out.segments = segment_summaries(s, segs)
     return out
+
+
+@router.get("/{media_id}/segments", response_model=S.Page[S.SegmentSummary])
+def media_segments(media_id: uuid.UUID, _: User = Depends(current_user), s: Session = Depends(get_session)):
+    """Every active segment of one media in time order (no pagination) — the media page transcript."""
+    m = get_or_404(s, Media, media_id, "影片")
+    segs = s.scalars(select(Segment).where(Segment.media_id == m.id, Segment.active.is_(True))
+                     .order_by(Segment.start_sec, Segment.id)).all()
+    return S.Page[S.SegmentSummary](items=segment_summaries(s, segs), total=len(segs))
+
+
+@router.get("/{media_id}/words", response_model=S.MediaWords)
+def media_words(media_id: uuid.UUID, _: User = Depends(current_user), s: Session = Depends(get_session)):
+    """Per-character timing of every aligned segment: {segment_id: [[unit, start|null, end|null], ...]}.
+    Only alignments that still match the segment's current text and revision are returned."""
+    from ..pipeline.align import segment_text, text_hash
+    m = get_or_404(s, Media, media_id, "影片")
+    rows = s.execute(select(Segment, WordAlignment).join(WordAlignment, WordAlignment.segment_id == Segment.id)
+                     .where(Segment.media_id == m.id, Segment.active.is_(True))).all()
+    words: dict[str, list] = {}
+    status: dict[str, int] = {}
+    for g, wa in rows:
+        st = wa.status
+        if st == "aligned" and (wa.revision != g.revision or wa.text_hash != text_hash(segment_text(g))):
+            st = "stale"
+        status[st] = status.get(st, 0) + 1
+        if st == "aligned":
+            words[str(g.id)] = [[u[0], u[1], u[2]] for u in (wa.units or [])]
+    total = s.scalar(select(func.count()).select_from(Segment).where(Segment.media_id == m.id,
+                                                                     Segment.active.is_(True))) or 0
+    status["none"] = total - len(rows)
+    active = s.scalar(select(Job.id).where(Job.kind == "media.align", Job.media_id == m.id,
+                                           Job.status.in_(("queued", "running")))) is not None
+    return S.MediaWords(words=words, segments=total, status=status, job_active=active)
+
+
+@router.post("/{media_id}/align", response_model=S.QueuedOut)
+def align_media(media_id: uuid.UUID, body: S.AlignIn | None = None, user: User = Depends(current_user),
+                s: Session = Depends(get_session)):
+    """(Re-)align the segment text of one media (media.align, outside the pipeline chain). force=true also
+    re-aligns segments whose alignment is still valid. 0 when the media has no segments."""
+    m = get_or_404(s, Media, media_id, "影片")
+    if s.scalar(select(Segment.id).where(Segment.media_id == m.id, Segment.active.is_(True)).limit(1)) is None:
+        return S.QueuedOut(queued=0)
+    enqueue(s, "media.align", media_id=m.id, channel_id=m.channel_id, created_by=user.id,
+            payload={"chain": False, "force": bool(body and body.force), "reason": "backfill"})
+    s.commit()
+    return S.QueuedOut(queued=1)
 
 
 @router.get("/{media_id}/quality", response_model=S.MediaQualityOut)
