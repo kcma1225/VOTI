@@ -1,0 +1,11 @@
+# Development only: expose infra on localhost so host-side code/tests can reach it.
+#   docker compose -f compose.yaml -f compose.dev.yaml up -d db redis rustfs
+# Then use: DATABASE_URL=postgresql+psycopg://voti:voti@127.0.0.1:55432/voti REDIS_URL=redis://127.0.0.1:56379/0
+#           S3_ENDPOINT=http://127.0.0.1:59000 S3_ACCESS_KEY=voti S3_SECRET_KEY=voti-secret-change-me
+services:
+  db:
+    ports: ["127.0.0.1:55432:5432"]
+  redis:
+    ports: ["127.0.0.1:56379:6379"]
+  rustfs:
+    ports: ["127.0.0.1:59000:9000"]
