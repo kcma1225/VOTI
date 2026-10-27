@@ -14,6 +14,9 @@ export const qk = {
   media: (q: T.MediaQuery) => ['media', q] as const,
   mediaDetail: (id: string) => ['mediaDetail', id] as const,
   timeline: (id: string) => ['timeline', id] as const,
+  mediaWords: (id: string) => ['mediaWords', id] as const,
+  mediaSegments: (id: string) => ['segments', 'media', id] as const,
+  neighbors: (id: string, q: T.SegmentQuery) => ['neighbors', id, q] as const,
   segments: (q: T.SegmentQuery) => ['segments', q] as const,
   segment: (id: string) => ['segment', id] as const,
   similar: (id: string) => ['similar', id] as const,
@@ -64,24 +67,71 @@ export const useMe = () =>
   })
 
 export const useOverview = () => useQuery({ queryKey: qk.overview, queryFn: api.overview, refetchInterval: 10_000 })
+/** Listing has not finished yet (first listing or a re-list in progress). */
+export const isListing = (c: Pick<T.ChannelSummary, 'list_status'>) => c.list_status === 'new' || c.list_status === 'queued' || c.list_status === 'listing'
 export const useChannels = (q?: string) =>
-  useQuery({ queryKey: qk.channels(q), queryFn: () => api.channels(q), placeholderData: keepPreviousData })
+  useQuery({
+    queryKey: qk.channels(q),
+    queryFn: () => api.channels(q),
+    placeholderData: keepPreviousData,
+    // keep newly added channels' badges (queued → listing → listed) and caption progress fresh
+    refetchInterval: (x) => (x.state.data?.items.some((c) => isListing(c) || c.detail_progress?.active) ? 4000 : false),
+  })
 export const useChannel = (id: string) =>
   useQuery({
     queryKey: qk.channel(id),
     queryFn: () => api.channel(id),
-    refetchInterval: (q) => (q.state.data?.list_status === 'listing' ? 3000 : false),
+    enabled: !!id,
+    refetchInterval: (q) => {
+      const c = q.state.data
+      if (!c) return false
+      if (isListing(c)) return 2500
+      return c.detail_progress?.active ? 6000 : false
+    },
   })
 export const usePlaylists = (cid: string) => useQuery({ queryKey: qk.playlists(cid), queryFn: () => api.playlists(cid) })
 export const useRepeated = (cid: string) => useQuery({ queryKey: qk.repeated(cid), queryFn: () => api.repeated(cid) })
-export const useMedia = (q: T.MediaQuery, enabled = true) =>
-  useQuery({ queryKey: qk.media(q), queryFn: () => api.media(q), placeholderData: keepPreviousData, enabled })
+export const useMedia = (q: T.MediaQuery, enabled = true, poll: number | false = false) =>
+  useQuery({ queryKey: qk.media(q), queryFn: () => api.media(q), placeholderData: keepPreviousData, enabled, refetchInterval: poll })
 export const useMediaDetail = (id: string) =>
   useQuery({
     queryKey: qk.mediaDetail(id),
     queryFn: () => api.mediaDetail(id),
-    refetchInterval: (q) => (['queued', 'downloading', 'processing', 'downloaded'].includes(q.state.data?.status ?? '') ? 4000 : false),
+    refetchInterval: (q) => {
+      const m = q.state.data
+      if (!m) return false
+      if (['queued', 'downloading', 'processing', 'downloaded'].includes(m.status)) return 4000
+      // side jobs (caption conversion, word alignment) don't change Media.status
+      return m.jobs.some((j) => j.status === 'running' || j.status === 'queued') ? 4000 : false
+    },
   })
+/** Every segment of a media in time order (transcript). Falls back to the paginated list on older APIs.
+ * The key starts with 'segments' so optimistic segment patches update it too. */
+export const useMediaSegments = (id: string) =>
+  useQuery({
+    queryKey: qk.mediaSegments(id),
+    queryFn: async () => {
+      try {
+        return await api.mediaSegments(id)
+      } catch (e) {
+        if (e instanceof ApiError && (e.status === 404 || e.status === 405)) return api.segments({ media_id: id, limit: 500 })
+        throw e
+      }
+    },
+    enabled: !!id,
+  })
+/** Word timings for every segment of a media; an empty map (or an error, e.g. an older API) = not aligned. */
+export const useMediaWords = (id: string, enabled = true) =>
+  useQuery({
+    queryKey: qk.mediaWords(id),
+    queryFn: () => api.mediaWords(id),
+    enabled: enabled && !!id,
+    retry: false,
+    staleTime: 60_000,
+    refetchInterval: (q) => (q.state.data?.job_active || q.state.data?.status.pending ? 5000 : false),
+  })
+export const useNeighbors = (id: string | undefined, q: T.SegmentQuery) =>
+  useQuery({ queryKey: qk.neighbors(id ?? '', q), queryFn: () => api.neighbors(id!, q), enabled: !!id, retry: false, placeholderData: keepPreviousData })
 export const useTimeline = (id: string, enabled = true) => useQuery({ queryKey: qk.timeline(id), queryFn: () => api.timeline(id), enabled })
 export const useSegments = (q: T.SegmentQuery, enabled = true) =>
   useQuery({ queryKey: qk.segments(q), queryFn: () => api.segments(q), placeholderData: keepPreviousData, enabled })
@@ -114,19 +164,47 @@ export const useUsers = () => useQuery({ queryKey: qk.users, queryFn: api.users 
 export const useSettings = () => useQuery({ queryKey: qk.settings, queryFn: api.settings })
 
 // ─────────────── mutations ───────────────
+type SegPage = T.Page<T.SegmentSummary>
+/** Apply a PATCH body to a cached segment the way the server will (text = corrected ?? original). */
+function applyPatch<S extends Pick<T.SegmentSummary, 'review_status' | 'corrected_text' | 'text' | 'original_text' | 'speaker_state'>>(s: S, p: T.SegmentPatch): S {
+  const n = { ...s, ...(p.review_status ? { review_status: p.review_status } : {}) }
+  if (p.corrected_text !== undefined) {
+    n.corrected_text = p.corrected_text
+    n.text = p.corrected_text ?? s.original_text
+  }
+  if (p.speaker_state) n.speaker_state = p.speaker_state
+  return n
+}
+
+/** PATCH /segments/{id} with an optimistic update of every cached copy (detail + lists); rolled back on error. */
 export function useSegmentPatch() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({ id, patch }: { id: string; patch: T.SegmentPatch }) => api.patchSegment(id, patch),
-    onSuccess: (d) => {
+    onMutate: async ({ id, patch }) => {
+      await qc.cancelQueries({ queryKey: qk.segment(id) })
+      const prevDetail = qc.getQueryData<T.SegmentDetail>(qk.segment(id))
+      const prevLists = qc.getQueriesData<SegPage>({ queryKey: ['segments'] })
+      if (prevDetail) qc.setQueryData(qk.segment(id), applyPatch(prevDetail, patch))
+      qc.setQueriesData<SegPage>({ queryKey: ['segments'] }, (old) =>
+        old ? { ...old, items: old.items.map((s) => (s.id === id ? applyPatch(s, patch) : s)) } : old,
+      )
+      return { prevDetail, prevLists }
+    },
+    onError: (e, { id }, ctx) => {
+      if (ctx?.prevDetail) qc.setQueryData(qk.segment(id), ctx.prevDetail)
+      ctx?.prevLists.forEach(([k, v]) => qc.setQueryData(k, v))
+      onErr(e)
+    },
+    onSuccess: (d, v) => {
       qc.setQueryData(qk.segment(d.id), d)
       // update summaries in any cached segment list without refetching (keeps queue order stable)
       qc.setQueriesData<T.Page<T.SegmentSummary>>({ queryKey: ['segments'] }, (old) =>
         old ? { ...old, items: old.items.map((s) => (s.id === d.id ? { ...s, ...d, profile: s.profile } : s)) } : old,
       )
       qc.invalidateQueries({ queryKey: ['timeline', d.media_id] })
+      if (v.patch.corrected_text !== undefined) qc.invalidateQueries({ queryKey: qk.mediaWords(d.media_id) })
     },
-    onError: onErr,
   })
 }
 

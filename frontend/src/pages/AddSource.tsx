@@ -1,10 +1,10 @@
-import { useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Link } from 'react-router'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, ArrowRight, CheckCircle2, Film, Link2, ListVideo, Smartphone, Tv } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { AlertCircle, ArrowRight, CheckCircle2, Film, Loader2, Link2, ListVideo, Smartphone, Tv } from 'lucide-react'
 import { api } from '@/api/client'
-import { errMsg, useJobs } from '@/api/queries'
-import type { ResolveResult } from '@/api/types'
+import { errMsg, useChannel, useJobs } from '@/api/queries'
+import type { ChannelDetail, ChannelSummary, ResolveResult } from '@/api/types'
 import { classifyUrl } from '@/lib/url'
 import { fmtRelative } from '@/lib/format'
 import { jobKind } from '@/lib/labels'
@@ -12,6 +12,7 @@ import { Page, PageHeader } from '@/components/layout/page'
 import { Button } from '@/components/ui/button'
 import { Avatar, Card, CardBody, CardHeader, Kbd } from '@/components/ui/primitives'
 import { JobStatusBadge } from '@/components/domain/status'
+import { ListStatusBadge } from '@/components/domain/channel-status'
 import { cn } from '@/lib/cn'
 import { t as tg, useT } from '@/i18n'
 
@@ -53,28 +54,76 @@ function Classification({ url }: { url: string }) {
   )
 }
 
+/** Channel created by this request (or one that has never finished listing). */
+function isNewChannel(c: ChannelDetail | ChannelSummary, mediaId?: string) {
+  const auto = (c as ChannelDetail).metadata?.auto_added as { media_id?: string } | undefined
+  if (auto?.media_id && mediaId) return auto.media_id === mediaId
+  return !c.last_listed_at && ['new', 'queued', 'listing'].includes(c.list_status)
+}
+
 function ResultCard({ r }: { r: ResolveResult }) {
-  const to = r.channel ? `/channels/${r.channel.id}` : r.media ? `/media/${r.media.id}` : r.playlist?.channel_id ? `/channels/${r.playlist.channel_id}/playlists` : '/channels'
-  const title = r.channel?.title ?? r.playlist?.title ?? r.media?.title ?? ''
   const t = useT()
+  const qc = useQueryClient()
+  const mediaId = r.type === 'video' ? r.media?.id : undefined
+  // a video's channel is created by the background resolve job: poll the media until its channel is known
+  const media = useQuery({
+    queryKey: ['resolve-media', mediaId],
+    queryFn: () => api.mediaDetail(mediaId!),
+    enabled: !!mediaId && !r.channel,
+    refetchInterval: (q) => (q.state.data?.channel && q.state.data.title ? false : 2000),
+  })
+  const channelId = r.channel?.id ?? media.data?.channel?.id
+  const ch = useChannel(channelId ?? '')
+  const channel = channelId ? (ch.data ?? r.channel) : undefined
+  useEffect(() => {
+    if (channelId) qc.invalidateQueries({ queryKey: ['channels'] })
+  }, [channelId, qc])
+  const to = mediaId ? `/media/${mediaId}` : r.channel ? `/channels/${r.channel.id}` : r.playlist?.channel_id ? `/channels/${r.playlist.channel_id}/playlists` : '/channels'
+  const title = (mediaId ? media.data?.title || r.media?.title : undefined) || r.channel?.title || r.playlist?.title || r.media?.title || ''
+  const showChannel = mediaId && channel && (r.channel_created ?? isNewChannel(channel, mediaId)) ? channel : null
+  const waiting = !!mediaId && !channelId
   return (
-    <Card className="mt-4 border-success/30 animate-slide-up">
+    <Card className="mt-4 overflow-hidden border-success/30 animate-slide-up">
       <CardBody className="flex flex-col gap-4 sm:flex-row sm:items-center">
-        <Avatar name={title} size={44} rounded="lg" />
+        <Avatar name={title || '?'} size={44} rounded="lg" />
         <div className="min-w-0 flex-1">
           <div className="text-xs text-fg-3">{r.type === 'channel' ? t('collect.addSource.addedChannel') : r.type === 'playlist' ? t('collect.addSource.addedPlaylist') : t('collect.addSource.addedVideo')}</div>
-          <div className="truncate text-[15px] font-semibold">{title}</div>
+          <div className="truncate text-[15px] font-semibold">{title || <span className="font-mono text-[13px] font-normal text-fg-3">{r.media?.platform_media_id || r.media?.url}</span>}</div>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-fg-3">
-            <JobStatusBadge status={r.job.status} /> {jobKind[r.job.kind]}
+            <JobStatusBadge status={r.job.status} /> {jobKind[r.job.kind] ?? r.job.kind}
             {r.channel && <span>{t('collect.addSource.knownVideos', r.channel.counts.listed)}</span>}
           </div>
         </div>
         <Button asChild variant="primary">
           <Link to={to}>
-            {t('collect.addSource.goFilter')} <ArrowRight />
+            {r.type === 'video' ? t('collect.addSource.openVideo') : t('collect.addSource.goFilter')} <ArrowRight />
           </Link>
         </Button>
       </CardBody>
+      {waiting && (
+        <div className="flex items-center gap-2 border-t border-border bg-surface-2/50 px-4 py-3 text-[13px] text-fg-3 sm:px-5">
+          <Loader2 className="size-3.5 shrink-0 animate-spin" /> {t('collect.addSource.resolvingVideo')}
+        </div>
+      )}
+      {showChannel && (
+        <div className="flex flex-col gap-3 border-t border-border bg-info-soft/50 px-4 py-3.5 sm:flex-row sm:items-center sm:px-5">
+          <div className="flex min-w-0 flex-1 items-start gap-3">
+            <Avatar name={showChannel.title || showChannel.handle || '?'} src={showChannel.thumbnail_url} size={32} />
+            <div className="min-w-0 text-[13px] leading-5">
+              <p className="font-medium text-fg">{t('collect.addSource.channelAdded', <span className="break-all">{showChannel.title || showChannel.handle}</span>)}</p>
+              <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-fg-3">
+                <ListStatusBadge c={showChannel} />
+                <span>{t('collect.addSource.channelAddedDesc')}</span>
+              </p>
+            </div>
+          </div>
+          <Button asChild size="sm" className="self-start sm:self-auto">
+            <Link to={`/channels/${showChannel.id}`}>
+              {t('collect.addSource.openChannel')} <ArrowRight />
+            </Link>
+          </Button>
+        </div>
+      )}
     </Card>
   )
 }

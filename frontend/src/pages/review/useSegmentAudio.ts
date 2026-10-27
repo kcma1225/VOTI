@@ -112,6 +112,27 @@ export function useSegmentAudio(segmentId: string | undefined, revision: number 
     if (audio.current) audio.current.currentTime = t
     setTime(t)
   }, [])
+  // Screenshot hook in mock builds: freeze playback at a fraction of the (unpadded) segment.
+  useEffect(() => {
+    if (import.meta.env.VITE_MOCK !== '1') return
+    const w = window as unknown as { __votiSegAudio?: unknown }
+    w.__votiSegAudio = {
+      freeze: (frac: number) => {
+        const el = audio.current
+        if (!el || !duration) return false
+        el.pause()
+        const at = PAD + Math.max(0, duration - 2 * PAD) * frac
+        el.currentTime = at
+        setTime(at)
+        setPlaying(false)
+        return true
+      },
+    }
+    return () => {
+      delete w.__votiSegAudio
+    }
+  }, [duration])
+
   const setRate = useCallback((r: number) => {
     rate.current = r
     if (audio.current) audio.current.playbackRate = r

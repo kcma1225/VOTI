@@ -1,19 +1,43 @@
 import { intlLocale, useT } from '@/i18n'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router'
-import { Captions, Loader2, Plus, Tv } from 'lucide-react'
-import { useChannels } from '@/api/queries'
+import { Captions, Clock, Loader2, Plus, Tv } from 'lucide-react'
+import { ListStatusBadge, NewVideosBadge } from '@/components/domain/channel-status'
+import { isListing, useChannels } from '@/api/queries'
 import type { ChannelSummary } from '@/api/types'
 import { fmt1, fmtCompact, fmtInt, fmtRelative } from '@/lib/format'
 import { Page, PageHeader } from '@/components/layout/page'
 import { Button } from '@/components/ui/button'
-import { Avatar, Badge, Card, Skeleton } from '@/components/ui/primitives'
+import { Avatar, Card, Progress, Skeleton } from '@/components/ui/primitives'
 import { SearchInput, Select } from '@/components/ui/form'
 import { EmptyState, ErrorState } from '@/components/ui/states'
 import { Tooltip } from '@/components/ui/overlay'
+import { cn } from '@/lib/cn'
+
+/** First listing still running: the card shows progress instead of (empty) stats. */
+function ListingPanel({ c }: { c: ChannelSummary }) {
+  const t = useT()
+  const j = c.listing_job
+  const queued = c.list_status !== 'listing'
+  return (
+    <div className="mt-4 rounded-lg bg-surface-2/70 px-3 py-3">
+      <div className="flex items-center justify-between gap-2 text-[13px]">
+        <span className={cn('flex min-w-0 items-center gap-1.5 font-medium', queued ? 'text-fg-2' : 'text-primary')}>
+          {queued ? <Clock className="size-3.5 shrink-0" /> : <Loader2 className="size-3.5 shrink-0 animate-spin" />}
+          <span className="truncate">{queued ? t('collect.channels.queuedNow') : t('collect.channels.listingNow')}</span>
+        </span>
+        {!queued && j && j.progress > 0 && <span className="shrink-0 text-xs tabular text-fg-3">{Math.round(j.progress * 100)}%</span>}
+      </div>
+      <Progress className="mt-2.5" value={queued ? 0 : j?.progress} indeterminate={!queued && !j?.progress} tone={queued ? 'neutral' : 'primary'} />
+      <div className="mt-2 h-4 text-[11px] leading-4 text-fg-3">{c.counts.listed > 0 && t('collect.channels.foundSoFar', c.counts.listed)}</div>
+    </div>
+  )
+}
 
 function ChannelCard({ c }: { c: ChannelSummary }) {
   const t = useT()
+  const firstListing = isListing(c) && !c.last_listed_at
+  const dp = c.detail_progress
   const L = c.counts.listed || 1
   const segs = [
     { k: 'ready', v: c.counts.ready, cls: 'bg-success', label: t('collect.channels.segReady') },
@@ -29,23 +53,21 @@ function ChannelCard({ c }: { c: ChannelSummary }) {
         <Avatar name={c.title} src={c.thumbnail_url} size={44} />
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
-            <h3 className="truncate text-[15px] font-semibold group-hover:text-primary">{c.title}</h3>
+            <h3 className="truncate text-[15px] font-semibold group-hover:text-primary">{c.title || c.handle || c.url}</h3>
           </div>
           <div className="mt-0.5 truncate text-xs text-fg-3">
-            {c.handle} · {t('collect.channels.subscribers', fmtCompact(c.subscriber_count))}
+            {[c.handle, c.subscriber_count != null ? t('collect.channels.subscribers', fmtCompact(c.subscriber_count)) : null].filter(Boolean).join(' · ') || '\u00a0'}
           </div>
         </div>
-        {c.list_status === 'listing' ? (
-          <Badge tone="primary">
-            <Loader2 className="size-3 animate-spin" /> {t('collect.channels.listing')}
-          </Badge>
-        ) : c.list_status === 'failed' ? (
-          <Badge tone="danger" dot>
-            {t('collect.channels.listFailed')}
-          </Badge>
-        ) : null}
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          <ListStatusBadge c={c} />
+          {c.list_status === 'listed' && <NewVideosBadge n={c.counts.new ?? c.new_count} />}
+        </div>
       </div>
 
+      {firstListing ? (
+        <ListingPanel c={c} />
+      ) : (
       <dl className="mt-4 grid grid-cols-3 gap-2">
         {[
           [t('collect.channels.statVideos'), fmtInt(c.counts.listed)],
@@ -58,8 +80,9 @@ function ChannelCard({ c }: { c: ChannelSummary }) {
           </div>
         ))}
       </dl>
+      )}
 
-      <div className="mt-4">
+      <div className="mt-auto pt-4">
         <div className="flex h-1.5 w-full gap-[2px] overflow-hidden rounded-full bg-surface-3">
           {segs.map((s) =>
             s.v > 0 ? (
@@ -70,9 +93,15 @@ function ChannelCard({ c }: { c: ChannelSummary }) {
           )}
         </div>
         <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-fg-3">
-          <span className="flex min-w-0 items-center gap-1">
-            <Captions className="size-3 shrink-0" /> <span className="truncate">{t('collect.channels.captionsChecked', c.counts.detailed, c.counts.listed)}</span>
-          </span>
+          {dp?.active ? (
+            <span className="flex min-w-0 items-center gap-1 text-primary">
+              <Loader2 className="size-3 shrink-0 animate-spin" /> <span className="truncate">{t('collect.channels.detailProgress', dp.detailed, dp.total)}</span>
+            </span>
+          ) : (
+            <span className="flex min-w-0 items-center gap-1">
+              <Captions className="size-3 shrink-0" /> <span className="truncate">{t('collect.channels.captionsChecked', c.counts.detailed, c.counts.listed)}</span>
+            </span>
+          )}
           <span className="shrink-0">{c.last_listed_at ? t('collect.channels.updated', fmtRelative(c.last_listed_at)) : t('collect.channels.notListed')}</span>
         </div>
       </div>
@@ -91,7 +120,9 @@ export default function Channels() {
     if (sort === 'videos') xs.sort((a, b) => b.counts.listed - a.counts.listed)
     if (sort === 'recent') xs.sort((a, b) => (b.last_listed_at ?? '').localeCompare(a.last_listed_at ?? ''))
     if (sort === 'title') xs.sort((a, b) => a.title.localeCompare(b.title, intlLocale()))
-    return xs
+    // channels still waiting for their first listing stay on top so a just-added channel is visible right away
+    const pending = (c: ChannelSummary) => (isListing(c) && !c.last_listed_at ? 0 : 1)
+    return xs.map((c, i) => [c, i] as const).sort((a, b) => pending(a[0]) - pending(b[0]) || a[1] - b[1]).map(([c]) => c)
   }, [ch.data, sort])
 
   return (

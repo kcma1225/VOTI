@@ -1,12 +1,15 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
+  AlertTriangle,
   Captions,
+  Clock,
   ExternalLink,
   Film,
   Gauge,
+  Languages,
   ListVideo,
   Loader2,
   MoreHorizontal,
@@ -18,16 +21,17 @@ import {
   Trash2,
   TriangleAlert,
   Users,
+  Wand2,
 } from 'lucide-react'
 import { api } from '@/api/client'
-import { errMsg, onErr, qk, useMe, useChannel, useDiversity, usePlaylists, useRepeated, useSpeakers } from '@/api/queries'
+import { errMsg, isListing, onErr, qk, useMe, useChannel, useDiversity, usePlaylists, useRepeated, useSpeakers } from '@/api/queries'
 import type { ChannelDetail as TChannel } from '@/api/types'
 import { fmt1, fmtBytes, fmtClock, fmtCompact, fmtHours, fmtInt, fmtMos, fmtRelative, fmtSec, hoursUnit } from '@/lib/format'
-import { ageGroupLabel, ageGroupOrder, repeatPosition, sexLabel } from '@/lib/labels'
+import { ageGroupLabel, ageGroupOrder, jobPhaseText, repeatPosition, sexLabel } from '@/lib/labels'
 import { Page } from '@/components/layout/page'
 import { useTitle } from '@/components/layout/page'
 import { Button } from '@/components/ui/button'
-import { Avatar, Badge, Card, CardBody, CardHeader, Skeleton } from '@/components/ui/primitives'
+import { Avatar, Badge, Card, CardBody, CardHeader, Progress, Skeleton } from '@/components/ui/primitives'
 import { NavTabs } from '@/components/ui/tabs'
 import { Dialog, Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '@/components/ui/overlay'
 import { Field, Input, Switch, Textarea } from '@/components/ui/form'
@@ -38,6 +42,8 @@ import { SpeakerList } from '@/components/domain/speakers'
 import { HBars, ORDINAL, StackBar } from '@/components/charts/charts'
 import { cn } from '@/lib/cn'
 import { useT } from '@/i18n'
+import { fmtCountdown, useNow } from '@/hooks/useNow'
+import { ListStatusBadge, NewVideosBadge } from '@/components/domain/channel-status'
 
 function DeleteChannelDialog({ c, open, onOpenChange }: { c: TChannel; open: boolean; onOpenChange: (o: boolean) => void }) {
   const qc = useQueryClient()
@@ -145,6 +151,16 @@ function Header({ c }: { c: TChannel }) {
     onError: onErr,
   })
   const dedup = useMutation({ mutationFn: () => api.dedup(c.id), onSuccess: () => toast.success(t('collect.channel.toastDedup')), onError: onErr })
+  const convertAll = useMutation({
+    mutationFn: () => api.convertChannelText(c.id),
+    onSuccess: (r) => (r.queued ? toast.success(t('collect.channel.convertQueued', r.queued)) : toast(t('collect.channel.convertQueued', 0))),
+    onError: onErr,
+  })
+  const alignAll = useMutation({
+    mutationFn: () => api.alignChannel(c.id),
+    onSuccess: (r) => (r.queued ? toast.success(t('collect.channel.alignQueued', r.queued)) : toast(t('collect.channel.alignQueued', 0))),
+    onError: onErr,
+  })
   const saveNotes = useMutation({
     mutationFn: () => api.patchChannel(c.id, notes),
     onSuccess: (d) => {
@@ -172,17 +188,19 @@ function Header({ c }: { c: TChannel }) {
             <Avatar name={c.title} src={c.thumbnail_url} size={44} className="sm:hidden" />
             <div className="min-w-0">
               <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
-                <h1 className="truncate text-[22px] font-semibold leading-8 tracking-tight sm:text-2xl">{c.title}</h1>
-                {c.list_status === 'listing' && (
-                  <Badge tone="primary">
-                    <Loader2 className="size-3 animate-spin" /> {t('collect.channel.listingNow')}
-                  </Badge>
-                )}
+                <h1 className="truncate text-[22px] font-semibold leading-8 tracking-tight sm:text-2xl">{c.title || c.handle || c.url}</h1>
+                <ListStatusBadge c={c} />
+                {c.list_status === 'listed' && <NewVideosBadge n={c.counts.new ?? c.new_count} />}
               </div>
               <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-fg-3">
-                <span>{c.handle}</span>
-                <span>{t('collect.channel.subscribers', fmtCompact(c.subscriber_count))}</span>
-                <span>{t('collect.channel.updated', fmtRelative(c.last_listed_at))}</span>
+                {c.handle && <span>{c.handle}</span>}
+                {c.subscriber_count != null && <span>{t('collect.channel.subscribers', fmtCompact(c.subscriber_count))}</span>}
+                {c.last_listed_at && <span>{t('collect.channel.updated', fmtRelative(c.last_listed_at))}</span>}
+                {c.next_refresh_at && (
+                  <span className="inline-flex items-center gap-1">
+                    <Clock className="size-3" /> {t('collect.channel.nextRefresh', fmtRelative(c.next_refresh_at))}
+                  </span>
+                )}
                 <a href={c.url} target="_blank" rel="noreferrer noopener" className="inline-flex items-center gap-1 hover:text-primary">
                   YouTube <ExternalLink className="size-3" />
                 </a>
@@ -197,7 +215,7 @@ function Header({ c }: { c: TChannel }) {
           )}
         </div>
         <div className="flex shrink-0 flex-wrap gap-2">
-          <Button onClick={() => refresh.mutate()} loading={refresh.isPending} disabled={c.list_status === 'listing'}>
+          <Button onClick={() => refresh.mutate()} loading={refresh.isPending} disabled={isListing(c)}>
             <RefreshCw /> {t('collect.channel.relist')}
           </Button>
           <Button onClick={() => detail.mutate()} loading={detail.isPending} className="hidden sm:inline-flex">
@@ -216,6 +234,12 @@ function Header({ c }: { c: TChannel }) {
               <MenuItem icon={<ScanSearch />} onSelect={() => dedup.mutate()}>
                 {t('collect.channel.redetectRepeated')}
               </MenuItem>
+              <MenuItem icon={<Languages />} onSelect={() => convertAll.mutate()}>
+                {t('collect.channel.convertAll')}
+              </MenuItem>
+              <MenuItem icon={<Wand2 />} onSelect={() => alignAll.mutate()}>
+                {t('collect.channel.alignAll')}
+              </MenuItem>
               <MenuItem icon={<NotebookPen />} onSelect={() => setNotesOpen(true)}>
                 {t('collect.channel.editNotes')}
               </MenuItem>
@@ -232,6 +256,7 @@ function Header({ c }: { c: TChannel }) {
         </div>
       </div>
 
+      {!(isListing(c) && !c.last_listed_at) && (
       <div className="mt-5 flex flex-wrap gap-px overflow-hidden rounded-xl border border-border bg-border">
         {stats.map((s) => (
           <div key={s.label} className="min-w-[calc(50%-1px)] flex-1 bg-surface px-4 py-3 sm:min-w-[calc(25%-1px)] xl:min-w-0">
@@ -244,6 +269,7 @@ function Header({ c }: { c: TChannel }) {
           </div>
         ))}
       </div>
+      )}
 
       <DeleteChannelDialog c={c} open={deleteOpen} onOpenChange={setDeleteOpen} />
       <Dialog
@@ -266,6 +292,109 @@ function Header({ c }: { c: TChannel }) {
         <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={6} placeholder={t('collect.channel.notesPlaceholder')} />
       </Dialog>
     </>
+  )
+}
+
+/** First listing not finished: a loading screen instead of a partial video list. */
+function ListingState({ c }: { c: TChannel }) {
+  const t = useT()
+  const qc = useQueryClient()
+  const j = c.listing_job
+  const failed = c.list_status === 'failed'
+  const queued = !failed && c.list_status !== 'listing'
+  const retryAt = j?.run_after ? new Date(j.run_after).getTime() : null
+  const now = useNow(1000, !!retryAt)
+  const refresh = useMutation({
+    mutationFn: () => api.refreshChannel(c.id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.channel(c.id) }),
+    onError: onErr,
+  })
+  const pct = j && !queued ? Math.round(j.progress * 100) : 0
+  return (
+    <div className="mt-6 space-y-4">
+      <Card className="overflow-hidden">
+        <div className="flex flex-col items-center px-5 py-10 text-center sm:py-12">
+          <div
+            className={cn(
+              'grid size-14 place-items-center rounded-2xl [&_svg]:size-6',
+              failed ? 'bg-danger-soft text-danger-fg' : queued ? 'bg-info-soft text-info-fg' : 'bg-primary-soft text-primary',
+            )}
+          >
+            {failed ? <AlertTriangle /> : queued ? <Clock /> : <Loader2 className="animate-spin" />}
+          </div>
+          <h2 className="mt-4 text-lg font-semibold">{failed ? t('collect.channel.failedTitle') : queued ? t('collect.channel.queuedTitle') : t('collect.channel.listingTitle')}</h2>
+          <p className="mt-1 max-w-md text-[13px] leading-5 text-fg-3">{failed ? t('collect.channel.failedDesc') : queued ? t('collect.channel.queuedDesc') : t('collect.channel.listingDesc')}</p>
+          {!failed && (
+            <div className="mt-6 w-full max-w-md">
+              <Progress value={queued ? 0 : j?.progress} indeterminate={!queued && !j?.progress} tone={queued ? 'neutral' : 'primary'} />
+              <div className="mt-2 flex items-center justify-between gap-3 text-xs text-fg-3">
+                <span className="min-w-0 truncate text-left">
+                  {retryAt && retryAt > now
+                    ? t('collect.channel.retryingIn', fmtCountdown((retryAt - now) / 1000))
+                    : c.counts.listed > 0
+                      ? t('collect.channel.foundSoFar', c.counts.listed)
+                      : j && !queued
+                        ? jobPhaseText({ phase: j.phase ?? '', message: j.message ?? '' })
+                        : '\u00a0'}
+                </span>
+                {pct > 0 && <span className="shrink-0 tabular">{pct}%</span>}
+              </div>
+            </div>
+          )}
+          {failed && (
+            <div className="mt-5 flex flex-wrap justify-center gap-2">
+              <Button variant="primary" onClick={() => refresh.mutate()} loading={refresh.isPending}>
+                <RefreshCw /> {t('collect.channel.relist')}
+              </Button>
+              <Button asChild>
+                <Link to="/jobs?status=failed">{t('collect.channel.viewJobs')}</Link>
+              </Button>
+            </div>
+          )}
+        </div>
+      </Card>
+      {!failed && (
+        <Card aria-hidden className="pointer-events-none overflow-hidden opacity-70">
+          <div className="h-10 border-b border-border bg-surface-2/70" />
+          {[0, 1, 2, 3, 4].map((i) => (
+            <div key={i} className="flex items-center gap-3 border-b border-border px-4 py-3 last:border-0">
+              <Skeleton className="h-[38px] w-[68px] shrink-0 rounded-md" />
+              <div className="min-w-0 flex-1 space-y-1.5">
+                <Skeleton className="h-3.5" style={{ width: `${70 - i * 9}%` }} />
+                <Skeleton className="h-3 w-24" />
+              </div>
+              <Skeleton className="hidden h-5 w-20 rounded-full sm:block" />
+            </div>
+          ))}
+        </Card>
+      )}
+    </div>
+  )
+}
+
+/** Slim progress strip while caption details are fetched in the background, or while re-listing. */
+function BackgroundBanner({ c }: { c: TChannel }) {
+  const t = useT()
+  const dp = c.detail_progress
+  if (isListing(c))
+    return (
+      <div className="mb-4 flex items-center gap-2.5 rounded-xl border border-primary/20 bg-primary-soft/50 px-3.5 py-2.5 text-[13px] text-primary-soft-fg">
+        <Loader2 className="size-4 shrink-0 animate-spin" />
+        <span className="min-w-0">{t('collect.channel.relisting')}</span>
+      </div>
+    )
+  if (!dp?.active || !dp.total) return null
+  return (
+    <div role="status" className="mb-4 rounded-xl border border-border bg-surface px-3.5 py-2.5 shadow-xs">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[13px]">
+        <span className="flex min-w-0 items-center gap-2 font-medium">
+          <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" />
+          <span className="tabular">{t('collect.channel.detailBanner', dp.detailed, dp.total)}</span>
+        </span>
+        <span className="text-xs text-fg-3">{t('collect.channel.detailBannerDesc')}</span>
+      </div>
+      <Progress className="mt-2 h-1" value={dp.detailed / dp.total} />
+    </div>
   )
 }
 
@@ -439,7 +568,20 @@ export default function ChannelDetail() {
   useTitle(ch.data?.title)
   const c = ch.data
   const t = useT()
+  const qc = useQueryClient()
   const base = `/channels/${id}`
+  // when a listing finishes, the video list (and facets) must be refetched
+  const prevStatus = useRef(c?.list_status)
+  useEffect(() => {
+    if (prevStatus.current && prevStatus.current !== c?.list_status && c?.list_status === 'listed') {
+      qc.invalidateQueries({ queryKey: ['media'] })
+      qc.invalidateQueries({ queryKey: qk.playlists(id) })
+      qc.invalidateQueries({ queryKey: ['channels'] })
+    }
+    prevStatus.current = c?.list_status
+  }, [c?.list_status, id, qc])
+  const firstListing = !!c && (isListing(c) || c.list_status === 'failed') && !c.last_listed_at
+  const detailActive = !!c?.detail_progress?.active
   return (
     <Page wide>
       <Link to="/channels" className="-ml-1 mb-3 inline-flex h-8 items-center gap-1 rounded-md pl-0.5 pr-2 text-[13px] text-fg-3 hover:bg-surface-2 hover:text-fg">
@@ -463,6 +605,10 @@ export default function ChannelDetail() {
       ) : (
         <>
           <Header c={c} />
+          {firstListing ? (
+            <ListingState c={c} />
+          ) : (
+          <>
           <NavTabs
             className="mb-5 mt-6"
             items={[
@@ -474,12 +620,15 @@ export default function ChannelDetail() {
               { to: `${base}/quality`, label: t('collect.channel.tabs.quality'), icon: <Gauge /> },
             ]}
           />
-          {!tab && <MediaBrowser key="v" channelId={id} kind={['video', 'live']} />}
-          {tab === 'shorts' && <MediaBrowser key="s" channelId={id} kind={['short']} />}
+          {(!tab || tab === 'shorts') && <BackgroundBanner c={c} />}
+          {!tab && <MediaBrowser key="v" channelId={id} kind={['video', 'live']} captionsPending={detailActive} />}
+          {tab === 'shorts' && <MediaBrowser key="s" channelId={id} kind={['short']} captionsPending={detailActive} />}
           {tab === 'playlists' && <PlaylistsTab cid={id} />}
           {tab === 'repeated' && <RepeatedTab cid={id} />}
           {tab === 'speakers' && <SpeakersTab cid={id} />}
           {tab === 'quality' && <QualityPanels channelId={id} />}
+          </>
+          )}
         </>
       )}
     </Page>

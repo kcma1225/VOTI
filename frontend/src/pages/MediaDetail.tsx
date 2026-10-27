@@ -1,27 +1,27 @@
 import { t } from '@/i18n'
 import { useMemo, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router'
+import { Link, useParams } from 'react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { AlertTriangle, AudioWaveform, Check, ChevronDown, ExternalLink, Loader2, Minus, RotateCw, X, ZoomIn, ZoomOut } from 'lucide-react'
+import { AlertTriangle, AudioWaveform, Check, ChevronDown, ExternalLink, Languages, Loader2, Minus, RotateCw, X, ZoomIn, ZoomOut } from 'lucide-react'
 import { api } from '@/api/client'
-import { onErr, qk, useMediaDetail, useSegments, useTimeline } from '@/api/queries'
-import type { Job, MediaDetail as TMedia, MediaQuality, SegmentSummary } from '@/api/types'
-import { fmtClock, fmtCompact, fmtDate, fmtDateTime, fmtDb, fmtInt, fmtKHz, fmtMos, fmtPct, fmtSec, fmtTimestamp } from '@/lib/format'
-import { flagLabel, jobKind, lang, licenseLabel, pipelineSteps } from '@/lib/labels'
+import { onErr, qk, useMediaDetail, useTimeline } from '@/api/queries'
+import type { Job, MediaDetail as TMedia, MediaQuality, Track } from '@/api/types'
+import { fmtClock, fmtCompact, fmtDate, fmtDateTime, fmtDb, fmtInt, fmtKHz, fmtMos, fmtPct } from '@/lib/format'
+import { jobKind, lang, licenseLabel, pipelineSteps, trackScript } from '@/lib/labels'
 import { cn } from '@/lib/cn'
 import { Page, useTitle } from '@/components/layout/page'
 import { Button } from '@/components/ui/button'
 import { Badge, Card, CardBody, CardHeader, DescList, Skeleton, Tag, Thumb } from '@/components/ui/primitives'
 import { Menu, MenuContent, MenuItem, MenuLabel, MenuTrigger, Tooltip } from '@/components/ui/overlay'
-import { DataTable, Pagination, type Column } from '@/components/ui/data-table'
-import { EmptyState, ErrorState, ListSkeleton } from '@/components/ui/states'
-import { CaptionBadges, MediaStatusBadge, ReviewBadge } from '@/components/domain/status'
+import { EmptyState, ErrorState } from '@/components/ui/states'
+import { CaptionBadges, MediaStatusBadge } from '@/components/domain/status'
 import { JobRow } from '@/components/domain/job-row'
 import { BandwidthBar, SpectrumChart } from '@/components/domain/quality-viz'
 import { LaneLabels, Lanes, lanesHeight, SpeakerLegend, type LaneKey } from '@/components/domain/lanes'
 import { useSize } from '@/components/charts/charts'
-import { speakerName } from '@/components/domain/speakers'
+import { useSentencePlayer } from '@/hooks/useSentencePlayer'
+import { TranscriptCard } from './media/Transcript'
 
 function Stepper({ m }: { m: TMedia }) {
   const byKind = new Map<string, Job>()
@@ -111,11 +111,10 @@ function QualityCard({ q }: { q: MediaQuality }) {
   )
 }
 
-function TimelineCard({ id, focus }: { id: string; focus?: number }) {
+function TimelineCard({ id, focus, onSegment }: { id: string; focus?: number; onSegment: (s: { id: string; start_sec: number; revision: number }) => void }) {
   const tl = useTimeline(id)
   const [ref, w] = useSize<HTMLDivElement>()
   const [zoom, setZoom] = useState(1)
-  const navigate = useNavigate()
   const lanes: LaneKey[] = ['vad', 'snr', 'speaker', 'repeated', 'segments']
   return (
     <Card>
@@ -151,7 +150,10 @@ function TimelineCard({ id, focus }: { id: string; focus?: number }) {
                     width={w * zoom}
                     lanes={lanes}
                     playhead={focus ?? null}
-                    onSegmentClick={(sid) => navigate(`/review?media=${id}&segment=${sid}`)}
+                    onSegmentClick={(sid) => {
+                      const s = tl.data!.segments.find((x) => x.id === sid)
+                      if (s) onSegment(s)
+                    }}
                   />
                 )}
               </div>
@@ -166,66 +168,25 @@ function TimelineCard({ id, focus }: { id: string; focus?: number }) {
   )
 }
 
-function SegmentsCard({ id }: { id: string }) {
-  const [offset, setOffset] = useState(0)
-  const segs = useSegments({ media_id: id, limit: 25, offset })
-  const navigate = useNavigate()
-  const cols: Column<SegmentSummary>[] = [
-    { id: 't', header: t('process.media.colTime'), width: 'w-28', cell: (s) => <span className="font-mono text-xs text-fg-2">{fmtTimestamp(s.start_sec)}</span> },
-    { id: 'text', header: t('process.media.colText'), cell: (s) => <span className="line-clamp-2 break-cjk text-[13px]">{s.text}</span> },
-    { id: 'sp', header: t('process.media.colSpeaker'), width: 'w-28', hideBelow: 'xl', cell: (s) => <span className="truncate text-xs text-fg-2">{s.speaker ? speakerName(s.speaker) : s.local_speaker ?? '—'}</span> },
-    { id: 'snr', header: 'SNR', width: 'w-20', align: 'right', hideBelow: 'lg', cell: (s) => <span className="text-xs">{fmtDb(s.snr)}</span> },
-    { id: 'st', header: t('process.media.colReview'), width: 'w-24', cell: (s) => <ReviewBadge status={s.review_status} /> },
-  ]
+/** Caption tracks with their Simplified → Traditional conversion state. */
+function TrackList({ tracks }: { tracks: Track[] }) {
+  if (!tracks.length) return <>—</>
   return (
-    <Card className="overflow-clip">
-      <CardHeader
-        title={t('process.media.segments')}
-        description={segs.data ? t('process.media.segmentCount', segs.data.total) : undefined}
-        actions={
-          <Button asChild size="sm" variant="soft">
-            <Link to={`/review?media=${id}`}>
-              <AudioWaveform /> {t('process.media.reviewThis')}
-            </Link>
-          </Button>
-        }
-      />
-      <div className="mt-3 border-t border-border">
-        {!segs.data ? (
-          <ListSkeleton rows={5} />
-        ) : !segs.data.items.length ? (
-          <EmptyState compact icon={<AudioWaveform />} title={t('process.media.noSegments')} description={t('process.media.noSegmentsDesc')} />
-        ) : (
-          <>
-            <DataTable
-              rows={segs.data.items}
-              columns={cols}
-              dense
-              onRowClick={(s) => navigate(`/review?media=${id}&segment=${s.id}`)}
-              card={(s) => (
-                <div>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-mono text-xs text-fg-3">
-                      {fmtTimestamp(s.start_sec)} · {fmtSec(s.duration)}
-                    </span>
-                    <ReviewBadge status={s.review_status} />
-                  </div>
-                  <p className="mt-1 text-[13px] leading-5 break-cjk">{s.text}</p>
-                  {s.flags.length > 0 && (
-                    <div className="mt-1.5 flex flex-wrap gap-1">
-                      {s.flags.map((f) => (
-                        <Tag key={f}>{flagLabel[f] ?? f}</Tag>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            />
-            <Pagination total={segs.data.total} limit={25} offset={offset} onChange={setOffset} className="border-t border-border" />
-          </>
-        )}
-      </div>
-    </Card>
+    <ul className="space-y-1">
+      {tracks.map((tr) => (
+        <li key={tr.id} className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
+          <span>{t('process.media.track', lang(tr.language), tr.kind === 'manual' ? t('process.media.trackKind.manual') : tr.kind === 'auto' ? t('process.media.trackKind.auto') : tr.kind)}</span>
+          {tr.s2t_converted ? (
+            <Tag className="border-info/30 bg-info-soft text-info-fg">
+              <Languages className="size-3" />
+              {t('process.media.trackConverted', tr.cues_converted ?? 0)}
+            </Tag>
+          ) : tr.script && tr.script !== 'not_chinese' && tr.script !== 'traditional' ? (
+            <Tag>{trackScript[tr.script] ?? tr.script}</Tag>
+          ) : null}
+        </li>
+      ))}
+    </ul>
   )
 }
 
@@ -252,6 +213,15 @@ export default function MediaDetail() {
     },
     onError: onErr,
   })
+  const convert = useMutation({
+    mutationFn: () => api.convertMediaText(id),
+    onSuccess: (r) => {
+      toast.success(r.queued ? t('process.media.s2tQueued') : t('process.media.s2tNothing'))
+      qc.invalidateQueries({ queryKey: qk.mediaDetail(id) })
+    },
+    onError: onErr,
+  })
+  const player = useSentencePlayer()
   const focus = useMemo(() => Number(new URLSearchParams(location.search).get('t')) || undefined, [])
 
   if (md.isError)
@@ -297,6 +267,13 @@ export default function MediaDetail() {
             <span>{licenseLabel[m.license ?? 'youtube']}</span>
             {m.kind === 'short' && <Tag>Shorts</Tag>}
             <CaptionBadges manual={m.has_manual_captions} auto={m.has_auto_captions} manualLangs={m.manual_caption_langs} autoLangs={m.auto_caption_langs} />
+            {m.text_converted && (
+              <Tooltip content={t('process.media.s2tTip', m.text_conversion?.cues_converted ?? m.tracks.reduce((a, x) => a + (x.cues_converted ?? 0), 0))}>
+                <Badge tone="info">
+                  <Languages className="size-3" /> {t('process.media.s2tBadge')}
+                </Badge>
+              </Tooltip>
+            )}
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
             {m.status === 'ready' && (
@@ -309,6 +286,11 @@ export default function MediaDetail() {
             {m.status === 'failed' && (
               <Button variant="primary" onClick={() => retry.mutate()} loading={retry.isPending}>
                 <RotateCw /> {t('process.media.retryFailed')}
+              </Button>
+            )}
+            {m.text_convertible && (
+              <Button onClick={() => convert.mutate()} loading={convert.isPending || m.jobs.some((j) => j.kind === 'media.convert_text' && (j.status === 'queued' || j.status === 'running'))}>
+                <Languages /> {t('process.media.s2tConvert')}
               </Button>
             )}
             {hasPipeline && (
@@ -360,8 +342,8 @@ export default function MediaDetail() {
         <div className="min-w-0 space-y-4">
           {m.status === 'ready' || m.segment_count > 0 ? (
             <>
-              <TimelineCard id={m.id} focus={focus} />
-              <SegmentsCard id={m.id} />
+              <TimelineCard id={m.id} focus={focus} onSegment={player.play} />
+              <TranscriptCard mediaId={m.id} player={player} focusId={player.id} />
             </>
           ) : (
             <Card>
@@ -391,7 +373,7 @@ export default function MediaDetail() {
                   [t('process.media.published'), fmtDateTime(m.published_at)],
                   [t('process.media.likesComments'), `${fmtInt(m.like_count)} / ${fmtInt(m.comment_count)}`],
                   [t('process.media.language'), m.language ? lang(m.language) : '—'],
-                  [t('process.media.tracks'), m.tracks.length ? m.tracks.map((tr) => t('process.media.track', lang(tr.language), tr.kind === 'manual' ? t('process.media.trackKind.manual') : tr.kind === 'auto' ? t('process.media.trackKind.auto') : tr.kind)).join(t('common.listSep')) : '—'],
+                  [t('process.media.tracks'), <TrackList tracks={m.tracks} />],
                   [t('process.media.chapters'), m.chapters.length ? m.chapters.map((c) => c.title).join(t('common.listSep')) : '—'],
                 ]}
               />

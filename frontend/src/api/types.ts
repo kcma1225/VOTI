@@ -33,6 +33,8 @@ export interface YoutubeSettings {
   sleep_between_requests_sec?: number
   max_concurrent_downloads: number
   cookies_enabled: boolean
+  /** scheduled re-listing of every channel, in hours; 0 = off */
+  auto_refresh_hours?: number
 }
 export type VoxBackbone = 'whisper-large-v3' | 'wavlm-large'
 export interface PipelineSettings {
@@ -47,6 +49,11 @@ export interface QualityThresholds {
   low_snr_db: number
   clipping_ratio: number
 }
+export type OpenccConfig = 's2twp' | 's2tw' | 's2t'
+export interface TextSettings {
+  convert_simplified: boolean
+  opencc_config: OpenccConfig
+}
 export interface CookiesState {
   present: boolean
   updated_at: ISODate | null
@@ -55,6 +62,7 @@ export interface Settings {
   youtube: YoutubeSettings
   pipeline: PipelineSettings
   quality_thresholds: QualityThresholds
+  text?: TextSettings
   cookies: CookiesState
 }
 
@@ -77,6 +85,9 @@ export type JobKind =
   | 'channel.dedup'
   | 'speakers.cluster'
   | 'dataset.export'
+  | 'media.convert_text'
+  | 'media.align'
+  | 'channel.align'
 
 export interface Job {
   id: UUID
@@ -97,6 +108,11 @@ export interface Job {
   started_at: ISODate | null
   finished_at: ISODate | null
   eta_sec?: number | null
+  /** queued for an automatic retry: not started before this time */
+  run_after?: ISODate | null
+  max_attempts?: number | null // ext
+  payload?: Record<string, unknown>
+  result?: Record<string, unknown>
 }
 export interface JobList extends Page<Job> {
   counts: Partial<Record<JobStatus, number>>
@@ -117,7 +133,25 @@ export interface ChannelDeleteImpact {
   requires_confirmation: boolean
 }
 
-export type ListStatus = 'new' | 'listing' | 'listed' | 'failed'
+export type ListStatus = 'new' | 'queued' | 'listing' | 'listed' | 'failed'
+/** The channel's current (or last) listing job, trimmed. */
+export interface ListingJobBrief {
+  id: UUID
+  kind?: 'channel.list' | 'source.resolve' | string
+  status: JobStatus
+  progress: number
+  phase: string | null
+  message?: string | null
+  run_after?: ISODate | null
+  error_code?: string | null
+}
+/** Background caption-detail fetching for the channel's listed media. */
+export interface DetailProgress {
+  detailed: number
+  total: number
+  failed?: number
+  active: boolean
+}
 export interface ChannelSummary {
   id: UUID
   platform: string
@@ -129,8 +163,14 @@ export interface ChannelSummary {
   video_count: number | null
   list_status: ListStatus
   last_listed_at: ISODate | null
-  counts: { listed: number; detailed: number; with_manual_captions: number; downloaded: number; ready: number; failed: number }
+  /** `new` = videos found by a re-listing in the last 7 days that are still listed/detailed */
+  counts: { listed: number; detailed: number; with_manual_captions: number; downloaded: number; ready: number; failed: number; new?: number }
   hours: { listed: number; ready: number; speech: number }
+  listing_job?: ListingJobBrief | null // ext
+  detail_progress?: DetailProgress | null // ext
+  /** legacy name of counts.new */
+  new_count?: number
+  next_refresh_at?: ISODate | null // ext
 }
 export interface ChannelDetail extends ChannelSummary {
   description: string
@@ -202,6 +242,10 @@ export interface MediaSummary {
   channel: { id: UUID; title: string } | null
   quality?: MediaQualityBrief | null
   segment_count: number
+  /** found by a re-listing ≤ 7 days ago and still listed/detailed */
+  is_new?: boolean
+  discovered_at?: ISODate | null
+  downloaded?: boolean
 }
 export interface MediaQuality {
   sample_rate: number | null
@@ -249,14 +293,41 @@ export interface MediaDetail extends Omit<MediaSummary, 'quality'> {
   metadata: Record<string, unknown>
   failure_message: string | null
   jobs: Job[]
-  tracks: { id: UUID; language: string; kind: 'manual' | 'auto' | 'translated' | 'uploaded' }[]
+  tracks: Track[]
   quality: MediaQuality | null
+  /** some track was converted Simplified → Traditional */
+  text_converted?: boolean
+  /** POST /media/{id}/convert-text would still change something */
+  text_convertible?: boolean
+  text_conversion?: TextConversion | null
+}
+export type TrackScript = 'simplified' | 'traditional' | 'neutral' | 'mixed' | 'unknown' | 'not_chinese'
+export interface Track {
+  id: UUID
+  language: string
+  kind: 'manual' | 'auto' | 'translated' | 'uploaded'
+  format?: string
+  s2t_converted?: boolean
+  /** null = never examined */
+  script?: TrackScript | null
+  cues_converted?: number | null
+}
+export interface TextConversion {
+  converted: boolean
+  cues_converted?: number
+  segments_converted?: number
+  config?: string | null
+  opencc?: string | null
+  at?: ISODate | null
+  [k: string]: unknown
 }
 export interface MediaFacets {
   kind: Partial<Record<MediaKind, number>>
   captions: { manual: number; auto_only: number; none: number; unknown: number }
   license: Partial<Record<License, number>>
   status: Partial<Record<MediaStatus, number>>
+  downloaded?: { yes: number; no: number }
+  new?: number
 }
 export interface MediaList extends Page<MediaSummary> {
   facets: MediaFacets
@@ -279,6 +350,7 @@ export interface MediaQuery {
   published_before?: string
   detailed?: boolean
   upsampled_suspect?: boolean // ext
+  downloaded?: boolean // ext
   sort?: MediaSort
   limit?: number
   offset?: number
@@ -361,6 +433,39 @@ export interface SegmentDetail extends Omit<SegmentSummary, 'profile'> {
   reviewed_at: ISODate | null
   profile: VoiceProfile | null
   history: AuditLog[]
+  /** character/word timings; units concatenate exactly to `text`; null times = untimed (punctuation) */
+  words?: WordUnit[] | null
+  alignment?: SegmentAlignment | null
+}
+export type AlignStatus = 'aligned' | 'skipped' | 'failed' | 'pending' | 'stale' | 'none'
+export interface SegmentAlignment {
+  status: AlignStatus
+  /** e.g. no_romanizer:nan, unsupported_language:en, too_long:72s */
+  reason: string | null
+  model_id?: string | null
+  updated_at?: ISODate | null
+}
+export interface WordUnit {
+  t: string
+  s: number | null
+  e: number | null
+}
+/** segment id → [[unit, start, end], …] in absolute media seconds */
+export type MediaWords = Record<UUID, [string, number | null, number | null][]>
+/** GET /media/{id}/words */
+export interface MediaWordsResponse {
+  words: MediaWords
+  segments: number
+  status: Partial<Record<AlignStatus, number>>
+  job_active: boolean
+}
+export interface SegmentNeighbors {
+  prev_id: UUID | null
+  next_id: UUID | null
+  /** 0-based position in the filtered list */
+  index: number | null
+  total: number
+  in_filter?: boolean
 }
 export interface SegmentQuery {
   media_id?: UUID
@@ -543,4 +648,8 @@ export interface ResolveResult {
   playlist?: Playlist
   media?: MediaSummary
   job: Job
+  /** the video's channel did not exist before this request (ext) */
+  channel_created?: boolean
+  /** listing job queued for a newly created channel (ext) */
+  channel_job?: Job | null
 }

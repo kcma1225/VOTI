@@ -1,16 +1,17 @@
 import { msgs, t, useT } from '@/i18n'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useSearchParams } from 'react-router'
+import { Link, useNavigate, useParams } from 'react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
+  ArrowLeft,
   AudioWaveform,
   Check,
   ChevronLeft,
   ChevronRight,
   CircleSlash,
   Keyboard,
-  ListFilter,
+  Loader2,
   Pause,
   Play,
   Repeat,
@@ -18,30 +19,31 @@ import {
   Save,
   TriangleAlert,
   UserRound,
+  Wand2,
 } from 'lucide-react'
 import { api } from '@/api/client'
-import { onErr, qk, useChannels, useSegment, useSegmentPatch, useSegments, useSimilar, useTimeline } from '@/api/queries'
+import { onErr, qk, useNeighbors, useSegment, useSegmentPatch, useSegments, useSimilar, useTimeline } from '@/api/queries'
 import type { ReviewStatus, SegmentDetail, SpeakerState } from '@/api/types'
-import { fmtDb, fmtInt, fmtMos, fmtPct, fmtRelative, fmtTimestamp } from '@/lib/format'
-import { flagLabel, reviewStatus, speakerState, textSource } from '@/lib/labels'
+import { fmtDb, fmtMos, fmtPct, fmtRelative, fmtTimestamp } from '@/lib/format'
+import { flagLabel, lang, reviewStatus, speakerState, textSource } from '@/lib/labels'
 import { cn } from '@/lib/cn'
 import { useHotkeys } from '@/hooks/useHotkeys'
 import { useTheme } from '@/hooks/useTheme'
-import { useIsDesktop } from '@/hooks/useMedia'
 import { Page, useTitle } from '@/components/layout/page'
 import { Button } from '@/components/ui/button'
 import { Avatar, Badge, Card, CardBody, CardHeader, Kbd, Skeleton, Tag } from '@/components/ui/primitives'
-import { Input, Segmented, Select, Switch, Textarea } from '@/components/ui/form'
-import { Dialog, Sheet, Tooltip } from '@/components/ui/overlay'
-import { EmptyState, ErrorState } from '@/components/ui/states'
+import { Input, Select, Switch, Textarea } from '@/components/ui/form'
+import { Dialog, Tooltip } from '@/components/ui/overlay'
+import { ErrorState } from '@/components/ui/states'
 import { ReviewBadge } from '@/components/domain/status'
 import { ProfileTraits, speakerName } from '@/components/domain/speakers'
 import { LaneLabels, Lanes, lanesHeight, type LaneKey } from '@/components/domain/lanes'
 import { useSize } from '@/components/charts/charts'
 import { PAD, useSegmentAudio } from './useSegmentAudio'
 import { Waveform } from './Waveform'
+import { KaraokeText, toUnits } from '@/components/domain/karaoke'
+import { LIST_LIMIT, toSegmentQuery, useReviewParams } from './params'
 
-const LIMIT = 100
 const NUDGE = 0.05
 
 const SHORTCUTS = (): [string[], string][] => {
@@ -60,78 +62,9 @@ const SHORTCUTS = (): [string[], string][] => {
     [['{'], k.endEarlier],
     [['}'], k.endLater],
     [['Ctrl/⌘', 'Enter'], k.saveText],
+    [['Backspace'], k.back],
     [['?'], k.help],
   ]
-}
-
-/* ───────────── queue filters (URL) ───────────── */
-function useQueueParams() {
-  const [sp, setSp] = useSearchParams()
-  const p = {
-    media: sp.get('media') ?? '',
-    channel: sp.get('channel') ?? '',
-    status: (sp.get('status') ?? 'unchecked') as ReviewStatus | 'all',
-    source: sp.get('source') ?? '',
-    sort: sp.get('sort') ?? '',
-    segment: sp.get('segment') ?? '',
-    offset: Number(sp.get('offset') ?? 0),
-  }
-  const set = (patch: Record<string, string | number | null>) => {
-    const n = new URLSearchParams(sp)
-    for (const [k, v] of Object.entries(patch)) {
-      if (v === null || v === '') n.delete(k)
-      else n.set(k, String(v))
-    }
-    setSp(n, { replace: true })
-  }
-  return { p, set }
-}
-
-function QueueFilters({ p, set, onDone }: { p: ReturnType<typeof useQueueParams>['p']; set: ReturnType<typeof useQueueParams>['set']; onDone?: () => void }) {
-  const ch = useChannels()
-  return (
-    <div className="flex flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-center">
-      <Segmented
-        aria-label={t('process.review.statusFilter')}
-        value={p.status}
-        onChange={(v) => (set({ status: v === 'unchecked' ? null : v, segment: null, offset: null }), onDone?.())}
-        options={[
-          { value: 'unchecked', label: t('process.review.statusUnchecked') },
-          { value: 'needs_fix', label: t('process.review.statusFix') },
-          { value: 'passed', label: t('process.review.statusPassed') },
-          { value: 'all', label: t('process.review.statusAll') },
-        ]}
-      />
-      <Select aria-label={t('process.review.channel')} value={p.channel} onChange={(e) => set({ channel: e.target.value, media: null, segment: null, offset: null })} className="lg:w-44" size_="sm">
-        <option value="">{t('process.review.allChannels')}</option>
-        {ch.data?.items.map((c) => (
-          <option key={c.id} value={c.id}>
-            {c.title}
-          </option>
-        ))}
-      </Select>
-      <Select aria-label={t('process.review.textSource')} value={p.source} onChange={(e) => set({ source: e.target.value, segment: null, offset: null })} className="lg:w-36" size_="sm">
-        <option value="">{t('process.review.allSources')}</option>
-        <option value="manual_caption">{textSource.manual_caption}</option>
-        <option value="auto_caption">{textSource.auto_caption}</option>
-        <option value="human_revision">{textSource.human_revision}</option>
-      </Select>
-      <Select aria-label={t('process.review.sort')} value={p.sort} onChange={(e) => set({ sort: e.target.value, segment: null, offset: null })} className="lg:w-40" size_="sm">
-        <option value="">{t('process.review.sortDefault')}</option>
-        <option value="snr">{t('process.review.sortSnrAsc')}</option>
-        <option value="-snr">{t('process.review.sortSnrDesc')}</option>
-        <option value="-duration">{t('process.review.sortLongFirst')}</option>
-      </Select>
-      {p.media && (
-        <span className="inline-flex h-9 items-center gap-1 rounded-full border border-primary/25 bg-primary-soft pl-3 pr-1 text-xs font-medium text-primary-soft-fg sm:h-8">
-          {t('process.review.thisVideoOnly')}
-          <button aria-label={t('process.review.removeVideoFilter')} className="grid size-6 place-items-center rounded-full hover:bg-primary/15" onClick={() => set({ media: null, segment: null, offset: null })}>
-            ×
-          </button>
-        </span>
-      )}
-    </div>
-  )
 }
 
 /* ───────────── detail side panels ───────────── */
@@ -216,7 +149,7 @@ function SpeakerPanel({ s }: { s: SegmentDetail }) {
 
 function SimilarPanel({ id }: { id: string }) {
   const sim = useSimilar(id)
-  const [, setSp] = useSearchParams()
+  const navigate = useNavigate()
   if (!sim.data) return <Skeleton className="h-24" />
   if (!sim.data.length) return <p className="text-[13px] text-fg-3">{t('process.review.noSimilar')}</p>
   return (
@@ -224,7 +157,7 @@ function SimilarPanel({ id }: { id: string }) {
       {sim.data.map(({ segment: x, similarity }) => (
         <li key={x.id}>
           <button
-            onClick={() => setSp((p) => (p.set('segment', x.id), p.delete('status'), p.set('media', x.media_id), p), { replace: true })}
+            onClick={() => navigate(`/review/${x.id}?media=${x.media_id}&status=all`)}
             className="flex w-full min-w-0 items-center gap-2.5 rounded-lg px-2 py-2 text-left hover:bg-surface-2"
           >
             <span className="w-10 shrink-0 text-right text-xs font-semibold tabular text-fg">{Math.round(similarity * 100)}%</span>
@@ -241,25 +174,88 @@ function SimilarPanel({ id }: { id: string }) {
   )
 }
 
+/* ───────────── karaoke line ───────────── */
+function SpokenLine({ s, time, onSeek }: { s: SegmentDetail; time: number | null; onSeek: (abs: number) => void }) {
+  const qc = useQueryClient()
+  const units = useMemo(() => toUnits(s.words, s.start_sec, s.end_sec), [s.words, s.start_sec, s.end_sec])
+  const align = useMutation({
+    mutationFn: () => api.alignMedia(s.media_id),
+    onSuccess: () => {
+      toast.success(t('process.review.alignQueued'))
+      qc.invalidateQueries({ queryKey: qk.segment(s.id) })
+    },
+    onError: onErr,
+  })
+  const al = s.alignment
+  const pending = al?.status === 'pending'
+  // a re-alignment after a text/boundary edit finishes within seconds: refetch until it does
+  useEffect(() => {
+    if (!pending) return
+    const id = setInterval(() => qc.invalidateQueries({ queryKey: qk.segment(s.id) }), 4000)
+    return () => clearInterval(id)
+  }, [pending, s.id, qc])
+  const reason = (r: string | null | undefined) => {
+    if (!r) return null
+    const [code, arg] = r.split(':')
+    if ((code === 'no_romanizer' || code === 'unsupported_language') && arg) return t('process.review.alignUnsupported', lang(arg))
+    if (code === 'too_long') return t('process.review.alignTooLong')
+    if (code === 'no_text') return t('process.review.alignNoText')
+    return r
+  }
+  return (
+    <div className="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-start sm:gap-4">
+      <p className="min-w-0 flex-1 text-[19px] leading-9 tracking-wide break-cjk sm:text-xl sm:leading-9">
+        {units ? (
+          <KaraokeText units={units} time={time} onSeek={onSeek} />
+        ) : (
+          <span className={cn('rounded-[3px] transition-colors', time != null && time < s.end_sec && 'bg-primary-soft text-primary-soft-fg shadow-[0_0_0_2px_var(--primary-soft)] [box-decoration-break:clone]')}>{s.text}</span>
+        )}
+      </p>
+      {units ? (
+        <span className="hidden shrink-0 pt-2 text-[11px] text-fg-3 lg:block">{t('process.review.clickToSeek')}</span>
+      ) : pending ? (
+        <Badge tone="primary" className="shrink-0 sm:mt-1.5">
+          <Loader2 className="size-3 animate-spin" /> {t('process.review.aligning')}
+        </Badge>
+      ) : al?.status === 'skipped' ? (
+        <span className="shrink-0 text-[11px] text-fg-3 sm:pt-2">{reason(al.reason) ?? t('process.review.notAligned')}</span>
+      ) : (
+        <span className="flex shrink-0 items-center gap-1.5 sm:pt-1.5">
+          <Tooltip content={reason(al?.reason) ?? t('process.review.notAlignedTip')}>
+            <Badge tone={al?.status === 'failed' ? 'warning' : 'neutral'} dot>
+              {al?.status === 'failed' ? t('process.review.alignFailed') : t('process.review.notAligned')}
+            </Badge>
+          </Tooltip>
+          <Button size="xs" variant="ghost" onClick={() => align.mutate()} loading={align.isPending}>
+            <Wand2 /> {t('process.review.align')}
+          </Button>
+        </span>
+      )}
+    </div>
+  )
+}
+
 /* ───────────── main ───────────── */
 export default function Review() {
   const t = useT()
   useTitle(t('process.review.title'))
-  const { p, set } = useQueueParams()
-  const isDesktop = useIsDesktop()
-  const list = useSegments({
-    media_id: p.media || undefined,
-    channel_id: p.channel || undefined,
-    review_status: p.status === 'all' ? undefined : [p.status],
-    text_source: p.source ? [p.source] : undefined,
-    sort: p.sort || undefined,
-    limit: LIMIT,
-    offset: p.offset,
-  })
-  const items = useMemo(() => list.data?.items ?? [], [list.data])
-  const idx = Math.max(0, items.findIndex((x) => x.id === p.segment))
-  const currentId = p.segment && items.some((x) => x.id === p.segment) ? p.segment : items[0]?.id
-  const seg = useSegment(currentId)
+  const { segmentId = '' } = useParams()
+  const { p, sp } = useReviewParams()
+  const navigate = useNavigate()
+  const query = useMemo(() => toSegmentQuery(p), [sp.toString()]) // eslint-disable-line react-hooks/exhaustive-deps
+  const nb = useNeighbors(segmentId, query)
+  // fallback when the API has no neighbors endpoint: locate the segment in the list window it was opened from
+  const win = useSegments({ ...query, limit: 500, offset: p.offset }, nb.isError)
+  const nav = useMemo(() => {
+    if (nb.data && !nb.isPlaceholderData) return nb.data
+    if (nb.isError && win.data) {
+      const i = win.data.items.findIndex((x) => x.id === segmentId)
+      if (i < 0) return { prev_id: null, next_id: null, index: null, total: win.data.total }
+      return { prev_id: win.data.items[i - 1]?.id ?? null, next_id: win.data.items[i + 1]?.id ?? null, index: p.offset + i, total: win.data.total }
+    }
+    return nb.data ?? null
+  }, [nb.data, nb.isPlaceholderData, nb.isError, win.data, segmentId, p.offset])
+  const seg = useSegment(segmentId)
   const s = seg.data
   const tl = useTimeline(s?.media_id ?? '', !!s)
   const patch = useSegmentPatch()
@@ -274,7 +270,6 @@ export default function Review() {
   const [loop, setLoop] = useState(false)
   const [rate, setRate] = useState(1)
   const [help, setHelp] = useState(false)
-  const [filtersOpen, setFiltersOpen] = useState(false)
 
   // reset local edit state per segment
   useEffect(() => {
@@ -289,12 +284,18 @@ export default function Review() {
   const boundaryDirty = !!s && (Math.abs(absRegion[0] - s.start_sec) > 0.004 || Math.abs(absRegion[1] - s.end_sec) > 0.004)
   const textDirty = !!s && draft !== (s.corrected_text ?? s.original_text)
 
-  const go = (d: number) => {
-    const n = idx + d
-    if (n >= 0 && n < items.length) set({ segment: items[n].id })
-    else if (n >= items.length && list.data && p.offset + LIMIT < list.data.total) set({ offset: p.offset + LIMIT, segment: null })
-    else if (n < 0 && p.offset > 0) set({ offset: Math.max(0, p.offset - LIMIT), segment: null })
+  const qsFor = (patchQs: Record<string, string | null> = {}) => {
+    const n = new URLSearchParams(sp)
+    for (const [k, v] of Object.entries(patchQs)) v === null ? n.delete(k) : n.set(k, v)
+    const q = n.toString()
+    return q ? `?${q}` : ''
   }
+  const open = (id: string | null | undefined) => id && navigate(`/review/${id}${qsFor()}`, { replace: true })
+  const backToList = () => {
+    const off = nav?.index != null ? Math.floor(nav.index / LIST_LIMIT) * LIST_LIMIT : p.offset
+    navigate(`/review${qsFor({ offset: off ? String(off) : null })}`, { state: { focus: segmentId } })
+  }
+  const go = (d: 1 | -1) => open(d > 0 ? nav?.next_id : nav?.prev_id)
   const playRegion = () => audio.play(region[0], loop ? null : region[1])
   const toggle = () => (audio.playing ? audio.pause() : playRegion())
 
@@ -310,12 +311,19 @@ export default function Review() {
   })
   const setStatus = (st: ReviewStatus) => {
     if (!s) return
+    // the neighbour is resolved before the change: the marked segment may drop out of the filtered list
+    const next = nav?.next_id ?? null
     patch.mutate(
       { id: s.id, patch: { review_status: st, ...saveExtras() } },
       {
         onSuccess: () => {
           toast.success(t('process.review.markedAs', reviewStatus[st].label), { duration: 1400 })
-          if (autoNext) go(1)
+          if (!autoNext) return
+          if (next) open(next)
+          else {
+            toast(t('process.review.lastInList'), { duration: 2200 })
+            backToList()
+          }
         },
       },
     )
@@ -353,69 +361,53 @@ export default function Review() {
       'mod+enter': save,
       '?': () => setHelp(true),
       escape: () => (document.activeElement as HTMLElement | null)?.blur(),
+      backspace: backToList,
     },
     { enabled: !!s, allowInInputs: ['escape'] },
   )
 
-  const position = list.data ? p.offset + idx + 1 : 0
+  const position = nav?.index != null ? nav.index + 1 : null
   const lanes: LaneKey[] = ['vad', 'snr', 'speaker', 'repeated', 'segments']
+  const spokenTime = s && (audio.playing || audio.time > 0) ? clipStart + audio.time : null
 
   const header = (
-    <div className="mb-4 flex flex-col gap-3 lg:mb-5">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <h1 className="text-[22px] font-semibold leading-8 tracking-tight sm:text-2xl">{t('process.review.title')}</h1>
-          <p className="text-[13px] text-fg-3">
-            {list.data ? (
-              t('process.review.position', position, list.data.total)
-            ) : (
-              t('process.review.loadingQueue')
-            )}
-          </p>
-        </div>
-        <div className="flex items-center gap-1.5">
-          {!isDesktop && (
-            <Button size="sm" onClick={() => setFiltersOpen(true)}>
-              <ListFilter /> {t('process.review.queue')}
-            </Button>
-          )}
-          <Tooltip content={t('process.review.shortcutsTip')}>
-            <Button size="icon-sm" variant="ghost" aria-label={t('process.review.shortcutsLabel')} onClick={() => setHelp(true)} className="hidden sm:inline-flex">
-              <Keyboard />
-            </Button>
-          </Tooltip>
-        </div>
+    <div className="mb-4 flex items-center gap-2 sm:gap-3 lg:mb-5">
+      <Button onClick={backToList} className="shrink-0" aria-keyshortcuts="Backspace">
+        <ArrowLeft /> <span>{t('process.review.backToList')}</span>
+      </Button>
+      <div className="min-w-0 flex-1">
+        <h1 className="truncate text-lg font-semibold leading-7 tracking-tight sm:text-xl">{t('process.review.title')}</h1>
+        <p className="truncate text-[13px] text-fg-3">
+          {position != null && nav ? t('process.review.position', position, nav.total) : nav && nav.index == null ? t('process.review.notInList') : t('process.review.loadingQueue')}
+        </p>
       </div>
-      {isDesktop && <QueueFilters p={p} set={set} />}
+      <div className="hidden items-center gap-1 sm:flex">
+        <Tooltip content={`${t('process.review.prev')} (K)`}>
+          <Button size="icon" variant="ghost" onClick={() => go(-1)} disabled={!nav?.prev_id} aria-label={t('process.review.prev')}>
+            <ChevronLeft />
+          </Button>
+        </Tooltip>
+        <Tooltip content={`${t('process.review.next')} (J)`}>
+          <Button size="icon" variant="ghost" onClick={() => go(1)} disabled={!nav?.next_id} aria-label={t('process.review.next')}>
+            <ChevronRight />
+          </Button>
+        </Tooltip>
+        <Tooltip content={t('process.review.shortcutsTip')}>
+          <Button size="icon" variant="ghost" aria-label={t('process.review.shortcutsLabel')} onClick={() => setHelp(true)}>
+            <Keyboard />
+          </Button>
+        </Tooltip>
+      </div>
     </div>
   )
 
-  if (list.isError)
+  if (seg.isError)
     return (
       <Page wide>
         {header}
         <Card>
-          <ErrorState error={list.error} onRetry={() => list.refetch()} />
+          <ErrorState error={seg.error} onRetry={() => seg.refetch()} />
         </Card>
-      </Page>
-    )
-  if (list.data && !items.length)
-    return (
-      <Page wide>
-        {header}
-        <Card>
-          <EmptyState
-            icon={<Check />}
-            title={t('process.review.emptyTitle')}
-            description={t('process.review.emptyDesc')}
-            action={
-              <Button onClick={() => set({ status: 'all', channel: null, media: null, source: null, segment: null, offset: null })}>
-                <RotateCcw /> {t('process.review.showAll')}
-              </Button>
-            }
-          />
-        </Card>
-        <ShortcutDialog open={help} onOpenChange={setHelp} />
       </Page>
     )
 
@@ -474,6 +466,11 @@ export default function Review() {
               {s && <ReviewBadge status={s.review_status} />}
             </div>
 
+            {/* the sentence, highlighted character by character while it plays */}
+            <div className="px-4 pt-4 sm:px-5">
+              {s ? <SpokenLine s={s} time={spokenTime} onSeek={(abs) => audio.play(Math.max(0, abs - clipStart), region[1])} /> : <Skeleton className="h-9 w-full" />}
+            </div>
+
             <div className="flex gap-3 px-4 pt-7 sm:px-5">
               <div className="hidden w-14 shrink-0 sm:block">
                 <div className="flex h-28 items-center text-[11px] text-fg-3">{t('process.waveform.label')}</div>
@@ -509,7 +506,7 @@ export default function Review() {
                       activeSegment={s.id}
                       selection={absRegion}
                       playhead={clipStart + audio.time}
-                      onSegmentClick={(id) => set({ segment: id, status: items.some((x) => x.id === id) ? (p.status === 'unchecked' ? null : p.status) : 'all' })}
+                      onSegmentClick={(id) => id !== s.id && navigate(`/review/${id}${qsFor()}`)}
                     />
                   </div>
                 )}
@@ -517,7 +514,7 @@ export default function Review() {
             </div>
 
             {/* transport */}
-            <div className="flex flex-wrap items-center gap-2 border-t border-border px-4 py-3 sm:px-5">
+            <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border px-4 py-3 sm:px-5">
               <Button variant="primary" size="icon" className="size-12 rounded-full sm:size-10" onClick={toggle} disabled={!audio.ready} aria-label={audio.playing ? t('process.review.pause') : t('process.review.play')}>
                 {audio.playing ? <Pause className="!size-5" /> : <Play className="!size-5 translate-x-px" />}
               </Button>
@@ -580,6 +577,7 @@ export default function Review() {
                 <label htmlFor="seg-text" className="flex items-center gap-2 text-[13px] font-medium">
                   {t('process.review.text')}
                   {s && <Badge tone={s.text_source === 'auto_caption' ? 'warning' : s.text_source === 'human_revision' ? 'success' : 'neutral'}>{textSource[s.text_source] ?? s.text_source}</Badge>}
+                  {s?.flags.includes('s2t_converted') && <Badge tone="info">{flagLabel.s2t_converted}</Badge>}
                 </label>
                 <span className="hidden text-[11px] text-fg-3 sm:inline">
                   <Kbd>E</Kbd> {t('process.review.editHint')} · <Kbd>Ctrl</Kbd>+<Kbd>Enter</Kbd> {t('process.review.saveHint')}
@@ -618,11 +616,11 @@ export default function Review() {
 
           {/* desktop/tablet action bar */}
           <div className="hidden items-center gap-2 md:flex">
-            <Button onClick={() => go(-1)} disabled={position <= 1}>
+            <Button onClick={() => go(-1)} disabled={!nav?.prev_id}>
               <ChevronLeft /> {t('process.review.prev')}
             </Button>
             <div className="flex-1">{actionButtons()}</div>
-            <Button onClick={() => go(1)}>
+            <Button onClick={() => go(1)} disabled={!nav?.next_id}>
               {t('process.review.next')} <ChevronRight />
             </Button>
           </div>
@@ -637,7 +635,7 @@ export default function Review() {
               {s && s.flags.length > 0 && (
                 <div className="flex flex-wrap gap-1">
                   {s.flags.map((f) => (
-                    <Badge key={f} tone="warning">
+                    <Badge key={f} tone={f === 's2t_converted' ? 'info' : 'warning'}>
                       {flagLabel[f] ?? f}
                     </Badge>
                   ))}
@@ -683,28 +681,22 @@ export default function Review() {
       {/* phone sticky action bar (above bottom tabs) */}
       <div className="sticky bottom-[calc(64px+env(safe-area-inset-bottom))] z-20 -mx-4 mt-4 border-t border-border bg-surface/95 px-3 pb-3 pt-2 backdrop-blur-xl sm:-mx-6 md:hidden">
         <div className="mb-2 flex items-center justify-between">
-          <Button size="sm" variant="ghost" onClick={() => go(-1)} disabled={position <= 1}>
+          <Button size="sm" variant="ghost" onClick={() => go(-1)} disabled={!nav?.prev_id}>
             <ChevronLeft /> {t('process.review.prev')}
           </Button>
-          <span className="text-xs tabular text-fg-3">
-            {fmtInt(position)} / {fmtInt(list.data?.total ?? 0)}
-          </span>
-          <Button size="sm" variant="ghost" onClick={() => go(1)}>
+          <span className="text-xs tabular text-fg-3">{position != null && nav ? t('process.review.positionOf', position, nav.total) : '—'}</span>
+          <Button size="sm" variant="ghost" onClick={() => go(1)} disabled={!nav?.next_id}>
             {t('process.review.next')} <ChevronRight />
           </Button>
         </div>
         {actionButtons(true)}
       </div>
 
-      <Sheet open={filtersOpen} onOpenChange={setFiltersOpen} title={t('process.review.queueTitle')} description={t('process.review.queueDesc')}>
-        <div className="p-4">
-          <QueueFilters p={p} set={set} />
-        </div>
-      </Sheet>
       <ShortcutDialog open={help} onOpenChange={setHelp} />
     </Page>
   )
 }
+
 
 function ShortcutDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
   return (

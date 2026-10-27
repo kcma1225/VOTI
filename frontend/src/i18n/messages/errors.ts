@@ -41,6 +41,8 @@ export const zh = {
     validation_error: '請求參數格式錯誤',
     invalid_host: '主機名稱不允許',
     cross_site: '拒絕跨站請求',
+    text_conversion_disabled: '簡轉繁已在設定中停用（設定 → 處理流程 → 字幕文字）',
+    alignment_unavailable: '逐字對齊服務目前無法使用',
   },
   status: {
     400: '請求錯誤',
@@ -95,6 +97,8 @@ export const en: Shape<typeof zh> = {
     validation_error: 'Invalid request parameters.',
     invalid_host: 'Host not allowed.',
     cross_site: 'Cross-site request rejected.',
+    text_conversion_disabled: 'Simplified → Traditional conversion is turned off in Settings → Pipeline → Caption text.',
+    alignment_unavailable: 'Word alignment is not available right now.',
   },
   status: {
     400: 'Bad request.',

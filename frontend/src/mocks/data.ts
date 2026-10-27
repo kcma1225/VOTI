@@ -305,6 +305,10 @@ export interface DB {
   datasets: T.Dataset[]
   exports: (T.DatasetExport & { _start?: number })[]
   me: string | null
+  /** media with word timings (GET /media/{id}/words) */
+  aligned: Set<string>
+  /** per channel: the newest ready media — carries the Simplified→Traditional demo state */
+  demo: Set<string>
 }
 
 const AGE_GROUP = (a: number) => (a < 20 ? '<20' : a < 30 ? '20-29' : a < 40 ? '30-39' : a < 50 ? '40-49' : a < 60 ? '50-59' : '60+')
@@ -428,9 +432,10 @@ export function buildDB(): DB {
       { id: r.uuid(), username: 'yating', display_name: '張雅婷', role: 'annotator', is_active: false, created_at: iso(NOW - 200 * DAY), last_login_at: iso(NOW - 80 * DAY), password: 'voti' },
     ],
     settings: {
-      youtube: { rate_limit_kbps: 0, sleep_between_downloads_sec: 5, sleep_between_requests_sec: 2, max_concurrent_downloads: 1, cookies_enabled: false },
+      youtube: { rate_limit_kbps: 0, sleep_between_downloads_sec: 5, sleep_between_requests_sec: 2, max_concurrent_downloads: 1, cookies_enabled: false, auto_refresh_hours: 12 },
       pipeline: { voxprofile_backbone: 'whisper-large-v3', diarization_enabled: true, segment_min_sec: 1.0, segment_max_sec: 20.0, edge_pad_sec: 0.1 },
       quality_thresholds: { low_speech_ratio: 0.5, low_snr_db: 10, clipping_ratio: 0.001 },
+      text: { convert_simplified: true, opencc_config: 's2twp' },
       cookies: { present: true, updated_at: iso(NOW - 9 * DAY) },
     },
     channels,
@@ -448,6 +453,8 @@ export function buildDB(): DB {
     datasets: [],
     exports: [],
     me: null,
+    aligned: new Set(),
+    demo: new Set(),
   }
 
   CHANNEL_DEFS.forEach((def, ci) => {
@@ -550,7 +557,10 @@ export function buildDB(): DB {
       subscriber_count: def.subs,
       video_count: def.list_status === 'listing' ? def.size + 41 : def.size,
       list_status: def.list_status ?? 'listed',
-      last_listed_at: iso(NOW - (ci + 1) * 0.7 * DAY),
+      last_listed_at: def.list_status === 'listing' ? null : iso(NOW - (ci + 1) * 0.7 * DAY),
+      next_refresh_at: def.list_status === 'listing' ? null : iso(NOW + (ci * 2.3 + 1.5) * 3600_000),
+
+      detail_progress: { detailed: counts.detailed, total: counts.listed, active: false },
       counts,
       hours: {
         listed: round(sum(mlist, (m) => m.duration_sec ?? 0) / 3600, 1),
@@ -659,9 +669,64 @@ export function buildDB(): DB {
     { id: r.uuid(), model_id: 'speechbrain/spkrec-ecapa-voxceleb', algorithm: 'agglomerative', threshold: 0.8, scope: { channel_ids: [chIds[0]] }, params: { linkage: 'average' }, stats: { speakers: 31, segments: 6120, singletons: 12 }, is_current: false, created_at: iso(NOW - 16 * DAY) },
   ]
 
+  // demo state: newest ready media per channel (s2t conversion, word alignment), "new" videos from auto refresh
+  channels.forEach((c, ci) => {
+    const mine = media.filter((m) => m.channel?.id === c.id).sort((a, b) => (b.published_at ?? '').localeCompare(a.published_at ?? ''))
+    const demo = mine.find((m) => m.status === 'ready')
+    if (demo) db.demo.add(demo.id)
+    if (ci === 0 || ci === 1) {
+      const fresh = mine.filter((m) => m.status === 'listed' || m.status === 'detailed').slice(0, ci === 0 ? 3 : 2)
+      fresh.forEach((m) => (m.is_new = true))
+      c.counts.new = fresh.length
+    }
+  })
+  channels[0].detail_progress = { detailed: channels[0].counts.detailed, total: channels[0].counts.listed, active: true }
+  for (const m of media) {
+    if (m.status !== 'ready') continue
+    const taiwaneseOnly = m.manual_caption_langs.length > 0 && m.manual_caption_langs.every((l) => l === 'nan')
+    if (!taiwaneseOnly || db.demo.has(m.id)) db.aligned.add(m.id)
+    if (db.demo.has(m.id)) for (const sg of db.segments.get(m.id) ?? []) if (sg.id.charCodeAt(1) % 3 === 0) sg.flags = [...sg.flags, 's2t_converted']
+  }
+  addPendingChannel(db)
+
   buildJobs(db, r)
   buildDatasets(db, r)
   return db
+}
+
+/** A channel added a moment ago whose first listing is still waiting in the queue. */
+function addPendingChannel(db: DB) {
+  const r = rngFor(424242)
+  db.channels.push({
+    id: r.uuid(), platform: 'youtube', title: '客家鄉親講古', handle: '@hakka-koo', url: 'https://www.youtube.com/@hakka-koo',
+    thumbnail_url: null, subscriber_count: null, video_count: null, list_status: 'queued', last_listed_at: null,
+    counts: { listed: 0, detailed: 0, with_manual_captions: 0, downloaded: 0, ready: 0, failed: 0 }, hours: { listed: 0, ready: 0, speech: 0 },
+    description: '', banner_url: null, country: null, tags: [], notes: '', metadata: {}, speakers: { candidates: 0, total_sec: 0 },
+    quality: { snr_mean: null, dnsmos_ovrl: null }, kind_counts: { video: 0, short: 0 }, playlist_count: 0,
+    next_refresh_at: null, detail_progress: { detailed: 0, total: 0, active: false },
+  })
+  db.repeated.set(db.channels[db.channels.length - 1].id, [])
+}
+
+/** Character timings for a segment (absolute media seconds); punctuation is untimed. */
+export function wordsFor(s: Pick<T.SegmentSummary, 'id' | 'text' | 'start_sec' | 'end_sec'>): T.WordUnit[] {
+  const chars = Array.from(s.text)
+  const PUNCT = /[\s，。、？！：；「」『』（）《》〈〉…—,.?!:;"'()]/
+  const timed = chars.filter((c) => !PUNCT.test(c)).length || 1
+  const r = rngFor(s.id.charCodeAt(0) * 97 + s.id.charCodeAt(4))
+  const t0 = s.start_sec + 0.12
+  const span = Math.max(0.2, s.end_sec - 0.15 - t0)
+  const w = Array.from({ length: timed }, () => r.range(0.7, 1.3))
+  const tot = w.reduce((a, b) => a + b, 0)
+  let t = t0
+  let k = 0
+  return chars.map((c) => {
+    if (PUNCT.test(c)) return { t: c, s: null, e: null }
+    const d = (w[k++] / tot) * span
+    const u = { t: c, s: round(t, 3), e: round(t + d * 0.92, 3) }
+    t += d
+    return u
+  })
 }
 
 export function genSegments(db: DB, m: MockMedia): T.SegmentDetail[] {
@@ -809,6 +874,7 @@ const QUEUE: Record<string, T.QueueName> = {
   'source.resolve': 'fetch', 'channel.list': 'fetch', 'playlist.list': 'fetch', 'media.detail': 'fetch', 'media.download': 'fetch',
   'media.normalize': 'audio', 'media.segment': 'audio', 'media.quality': 'ml', 'media.diarize': 'ml', 'media.embed': 'ml',
   'media.profile': 'ml', 'media.fingerprint': 'ml', 'channel.dedup': 'ml', 'speakers.cluster': 'ml', 'dataset.export': 'export',
+  'media.convert_text': 'audio', 'media.align': 'ml',
 }
 export const PIPE: T.JobKind[] = ['media.download', 'media.normalize', 'media.quality', 'media.diarize', 'media.segment', 'media.embed', 'media.profile', 'media.fingerprint']
 
@@ -842,20 +908,30 @@ export function newJob(db: DB, kind: T.JobKind, o: Partial<T.Job> & { _dur?: num
   return job
 }
 
-const PHASES: Record<string, string[]> = {
-  'media.download': ['取得串流資訊', '下載音訊', '下載字幕', '寫入物件儲存'],
-  'media.quality': ['Brouhaha VAD/SNR/C50', 'Silero VAD 交叉驗證', 'DNSMOS 評分', '彙整'],
-  'media.diarize': ['載入 pyannote', '語者分段', '重疊偵測'],
-  'media.embed': ['ECAPA 嵌入', '寫入向量'],
-  'media.profile': ['Vox-Profile 年齡/性別', '情緒', '語音品質', '口音'],
-  'channel.list': ['列出影片分頁', '列出 Shorts 分頁', '寫入資料庫'],
-  'speakers.cluster': ['載入嵌入', '階層式分群', '彙整語者特徵'],
-  'dataset.export': ['篩選音段', '切出音檔', '打包 tar', '寫入 manifest'],
+/* Phase codes as the real workers report them (Job.phase), with the zh-TW progress message (Job.message). */
+type PhaseMsg = (frac: number) => string
+const PHASES: Record<string, [string, PhaseMsg][]> = {
+  'media.download': [['download', () => '取得影片資訊'], ['audio', (f) => `下載音訊 ${Math.round(f * 100)}%`], ['store', () => '上傳音訊與字幕']],
+  'media.normalize': [['normalize', () => ''], ['spectrum', () => '']],
+  'media.quality': [['brouhaha', () => ''], ['silero', () => ''], ['dnsmos', () => ''], ['save', () => '']],
+  'media.diarize': [['diarize', () => ''], ['diarize:segmentation', () => ''], ['save', () => '']],
+  'media.segment': [['plan', () => ''], ['dnsmos', () => ''], ['save', () => '']],
+  'media.embed': [['ecapa', () => ''], ['save', () => '']],
+  'media.profile': [['voxprofile', (f) => `${Math.round(f * 48)}/48`]],
+  'media.fingerprint': [['fingerprint', () => ''], ['match', () => ''], ['save', () => '']],
+  'channel.list': [['listing', (f) => `videos: ${Math.round(f * 160)} 支`]],
+  'speakers.cluster': [['load', () => ''], ['cluster', () => ''], ['save', () => '']],
+  'dataset.export': [['select', () => '篩選音段'], ['audio', (f) => `${Math.round(f * 7348)}/7348`], ['manifest', () => '寫入清單']],
+  'media.convert_text': [['convert_text', () => 'OpenCC s2twp']],
+  'media.align': [['align', () => '']],
 }
 
 /** Advance the simulated queue to wall-clock now. */
 export function tick(db: DB) {
   const now = Date.now()
+  // demo retry: keep the countdown running in the mock
+  for (const j of db.jobs as (T.Job & { _retryLoop?: boolean })[])
+    if (j._retryLoop && j.run_after && new Date(j.run_after).getTime() < now + 5000) j.run_after = iso(now + 95_000)
   for (const j of db.jobs) {
     if (j.status !== 'running' || !j.started_at) continue
     const dur = j._dur ?? 10_000
@@ -882,16 +958,22 @@ export function tick(db: DB) {
       j.progress = round(el / dur, 3)
       j.eta_sec = Math.round((dur - el) / 1000)
       const ph = PHASES[j.kind]
-      if (ph) j.phase = ph[Math.min(ph.length - 1, Math.floor((el / dur) * ph.length))]
-      j.message = j.phase
+      if (ph) {
+        const f = el / dur
+        const [code, msg] = ph[Math.min(ph.length - 1, Math.floor(f * ph.length))]
+        j.phase = code
+        j.message = msg(f)
+      }
     }
   }
   // start queued jobs when queue slots are free (fetch:1, audio:2, ml:1, export:1)
-  const slots: Record<string, number> = { fetch: 1, audio: 2, ml: 2, export: 1 }
+  const slots: Record<string, number> = { fetch: 2, audio: 2, ml: 2, export: 1 }
   for (const q of Object.keys(slots)) {
     const running = db.jobs.filter((j) => j.queue === q && j.status === 'running').length
     let free = slots[q] - running
-    const waiting = db.jobs.filter((j) => j.queue === q && j.status === 'queued').reverse()
+    const waiting = db.jobs
+      .filter((j) => j.queue === q && j.status === 'queued' && !(j as { _hold?: boolean })._hold && !(j.run_after && new Date(j.run_after).getTime() > now))
+      .reverse()
     for (const j of waiting) {
       if (free <= 0) break
       j.status = 'running'
@@ -924,7 +1006,8 @@ export function tick(db: DB) {
 
 function onComplete(db: DB, j: T.Job) {
   const m = j.media_id ? db.mediaById.get(j.media_id) : null
-  if (m && j.kind.startsWith('media.')) {
+  if (m && j.kind === 'media.align') db.aligned.add(m.id)
+  if (m && j.kind.startsWith('media.') && PIPE.includes(j.kind)) {
     const i = PIPE.indexOf(j.kind)
     if (i >= 0 && i < PIPE.length - 1) {
       m.status = 'processing'
@@ -959,6 +1042,7 @@ function onComplete(db: DB, j: T.Job) {
     if (c) {
       c.list_status = 'listed'
       c.last_listed_at = iso(Date.now())
+      c.next_refresh_at = iso(Date.now() + (db.settings.youtube.auto_refresh_hours || 12) * 3600_000)
     }
   }
 }
@@ -1002,8 +1086,48 @@ function buildJobs(db: DB, r: ReturnType<typeof rngFor>) {
       }, 1000 + k)
     }
   })
+  // first listing of 府城講古 in progress (slow, so it stays mid-way for a while)
   const hu = db.channels.find((c) => c.list_status === 'listing')
-  if (hu) newJob(db, 'channel.list', { channel_id: hu.id, status: 'running', started_at: iso(wall - 8_000), created_at: iso(wall - 9_000), _dur: 60_000 }, 1100)
+  if (hu) newJob(db, 'channel.list', { channel_id: hu.id, status: 'running', started_at: iso(wall - 1_500_000), created_at: iso(wall - 1_510_000), _dur: 3_600_000 }, 1100)
+  // a channel added a moment ago, waiting for the fetch queue
+  const pending = db.channels.find((c) => c.list_status === 'queued')
+  if (pending) Object.assign(newJob(db, 'channel.list', { channel_id: pending.id, status: 'queued', created_at: iso(wall - 20_000) }, 1101), { _hold: true })
+  // job recovery states (see ARCHITECTURE "Job recovery")
+  const pick = (i: number) => db.media.filter((m) => m.status === 'ready')[i]
+  const m1 = pick(3)
+  const m2 = pick(7)
+  const m3 = pick(11)
+  const m4 = pick(15)
+  if (m1)
+    Object.assign(
+      newJob(db, 'media.quality', {
+        media_id: m1.id, status: 'queued', phase: 'retry_wait', attempts: 1, max_attempts: 4, created_at: iso(wall - 40_000),
+        run_after: iso(wall + 95_000), error_code: 'legacy_ml_unavailable', error_message: 'legacy-ml 服務沒有回應（連線被拒絕）。',
+        message: '暫時性錯誤（legacy_ml_unavailable），2 分鐘後自動重試（第 2/4 次）',
+      }, 1102),
+      { _hold: true, _retryLoop: true },
+    )
+  if (m2)
+    Object.assign(
+      newJob(db, 'media.diarize', {
+        media_id: m2.id, status: 'queued', phase: 'recovered', attempts: 1, created_at: iso(wall - 60_000),
+        message: '已自動恢復：worker 沒有回應心跳，工作已重新排隊（已執行 1 次）',
+      }, 1103),
+      { _hold: true },
+    )
+  if (m3)
+    Object.assign(
+      newJob(db, 'media.download', {
+        media_id: m3.id, status: 'queued', phase: 'requeued', attempts: 1, created_at: iso(wall - 80_000),
+        message: 'worker 停止中：工作已放回佇列，重新啟動後自動繼續',
+      }, 1104),
+      { _hold: true },
+    )
+  if (m4)
+    newJob(db, 'media.embed', {
+      media_id: m4.id, status: 'interrupted', attempts: 4, error_code: 'interrupted', created_at: iso(wall - 3_600_000), started_at: iso(wall - 3_000_000), finished_at: iso(wall - 2_400_000),
+      error_message: '工作中斷（worker 沒有回應心跳），已達自動重試上限 4 次；請確認原因後手動重試',
+    }, 1105)
   tick(db)
 }
 

@@ -1,5 +1,5 @@
-import { localized, msgs } from '@/i18n'
-import type { JobKind, JobStatus, MediaStatus, ReviewStatus, SpeakerState } from '@/api/types'
+import { getLang, localized, msgs } from '@/i18n'
+import type { Job, JobKind, JobStatus, ListStatus, MediaStatus, ReviewStatus, SpeakerState } from '@/api/types'
 
 export type Tone = 'neutral' | 'primary' | 'info' | 'success' | 'warning' | 'danger'
 
@@ -22,6 +22,24 @@ export const jobStatus: Record<JobStatus, { label: string; tone: Tone }> = local
 )
 
 export const jobKind: Record<JobKind, string> = localized(() => L().jobKind)
+
+export const listStatus: Record<ListStatus, { label: string; tone: Tone }> = localized(() =>
+  withTone(L().listStatus, { new: 'neutral', queued: 'info', listing: 'primary', listed: 'success', failed: 'danger' }),
+)
+export const trackScript: Record<string, string> = localized(() => L().trackScript)
+
+const CJK = /[\u3400-\u9fff]/
+/** Human text for a job's current phase in the active language. Phase codes map to dictionary labels; the server's
+ * progress message (zh-TW) is shown as-is in Chinese, and in English only its numeric part ("3/40", "42%") is kept. */
+export function jobPhaseText(job: Pick<Job, 'phase' | 'message'>): string {
+  const phase = job.phase ?? ''
+  const label = (L().phase as Record<string, string>)[phase.split(':')[0]]
+  const msg = job.message ?? ''
+  if (getLang() === 'zh-TW') return msg || label || phase
+  const extra = !msg ? '' : !CJK.test(msg) ? msg : (msg.match(/\d+(?:\.\d+)?\s*%|\d+\s*\/\s*\d+/)?.[0] ?? '')
+  if (label) return extra && extra !== label ? `${label} · ${extra}` : label
+  return CJK.test(phase) ? extra : phase || extra
+}
 
 const PIPELINE: JobKind[] = ['media.download', 'media.normalize', 'media.quality', 'media.diarize', 'media.segment', 'media.embed', 'media.profile', 'media.fingerprint']
 /** Media pipeline steps in order, with short labels in the active language. */

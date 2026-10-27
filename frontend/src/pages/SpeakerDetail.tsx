@@ -115,7 +115,7 @@ export default function SpeakerDetail() {
                   <div className="min-w-0 flex-1">
                     <p className="text-[13px] leading-5 break-cjk">{x.text}</p>
                     <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-fg-3">
-                      <Link to={`/review?media=${x.media_id}&segment=${x.id}&status=all`} className="max-w-full truncate hover:text-primary">
+                      <Link to={`/review/${x.id}?media=${x.media_id}&status=all`} className="max-w-full truncate hover:text-primary">
                         {x.media_title}
                       </Link>
                       <span className="tabular">{t('people.speakerDetail.seconds', x.duration.toFixed(1))}</span>

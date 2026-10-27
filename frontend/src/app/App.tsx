@@ -18,6 +18,7 @@ const Channels = lazy(() => import('@/pages/Channels'))
 const ChannelDetail = lazy(() => import('@/pages/channel/ChannelDetail'))
 const MediaDetail = lazy(() => import('@/pages/MediaDetail'))
 const Review = lazy(() => import('@/pages/review/Review'))
+const ReviewList = lazy(() => import('@/pages/review/ReviewList'))
 const Speakers = lazy(() => import('@/pages/Speakers'))
 const SpeakerDetail = lazy(() => import('@/pages/SpeakerDetail'))
 const Diversity = lazy(() => import('@/pages/Diversity'))
@@ -77,7 +78,8 @@ const router = createBrowserRouter([
       { path: 'channels', element: <Channels /> },
       { path: 'channels/:id/:tab?', element: <ChannelDetail /> },
       { path: 'media/:id', element: <MediaDetail /> },
-      { path: 'review', element: <Review /> },
+      { path: 'review', element: <ReviewList /> },
+      { path: 'review/:segmentId', element: <Review /> },
       { path: 'speakers', element: <Speakers /> },
       { path: 'speakers/:id', element: <SpeakerDetail /> },
       { path: 'diversity', element: <Diversity /> },

@@ -1,6 +1,6 @@
 import { delay, http, HttpResponse } from 'msw'
 import type * as T from '@/api/types'
-import { buildDB, genSegments, newJob, rngFor, summary, tick, topKey, PIPE, type DB, type MockMedia } from './data'
+import { buildDB, genSegments, newJob, rngFor, summary, tick, topKey, wordsFor, PIPE, type DB, type MockMedia } from './data'
 import { synthWav } from './audio'
 
 let db: DB
@@ -83,8 +83,11 @@ function matchMedia(m: MockMedia, f: MF, omit?: string) {
   if (s('detailed') === 'true' && m.has_manual_captions === null) return false
   if (s('detailed') === 'false' && m.has_manual_captions !== null) return false
   if (s('upsampled_suspect') === 'true' && !m.q?.upsampled_suspect) return false
+  if (omit !== 'downloaded' && s('downloaded') === 'true' && !DL_STATES.includes(m.status)) return false
+  if (omit !== 'downloaded' && s('downloaded') === 'false' && DL_STATES.includes(m.status)) return false
   return true
 }
+const DL_STATES = ['downloaded', 'processing', 'ready']
 function sortMedia(xs: MockMedia[], sort: string | null) {
   const key = (sort ?? '-published_at').replace('-', '')
   const dir = sort?.startsWith('-') || !sort ? -1 : 1
@@ -99,6 +102,7 @@ function facets(f: MF): T.MediaFacets {
   const c = fc('captions')
   const l = fc('license')
   const st = fc('status')
+  const dl = fc('downloaded')
   const count = <X,>(xs: X[], fn: (x: X) => string) => xs.reduce<Record<string, number>>((a, x) => ((a[fn(x)] = (a[fn(x)] ?? 0) + 1), a), {})
   return {
     kind: count(k, (m) => m.kind),
@@ -110,6 +114,7 @@ function facets(f: MF): T.MediaFacets {
     },
     license: count(l, (m) => m.license ?? 'youtube'),
     status: count(st, (m) => m.status),
+    downloaded: { yes: dl.filter((m) => DL_STATES.includes(m.status)).length, no: dl.filter((m) => !DL_STATES.includes(m.status)).length },
   }
 }
 const mediaSummary = (m: MockMedia): T.MediaSummary => {
@@ -385,6 +390,36 @@ const strip = <J extends T.Job>(j: J): T.Job => {
   return rest
 }
 
+/** Live listing job + derived fields of a channel. */
+function channelOut(c: T.ChannelDetail): T.ChannelDetail {
+  const j = db.jobs.find((x) => x.kind === 'channel.list' && x.channel_id === c.id)
+  const listing_job = j && (j.status === 'queued' || j.status === 'running') ? { id: j.id, kind: j.kind, status: j.status, progress: j.progress, phase: j.phase, message: j.message, run_after: j.run_after ?? null, error_code: j.error_code } : null
+  return { ...c, listing_job }
+}
+
+/** Caption tracks + Simplified → Traditional state of a media (deterministic demo data). */
+function textState(m: MockMedia) {
+  const demo = db.demo.has(m.id)
+  const legacy = !demo && m.status === 'ready' && m.platform_media_id.charCodeAt(0) % 7 === 0
+  const tracks: T.Track[] = [
+    ...m.manual_caption_langs.map((l, i) => ({ id: `${m.id}-m${i}`, language: l, kind: 'manual' as const, format: 'vtt', s2t_converted: false, script: (l === 'nan' ? 'not_chinese' : 'traditional') as T.TrackScript, cues_converted: null })),
+    ...m.auto_caption_langs.map((l, i) => ({ id: `${m.id}-a${i}`, language: l, kind: 'auto' as const, format: 'vtt', s2t_converted: false, script: (l === 'zh' ? 'traditional' : 'not_chinese') as T.TrackScript, cues_converted: null })),
+  ]
+  if (demo || legacy) {
+    tracks.unshift({ id: `${m.id}-s`, language: 'zh-CN', kind: 'manual', format: 'vtt', s2t_converted: true, script: 'simplified', cues_converted: demo ? 86 : 41 })
+  }
+  // demo: one Chinese auto track was never examined → converting would still change something
+  const zhAuto = tracks.find((x) => x.kind === 'auto' && x.language === 'zh')
+  if (demo && zhAuto) zhAuto.script = null
+  const convertible = !!db.settings.text?.convert_simplified && tracks.some((x) => x.script === 'simplified' && !x.s2t_converted || (x.script == null && x.language.startsWith('zh')))
+  return {
+    tracks,
+    text_converted: demo || legacy,
+    text_convertible: convertible,
+    text_conversion: demo || legacy ? { converted: true, cues_converted: demo ? 86 : 41, segments_converted: demo ? 38 : 19, config: 's2twp', opencc: '1.1.9', at: new Date(Date.now() - 86400_000 * 3).toISOString() } : null,
+  }
+}
+
 function speakerSummary(s: DB['speakers'][number]): T.Speaker {
   const { sex: _s, age: _a, emo: _e, ...rest } = s
   void _s, _a, _e
@@ -462,8 +497,9 @@ export const handlers = [
     return new HttpResponse(null, { status: 204 })
   }),
   http.put(`${A}/settings/:key`, async ({ request, params }) => {
-    const k = params.key as 'youtube' | 'pipeline' | 'quality_thresholds'
-    ;(db.settings as unknown as Record<string, unknown>)[k] = await request.json()
+    const k = params.key as 'youtube' | 'pipeline' | 'quality_thresholds' | 'text'
+    const cur = (db.settings as unknown as Record<string, object>)[k] ?? {}
+    ;(db.settings as unknown as Record<string, unknown>)[k] = { ...cur, ...((await request.json()) as object) }
     return json(db.settings[k])
   }),
 
@@ -476,12 +512,24 @@ export const handlers = [
       return json({ type: 'playlist', playlist: pl, job: strip(newJob(db, 'playlist.list', { channel_id: pl.channel_id, status: 'queued' })) })
     }
     if (/watch\?v=|youtu\.be\/|\/shorts\//.test(url)) {
-      const m = db.media.find((x) => x.status === 'detailed' && x.has_manual_captions)!
-      return json({ type: 'video', media: mediaSummary(m), channel: db.channels[m.channel_idx], job: strip(newJob(db, 'media.detail', { media_id: m.id, status: 'queued' })) })
+      // a video of a channel nobody added yet: the channel is created and queued for listing
+      const c = newChannel(db, '島嶼生活誌', '@island-life')
+      const src = db.media.find((x) => x.status === 'detailed' && x.has_manual_captions)!
+      const m: MockMedia = { ...src, id: crypto.randomUUID(), title: '阿公的菜園：秋天種菜頭', channel: { id: c.id, title: c.title }, channel_idx: src.channel_idx, status: 'listed', speakers: [], q: null, quality: null, segment_count: 0, is_new: false }
+      db.media.push(m)
+      db.mediaById.set(m.id, m)
+      c.counts.listed = 1
+      c.metadata = { auto_added: { at: new Date().toISOString(), media_id: m.id } }
+      const cj = newJob(db, 'channel.list', { channel_id: c.id, status: 'queued' })
+      void cj
+      return json({ type: 'video', media: { ...mediaSummary(m), title: '', channel: null }, job: strip(newJob(db, 'source.resolve', { media_id: m.id, status: 'queued', _hold: true } as Partial<T.Job>)) })
     }
     if (/youtube\.com\/(@|channel\/|c\/)/.test(url)) {
-      const c = db.channels[1]
-      return json({ type: 'channel', channel: c, job: strip(newJob(db, 'channel.list', { channel_id: c.id, status: 'queued' })) })
+      const handle = url.match(/@[\w.-]+/)?.[0] ?? '@new-channel'
+      const known = db.channels.find((x) => x.handle === handle)
+      if (known) return json({ type: 'channel', channel: channelOut(known), job: strip(newJob(db, 'channel.list', { channel_id: known.id, status: 'queued' })) })
+      const c = newChannel(db, handle.slice(1), handle)
+      return json({ type: 'channel', channel: channelOut(c), job: strip(newJob(db, 'channel.list', { channel_id: c.id, status: 'queued' })) })
     }
     return err(422, '無法辨識這個網址。請貼上 YouTube 影片、頻道或播放清單的連結。', 'unsupported_url')
   }),
@@ -491,7 +539,18 @@ export const handlers = [
     const url = new URL(request.url)
     const q = url.searchParams.get('q')?.toLowerCase()
     const xs = db.channels.filter((c) => !q || c.title.toLowerCase().includes(q) || (c.handle ?? '').toLowerCase().includes(q))
-    return json(page(xs, url))
+    return json(page(xs.map(channelOut), url))
+  }),
+  http.post(`${A}/channels/:id/convert-text`, ({ params }) => {
+    if (!db.settings.text?.convert_simplified) return err(409, '簡轉繁已在設定中停用', 'text_conversion_disabled')
+    const ms = db.media.filter((m) => m.channel?.id === params.id && m.status === 'ready' && textState(m).text_convertible)
+    ms.forEach((m) => newJob(db, 'media.convert_text', { media_id: m.id, _dur: 3000 }))
+    return json({ queued: ms.length })
+  }),
+  http.post(`${A}/channels/:id/align`, ({ params }) => {
+    const ms = db.media.filter((m) => m.channel?.id === params.id && m.status === 'ready' && !db.aligned.has(m.id))
+    ms.forEach((m) => newJob(db, 'media.align', { media_id: m.id, _dur: 6000 }))
+    return json({ queued: ms.length })
   }),
   http.get(`${A}/channels/:id/repeated`, ({ params }) => json(db.repeated.get(params.id as string) ?? [])),
   http.post(`${A}/channels/:id/dedup`, ({ params }) => json(strip(newJob(db, 'channel.dedup', { channel_id: params.id as string })))),
@@ -526,7 +585,7 @@ export const handlers = [
   }),
   http.get(`${A}/channels/:id`, ({ params }) => {
     const c = db.channels.find((x) => x.id === params.id)
-    return c ? json(c) : err(404, '找不到頻道', 'not_found')
+    return c ? json(channelOut(c)) : err(404, '找不到頻道', 'not_found')
   }),
   http.patch(`${A}/channels/:id`, async ({ request, params }) => {
     const c = db.channels.find((x) => x.id === params.id)!
@@ -579,6 +638,41 @@ export const handlers = [
     return m ? json(timeline(m)) : err(404, '找不到影片', 'not_found')
   }),
   http.get(`${A}/media/:id/quality`, ({ params }) => json(db.mediaById.get(params.id as string)?.q ?? null)),
+  http.get(`${A}/media/:id/words`, ({ params }) => {
+    const m = db.mediaById.get(params.id as string)
+    if (!m) return err(404, '找不到影片', 'not_found')
+    const segs = m.status === 'ready' || db.segments.has(m.id) ? genSegments(db, m) : []
+    const words: T.MediaWords = {}
+    const aligned = db.aligned.has(m.id)
+    if (aligned) for (const sg of segs) words[sg.id] = wordsFor(sg).map((u) => [u.t, u.s, u.e])
+    const active = db.jobs.some((j) => j.media_id === m.id && j.kind === 'media.align' && (j.status === 'queued' || j.status === 'running'))
+    const skipped = !aligned && isTaiwanese(m)
+    return json({
+      words, segments: segs.length, job_active: active,
+      status: aligned ? { aligned: segs.length } : skipped ? { skipped: segs.length } : { none: segs.length },
+    } satisfies T.MediaWordsResponse)
+  }),
+  http.get(`${A}/media/:id/segments`, ({ params }) => {
+    const m = db.mediaById.get(params.id as string)
+    if (!m) return err(404, '找不到影片', 'not_found')
+    const segs = m.status === 'ready' || db.segments.has(m.id) ? genSegments(db, m) : []
+    return json({ items: segs.map(summary), total: segs.length })
+  }),
+  http.post(`${A}/media/:id/align`, ({ params }) => {
+    const m = db.mediaById.get(params.id as string)
+    if (!m) return err(404, '找不到影片', 'not_found')
+    if (db.aligned.has(m.id)) return json({ queued: 0 })
+    newJob(db, 'media.align', { media_id: m.id, _dur: 6000 })
+    return json({ queued: 1 })
+  }),
+  http.post(`${A}/media/:id/convert-text`, ({ params }) => {
+    const m = db.mediaById.get(params.id as string)
+    if (!m) return err(404, '找不到影片', 'not_found')
+    if (!db.settings.text?.convert_simplified) return err(409, '簡轉繁已在設定中停用', 'text_conversion_disabled')
+    if (!textState(m).text_convertible) return json({ queued: 0 })
+    newJob(db, 'media.convert_text', { media_id: m.id, _dur: 3000 })
+    return json({ queued: 1 })
+  }),
   http.post(`${A}/media/:id/retry`, ({ params }) => {
     const m = db.mediaById.get(params.id as string)!
     const kind = (m.stage ?? 'media.download') as T.JobKind
@@ -615,11 +709,8 @@ export const handlers = [
       metadata: { uploader: m.channel!.title, fps: 30, resolution: m.kind === 'short' ? '1080x1920' : '1920x1080' },
       failure_message: m.status === 'failed' ? db.jobs.find((j) => j.media_id === m.id && j.status === 'failed')?.error_message ?? null : null,
       jobs: db.jobs.filter((j) => j.media_id === m.id).map(strip),
-      tracks: [
-        ...m.manual_caption_langs.map((l) => ({ id: crypto.randomUUID(), language: l, kind: 'manual' as const })),
-        ...m.auto_caption_langs.map((l) => ({ id: crypto.randomUUID(), language: l, kind: 'auto' as const })),
-      ],
       quality: m.q,
+      ...textState(m),
     }
     return json(det)
   }),
@@ -648,9 +739,24 @@ export const handlers = [
     return json(s)
   }),
   http.delete(`${A}/segments/:id/speaker`, () => new HttpResponse(null, { status: 204 })),
+  http.get(`${A}/segments/:id/neighbors`, ({ params, request }) => {
+    const xs = filterSegments(new URL(request.url))
+    const i = xs.findIndex((x) => x.id === params.id)
+    if (i < 0) return json({ prev_id: null, next_id: null, index: null, total: xs.length, in_filter: false } satisfies T.SegmentNeighbors)
+    return json({ prev_id: xs[i - 1]?.id ?? null, next_id: xs[i + 1]?.id ?? null, index: i, total: xs.length, in_filter: true } satisfies T.SegmentNeighbors)
+  }),
   http.get(`${A}/segments/:id`, ({ params }) => {
     const s = db.segById.get(params.id as string)
-    return s ? json(s) : err(404, '找不到音段', 'not_found')
+    if (!s) return err(404, '找不到音段', 'not_found')
+    const aligned = db.aligned.has(s.media_id)
+    const tw = isTaiwanese(db.mediaById.get(s.media_id)!)
+    return json({
+      ...s,
+      words: aligned ? wordsFor(s) : null,
+      alignment: aligned
+        ? { status: 'aligned', reason: null, model_id: 'mms_fa', updated_at: new Date(Date.now() - 86400_000).toISOString() }
+        : tw ? { status: 'skipped', reason: 'no_romanizer:nan', model_id: null, updated_at: null } : { status: 'none', reason: null, model_id: null, updated_at: null },
+    } satisfies T.SegmentDetail)
   }),
   http.patch(`${A}/segments/:id`, async ({ request, params }) => {
     const s = db.segById.get(params.id as string)
@@ -843,6 +949,22 @@ export const handlers = [
   http.get(`${A}/stats/overview`, () => json(overview())),
   http.get(`${A}/healthz`, () => json({ ok: true })),
 ]
+
+const isTaiwanese = (m: MockMedia) => m.manual_caption_langs.length > 0 && m.manual_caption_langs.every((l) => l === 'nan')
+
+function newChannel(d: DB, title: string, handle: string): T.ChannelDetail {
+  const c: T.ChannelDetail = {
+    id: crypto.randomUUID(), platform: 'youtube', title, handle, url: `https://www.youtube.com/${handle}`, thumbnail_url: null,
+    subscriber_count: null, video_count: null, list_status: 'queued', last_listed_at: null,
+    counts: { listed: 0, detailed: 0, with_manual_captions: 0, downloaded: 0, ready: 0, failed: 0 }, hours: { listed: 0, ready: 0, speech: 0 },
+    description: '', banner_url: null, country: null, tags: [], notes: '', metadata: {}, speakers: { candidates: 0, total_sec: 0 },
+    quality: { snr_mean: null, dnsmos_ovrl: null }, kind_counts: { video: 0, short: 0 }, playlist_count: 0,
+    next_refresh_at: null, detail_progress: { detailed: 0, total: 0, active: false },
+  }
+  d.channels.unshift(c)
+  d.repeated.set(c.id, [])
+  return c
+}
 
 function pick(p: T.DatasetPreview) {
   return { segment_count: p.segment_count, total_sec: p.total_sec }

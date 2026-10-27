@@ -80,7 +80,7 @@ export const api = {
     patch<T.User>(`/users/${id}`, b),
   // settings
   settings: () => get<T.Settings>('/settings'),
-  putSetting: <K extends 'youtube' | 'pipeline' | 'quality_thresholds'>(key: K, value: T.Settings[K]) =>
+  putSetting: <K extends 'youtube' | 'pipeline' | 'quality_thresholds' | 'text'>(key: K, value: NonNullable<T.Settings[K]>) =>
     put<T.Settings[K]>(`/settings/${key}`, value),
   uploadCookies: (file: File) => {
     const fd = new FormData()
@@ -101,9 +101,12 @@ export const api = {
     request<T.ChannelDeleteImpact & { objects_deleted: number }>('DELETE', `/channels/${id}` + qs({ confirm })),
   playlists: (channel_id: string) => get<T.Page<T.Playlist>>('/playlists', { channel_id }), // ext
   playlist: (id: string) => get<T.Playlist>(`/playlists/${id}`),
+  job: (id: string) => get<T.Job>(`/jobs/${id}`),
   repeated: (channel_id: string) => get<T.RepeatedGroup[]>(`/channels/${channel_id}/repeated`),
   patchRepeated: (group_id: string, excluded: boolean) => patch<T.RepeatedGroup>(`/repeated/${group_id}`, { excluded }),
   dedup: (channel_id: string) => post<T.Job>(`/channels/${channel_id}/dedup`),
+  convertChannelText: (id: string) => post<{ queued: number }>(`/channels/${id}/convert-text`),
+  alignChannel: (id: string) => post<{ queued: number }>(`/channels/${id}/align`),
   // media
   media: (q: T.MediaQuery) => get<T.MediaList>('/media', q as Query),
   mediaDetail: (id: string) => get<T.MediaDetail>(`/media/${id}`),
@@ -113,12 +116,22 @@ export const api = {
   reprocess: (id: string, from_step: string) => post<T.Job>(`/media/${id}/reprocess`, { from_step }),
   timeline: (id: string) => get<T.Timeline>(`/media/${id}/timeline`),
   mediaQuality: (id: string) => get<T.MediaQuality>(`/media/${id}/quality`),
+  mediaWords: (id: string) =>
+    get<T.MediaWordsResponse | T.MediaWords>(`/media/${id}/words`).then((r): T.MediaWordsResponse => {
+      if (r && typeof r === 'object' && 'words' in r && 'status' in r) return r as T.MediaWordsResponse
+      const words = r as T.MediaWords // bare map (older shape)
+      return { words, segments: Object.keys(words).length, status: { aligned: Object.keys(words).length }, job_active: false }
+    }),
+  convertMediaText: (id: string) => post<{ queued: number }>(`/media/${id}/convert-text`),
+  alignMedia: (id: string) => post<{ queued: number }>(`/media/${id}/align`),
   // segments
+  mediaSegments: (id: string) => get<T.Page<T.SegmentSummary>>(`/media/${id}/segments`),
   segments: (q: T.SegmentQuery) => get<T.Page<T.SegmentSummary>>('/segments', q as Query),
   segment: (id: string) => get<T.SegmentDetail>(`/segments/${id}`),
   patchSegment: (id: string, b: T.SegmentPatch) => patch<T.SegmentDetail>(`/segments/${id}`, b),
   setSegmentSpeaker: (id: string, speaker_name: string) => put<T.SegmentDetail>(`/segments/${id}/speaker`, { speaker_name }),
   clearSegmentSpeaker: (id: string) => del<void>(`/segments/${id}/speaker`),
+  neighbors: (id: string, q: T.SegmentQuery) => get<T.SegmentNeighbors>(`/segments/${id}/neighbors`, q as Query),
   similar: (id: string, k = 8) => get<{ segment: T.SegmentSummary; similarity: number }[]>(`/segments/${id}/similar`, { k }),
   // speakers
   cluster: (threshold: number, channel_ids?: string[]) =>

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { AlertTriangle, Captions, Download, Film, ListFilter, Smartphone, X } from 'lucide-react'
+import { AlertTriangle, Captions, Download, Film, Info, ListFilter, Smartphone, X } from 'lucide-react'
 import { api } from '@/api/client'
 import { errMsg, useMedia, usePlaylists } from '@/api/queries'
 import type { CaptionFilter, MediaKind, MediaQuery, MediaSort, MediaStatus, MediaSummary } from '@/api/types'
@@ -11,16 +11,17 @@ import { lang, licenseLabel, mediaStatus } from '@/lib/labels'
 import { cn } from '@/lib/cn'
 import { useIsDesktop } from '@/hooks/useMedia'
 import { Button } from '@/components/ui/button'
-import { Card, Tag, Thumb } from '@/components/ui/primitives'
+import { Badge, Card, Tag, Thumb } from '@/components/ui/primitives'
 import { Checkbox, Chip, Field, Input, NumberInput, SearchInput, Segmented, Select, Switch } from '@/components/ui/form'
 import { DataTable, Pagination, type Column } from '@/components/ui/data-table'
-import { Dialog, Sheet } from '@/components/ui/overlay'
+import { Dialog, Sheet, Tooltip } from '@/components/ui/overlay'
 import { EmptyState, ErrorState, ListSkeleton } from '@/components/ui/states'
 import { CaptionBadges, MediaStatusBadge } from './status'
 import { useT } from '@/i18n'
 
 const LIMIT = 50
 type CapUI = 'all' | 'manual' | 'none' | 'unknown'
+type DlUI = '' | 'yes' | 'no'
 
 /* ───────────── URL-backed filter state ───────────── */
 function useMediaFilters(kind: MediaKind[]) {
@@ -36,6 +37,7 @@ function useMediaFilters(kind: MediaKind[]) {
     after: get('after'),
     before: get('before'),
     license: get('license') as '' | 'youtube' | 'creative_commons',
+    dl: (get('dl') === 'yes' || get('dl') === 'no' ? get('dl') : '') as DlUI,
     sort: (get('sort') || '-published_at') as MediaSort,
     playlist: get('playlist'),
     offset: Number(get('offset') || 0),
@@ -63,15 +65,43 @@ function useMediaFilters(kind: MediaKind[]) {
     published_before: f.before || undefined,
     license: f.license || undefined,
     playlist_id: f.playlist || undefined,
+    downloaded: f.dl === 'yes' ? true : f.dl === 'no' ? false : undefined,
     sort: f.sort,
   })
   const activeCount =
-    (f.cap !== 'all' ? 1 : 0) + (f.auto ? 1 : 0) + (f.status.length ? 1 : 0) + (f.minDur !== null || f.maxDur !== null ? 1 : 0) + (f.after || f.before ? 1 : 0) + (f.license ? 1 : 0)
+    (f.cap !== 'all' ? 1 : 0) + (f.auto ? 1 : 0) + (f.status.length ? 1 : 0) + (f.minDur !== null || f.maxDur !== null ? 1 : 0) + (f.after || f.before ? 1 : 0) + (f.license ? 1 : 0) + (f.dl ? 1 : 0)
   return { f, set, query, activeCount, clear: () => setSp(new URLSearchParams(), { replace: true }) }
 }
 
 /* ───────────── filter panel ───────────── */
-function FilterPanel({ ctl, facets }: { ctl: ReturnType<typeof useMediaFilters>; facets?: import('@/api/types').MediaFacets }) {
+function RadioRows<V extends string>({ label, value, onChange, options }: { label: string; value: V; onChange: (v: V) => void; options: [V, string, number | undefined][] }) {
+  return (
+    <div className="space-y-1" role="radiogroup" aria-label={label}>
+      {options.map(([v, text, n]) => (
+        <button
+          key={v}
+          role="radio"
+          aria-checked={value === v}
+          onClick={() => onChange(v)}
+          className={cn(
+            'flex h-10 w-full items-center justify-between gap-2 rounded-lg px-3 text-left text-[13px] transition-colors sm:h-9',
+            value === v ? 'bg-primary-soft font-medium text-primary-soft-fg' : 'text-fg-2 hover:bg-surface-2',
+          )}
+        >
+          <span className="flex min-w-0 items-center gap-2.5">
+            <span className={cn('grid size-4 shrink-0 place-items-center rounded-full border', value === v ? 'border-primary' : 'border-border-strong')}>
+              {value === v && <span className="size-2 rounded-full bg-primary" />}
+            </span>
+            <span className="truncate">{text}</span>
+          </span>
+          {n !== undefined && <span className="tabular text-xs text-fg-3">{fmtInt(n)}</span>}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function FilterPanel({ ctl, facets, captionsPending }: { ctl: ReturnType<typeof useMediaFilters>; facets?: import('@/api/types').MediaFacets; captionsPending?: boolean }) {
   const { f, set } = ctl
   const t = useT()
   const fc = facets?.captions
@@ -88,35 +118,23 @@ function FilterPanel({ ctl, facets }: { ctl: ReturnType<typeof useMediaFilters>;
         <h4 className="mb-2 flex items-center gap-1.5 text-[13px] font-semibold">
           <Captions className="size-4 text-fg-3" /> {t('collect.media.capHeading')}
         </h4>
-        <div className="space-y-1" role="radiogroup" aria-label={t('collect.media.capHeading')}>
-          {(
-            [
-              ['all', t('collect.media.capAll'), undefined],
-              ['manual', t('collect.media.capManual'), fc?.manual],
-              ['none', t('collect.media.capNone'), fc?.none],
-              ['unknown', t('collect.media.capUnknown'), fc?.unknown],
-            ] as [CapUI, string, number | undefined][]
-          ).map(([v, label, n]) => (
-            <button
-              key={v}
-              role="radio"
-              aria-checked={f.cap === v}
-              onClick={() => set({ cap: v === 'all' ? null : v })}
-              className={cn(
-                'flex h-10 w-full items-center justify-between gap-2 rounded-lg px-3 text-left text-[13px] transition-colors sm:h-9',
-                f.cap === v ? 'bg-primary-soft font-medium text-primary-soft-fg' : 'text-fg-2 hover:bg-surface-2',
-              )}
-            >
-              <span className="flex items-center gap-2.5">
-                <span className={cn('grid size-4 place-items-center rounded-full border', f.cap === v ? 'border-primary' : 'border-border-strong')}>
-                  {f.cap === v && <span className="size-2 rounded-full bg-primary" />}
-                </span>
-                {label}
-              </span>
-              {n !== undefined && <span className="tabular text-xs text-fg-3">{fmtInt(n)}</span>}
-            </button>
-          ))}
-        </div>
+        {captionsPending && (
+          <p className="mb-2 flex items-start gap-1.5 rounded-lg bg-info-soft px-2.5 py-2 text-xs leading-5 text-info-fg">
+            <Info className="mt-0.5 size-3.5 shrink-0" />
+            {t('collect.media.capIncomplete')}
+          </p>
+        )}
+        <RadioRows
+          label={t('collect.media.capHeading')}
+          value={f.cap}
+          onChange={(v) => set({ cap: v === 'all' ? null : v })}
+          options={[
+            ['all', t('collect.media.capAll'), undefined],
+            ['manual', t('collect.media.capManual'), fc?.manual],
+            ['none', t('collect.media.capNone'), fc?.none],
+            ['unknown', t('collect.media.capUnknown'), fc?.unknown],
+          ]}
+        />
         <div className="mt-3 rounded-lg border border-border bg-surface-2/50 p-3">
           <Switch
             checked={f.auto}
@@ -125,6 +143,20 @@ function FilterPanel({ ctl, facets }: { ctl: ReturnType<typeof useMediaFilters>;
             description={t('collect.media.includeAutoDesc', fc ? fc.auto_only : null)}
           />
         </div>
+      </section>
+
+      <section>
+        <h4 className="mb-2 text-[13px] font-semibold">{t('collect.media.dlHeading')}</h4>
+        <RadioRows
+          label={t('collect.media.dlHeading')}
+          value={f.dl || 'all'}
+          onChange={(v) => set({ dl: v === 'all' ? null : v })}
+          options={[
+            ['all', t('collect.media.dlAll'), undefined],
+            ['yes', t('collect.media.dlYes'), facets?.downloaded?.yes],
+            ['no', t('collect.media.dlNo'), facets?.downloaded?.no],
+          ]}
+        />
       </section>
 
       <section>
@@ -195,6 +227,7 @@ function ActiveChips({ ctl, playlistTitle }: { ctl: ReturnType<typeof useMediaFi
     chips.push({ k: 'dur', label: t('collect.media.chipDuration', String(f.minDur ?? 0), String(f.maxDur ?? '∞')), clear: () => set({ min: null, max: null }) })
   if (f.after || f.before) chips.push({ k: 'date', label: `${f.after || '…'} ~ ${f.before || '…'}`, clear: () => set({ after: null, before: null }) })
   if (f.license) chips.push({ k: 'lic', label: licenseLabel[f.license], clear: () => set({ license: null }) })
+  if (f.dl) chips.push({ k: 'dl', label: f.dl === 'yes' ? t('collect.media.chipDlYes') : t('collect.media.chipDlNo'), clear: () => set({ dl: null }) })
   if (!chips.length) return null
   return (
     <div className="flex flex-wrap items-center gap-1.5">
@@ -336,7 +369,14 @@ function TitleCell({ m, short }: { m: MediaSummary; short?: boolean }) {
         <div className="line-clamp-2 text-[13px] font-medium leading-5 text-fg break-cjk" title={m.title}>
           {m.title}
         </div>
-        <div className="mt-0.5 flex items-center gap-1.5">
+        <div className="mt-0.5 flex items-center gap-1.5 empty:hidden">
+          {m.is_new && (
+            <Tooltip content={t('collect.media.newTip')}>
+              <Badge tone="primary" className="h-[18px] px-1.5 text-[11px]">
+                {t('collect.media.newBadge')}
+              </Badge>
+            </Tooltip>
+          )}
           {m.license === 'creative_commons' && <Tag className="border-info/30 text-info-fg">{t('collect.media.ccLicense')}</Tag>}
           {m.kind === 'short' && !short && <Tag>Shorts</Tag>}
         </div>
@@ -356,7 +396,7 @@ function QualityCell({ m }: { m: MediaSummary }) {
 }
 
 /* ───────────── main ───────────── */
-export function MediaBrowser({ channelId, kind }: { channelId: string; kind: MediaKind[] }) {
+export function MediaBrowser({ channelId, kind, captionsPending }: { channelId: string; kind: MediaKind[]; captionsPending?: boolean }) {
   const ctl = useMediaFilters(kind)
   const { f, set } = ctl
   const t = useT()
@@ -366,7 +406,8 @@ export function MediaBrowser({ channelId, kind }: { channelId: string; kind: Med
     return () => clearTimeout(timer)
   }, [qDraft]) // eslint-disable-line react-hooks/exhaustive-deps
   const query = ctl.query(channelId)
-  const res = useMedia({ ...query, limit: LIMIT, offset: f.offset })
+  // while caption details arrive in the background, refresh the list (and facet counts) now and then
+  const res = useMedia({ ...query, limit: LIMIT, offset: f.offset }, true, captionsPending ? 10_000 : false)
   const playlists = usePlaylists(channelId)
   const plTitle = playlists.data?.items.find((p) => p.id === f.playlist)?.title
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -433,7 +474,7 @@ export function MediaBrowser({ channelId, kind }: { channelId: string; kind: Med
     </div>
   )
 
-  const filterPanel = <FilterPanel ctl={ctl} facets={res.data?.facets} />
+  const filterPanel = <FilterPanel ctl={ctl} facets={res.data?.facets} captionsPending={captionsPending} />
 
   return (
     <div className="grid gap-5 xl:grid-cols-[260px_minmax(0,1fr)]">

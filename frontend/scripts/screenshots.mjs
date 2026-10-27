@@ -60,11 +60,27 @@ async function discover(page) {
   return page.evaluate(async () => {
     const j = (u) => fetch(u).then((r) => r.json())
     const ch = (await j('/api/channels')).items
-    const media = (await j(`/api/media?channel_id=${ch[0]?.id}&status=ready&limit=5`)).items ?? []
+    const listed = ch.filter((c) => c.list_status === 'listed')
+    const media = (await j(`/api/media?channel_id=${listed[0]?.id}&status=ready&limit=5`)).items ?? []
     const failed = (await j('/api/media?status=failed,blocked&limit=1')).items ?? []
     const sp = (await j('/api/speakers?limit=3')).items ?? []
     const ds = await j('/api/datasets')
-    return { ch: ch[0]?.id, ch2: ch[1]?.id, media: media[0]?.id, failed: failed[0]?.id, speaker: (sp[1] ?? sp[0])?.id, dataset: (ds.items ?? ds)[0]?.id }
+    const seg = (await j('/api/segments?review_status=unchecked&limit=1')).items ?? []
+    // a processed video without word timings (sentence-level highlight fallback)
+    let unaligned
+    for (const m of (await j('/api/media?status=ready&limit=60')).items ?? []) {
+      const w = await fetch(`/api/media/${m.id}/words`).then((r) => (r.ok ? r.json() : null)).catch(() => null)
+      const words = w && typeof w.words === 'object' ? w.words : w
+      if (words && !Object.keys(words).length) {
+        unaligned = m.id
+        break
+      }
+    }
+    return {
+      ch: listed[0]?.id, ch2: listed[1]?.id, media: media[0]?.id, failed: failed[0]?.id, speaker: (sp[1] ?? sp[0])?.id, dataset: (ds.items ?? ds)[0]?.id,
+      queued: ch.find((c) => c.list_status === 'queued' || c.list_status === 'new')?.id, listing: ch.find((c) => c.list_status === 'listing' && !c.last_listed_at)?.id,
+      segment: seg[0]?.id, unaligned,
+    }
   })
 }
 
@@ -84,8 +100,14 @@ function screens(ids, lang) {
     { name: '11-channel-speakers', path: `/channels/${ids.ch}/speakers` },
     { name: '12-channel-quality', path: `/channels/${ids.ch}/quality` },
     { name: '13-media-detail', path: `/media/${ids.media}` },
+    { name: '13b-media-karaoke', path: `/media/${ids.media}`, act: playAndFreeze(0.45) },
+    { name: '13c-media-inline-edit', path: `/media/${ids.media}`, act: async (p) => { const row = p.locator('[data-seg-row]').nth(1); await row.scrollIntoViewIfNeeded(); await row.focus(); await p.keyboard.press('e'); await p.waitForTimeout(200); await centerOn(p, '[data-seg-row]:nth-child(2)') } },
+    { name: '13d-media-unaligned', path: `/media/${ids.unaligned}`, act: playAndFreeze(0.5) },
     { name: '14-media-failed', path: `/media/${ids.failed}` },
     { name: '15-review', path: '/review' },
+    { name: '15b-review-filtered', path: '/review?status=all&flags=low_snr&sort=snr' },
+    { name: '15c-review-detail', path: `/review/${ids.segment}` },
+    { name: '15d-review-karaoke', path: `/review/${ids.segment}`, act: async (p) => { await p.waitForFunction(() => window.__votiSegAudio?.freeze(0.5), null, { timeout: 8000 }); await p.waitForTimeout(250) } },
     { name: '16-speakers', path: '/speakers' },
     { name: '17-speaker-detail', path: `/speakers/${ids.speaker}` },
     { name: '18-diversity', path: '/diversity' },
@@ -101,7 +123,28 @@ function screens(ids, lang) {
     { name: '28-settings-account', path: '/settings/account' },
     { name: '29-not-found', path: '/nope' },
     { name: '30-phone-menu', path: '/', phoneOnly: true, act: async (p) => { await p.locator(`header [aria-label="${a.menu}"]`).click() } },
+    { name: '31-channel-queued', path: `/channels/${ids.queued}` },
+    { name: '32-channel-listing', path: `/channels/${ids.listing}` },
+    { name: '33-add-video-new-channel', path: '/sources/new', act: async (p) => { await p.fill('input[name="url"]', 'https://youtu.be/dQw4w9WgXcQ'); await p.locator('form button[type="submit"]').click(); await p.waitForTimeout(1600) } },
   ]
+}
+
+async function centerOn(p, sel) {
+  await p.evaluate((s) => document.querySelector(s)?.scrollIntoView({ block: 'center' }), sel)
+  await p.waitForTimeout(150)
+}
+
+/** Click the first transcript sentence, let it play briefly, then freeze it mid-sentence (mock player hook). */
+function playAndFreeze(frac) {
+  return async (p) => {
+    const row = p.locator('[data-seg-row]').first()
+    await row.scrollIntoViewIfNeeded()
+    await row.click({ position: { x: 120, y: 16 } })
+    await p.waitForTimeout(900)
+    const ok = await p.evaluate((f) => window.__votiPlayer?.freeze(f), frac)
+    if (!ok) throw new Error('player hook unavailable')
+    await centerOn(p, '[data-seg-row]')
+  }
 }
 
 const browser = await chromium.launch({ executablePath: findChromium() })

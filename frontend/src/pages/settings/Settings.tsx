@@ -2,10 +2,10 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import { Navigate, useParams } from 'react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Cookie, FileUp, KeyRound, Pencil, Plus, ShieldCheck, Trash2, UserRound, Users, Workflow, Youtube } from 'lucide-react'
+import { Cookie, FileUp, KeyRound, Languages as LanguagesIcon, Pencil, Plus, RefreshCw, ShieldCheck, Trash2, UserRound, Users, Workflow, Youtube } from 'lucide-react'
 import { api } from '@/api/client'
 import { errMsg, onErr, qk, useMe, useSettings, useUsers } from '@/api/queries'
-import type { PipelineSettings, QualityThresholds, Role, User, YoutubeSettings } from '@/api/types'
+import type { OpenccConfig, PipelineSettings, QualityThresholds, Role, TextSettings, User, YoutubeSettings } from '@/api/types'
 import { fmtDateTime, fmtRelative } from '@/lib/format'
 import { Page, PageHeader } from '@/components/layout/page'
 import { Button } from '@/components/ui/button'
@@ -258,6 +258,8 @@ function YoutubeTab() {
         <SaveBar dirty={dirty} saving={save.isPending} onSave={() => save.mutate()} onReset={() => setV(s.data.youtube)} />
       </Card>
 
+      <AutoRefreshCard current={s.data.youtube.auto_refresh_hours ?? 0} />
+
       <Card>
         <CardHeader title="cookies.txt" description={t('output.settings.youtube.cookiesDesc')} icon={<Cookie />} />
         <CardBody className="space-y-4">
@@ -290,6 +292,87 @@ function YoutubeTab() {
         </CardBody>
       </Card>
     </div>
+  )
+}
+
+function AutoRefreshCard({ current }: { current: number }) {
+  const t = useT()
+  const qc = useQueryClient()
+  const [h, setH] = useState<number>(current)
+  useEffect(() => setH(current), [current])
+  const save = useMutation({
+    mutationFn: () => api.putSetting('youtube', { auto_refresh_hours: h } as YoutubeSettings),
+    onSuccess: () => (qc.invalidateQueries({ queryKey: qk.settings }), toast.success(tr('output.settings.youtube.saved'))),
+    onError: onErr,
+  })
+  return (
+    <Card>
+      <CardHeader title={t('output.settings.youtube.autoRefreshTitle')} description={t('output.settings.youtube.autoRefreshDesc')} icon={<RefreshCw />} />
+      <CardBody>
+        <Row label={t('output.settings.youtube.autoRefresh')} hint={t('output.settings.youtube.autoRefreshHint')}>
+          <NumberInput aria-label={t('output.settings.youtube.autoRefresh')} value={h} onChange={(x) => setH(Math.max(0, Math.round(x ?? 0)))} min={0} step={1} suffix={h ? t('output.settings.youtube.hours') : t('output.settings.youtube.autoRefreshOff')} />
+        </Row>
+      </CardBody>
+      <SaveBar dirty={h !== current} saving={save.isPending} onSave={() => save.mutate()} onReset={() => setH(current)} />
+    </Card>
+  )
+}
+
+/* ───────────── caption text (Simplified → Traditional) ───────────── */
+const TEXT_DEFAULT: TextSettings = { convert_simplified: true, opencc_config: 's2twp' }
+function TextCard({ current }: { current: TextSettings }) {
+  const t = useT()
+  const qc = useQueryClient()
+  const [v, setV] = useState<TextSettings>(current)
+  useEffect(() => setV(current), [current])
+  const save = useMutation({
+    mutationFn: () => api.putSetting('text', v),
+    onSuccess: () => (qc.invalidateQueries({ queryKey: qk.settings }), toast.success(tr('output.settings.text.saved'))),
+    onError: onErr,
+  })
+  const opts: [OpenccConfig, string, string][] = [
+    ['s2twp', t('output.settings.text.s2twp'), t('output.settings.text.s2twpHint')],
+    ['s2tw', t('output.settings.text.s2tw'), t('output.settings.text.s2twHint')],
+    ['s2t', t('output.settings.text.s2t'), t('output.settings.text.s2tHint')],
+  ]
+  return (
+    <Card>
+      <CardHeader title={t('output.settings.text.title')} description={t('output.settings.text.desc')} icon={<LanguagesIcon />} />
+      <CardBody className="divide-y divide-border">
+        <Row label={t('output.settings.text.convert')} hint={t('output.settings.text.convertHint')}>
+          <Switch checked={v.convert_simplified} onCheckedChange={(x) => setV({ ...v, convert_simplified: x })} aria-label={t('output.settings.text.convert')} />
+        </Row>
+        <Row label={t('output.settings.text.config')} hint={t('output.settings.text.configHint')}>
+          <div role="radiogroup" aria-label={t('output.settings.text.config')} className={cn('space-y-1.5', !v.convert_simplified && 'pointer-events-none opacity-50')}>
+            {opts.map(([k, label, hint]) => (
+              <button
+                key={k}
+                type="button"
+                role="radio"
+                aria-checked={v.opencc_config === k}
+                disabled={!v.convert_simplified}
+                onClick={() => setV({ ...v, opencc_config: k })}
+                className={cn(
+                  'flex w-full items-start gap-2.5 rounded-lg border px-3 py-2 text-left transition-colors',
+                  v.opencc_config === k ? 'border-primary/50 bg-primary-soft/60' : 'border-border hover:bg-surface-2',
+                )}
+              >
+                <span className={cn('mt-0.5 grid size-4 shrink-0 place-items-center rounded-full border', v.opencc_config === k ? 'border-primary' : 'border-border-strong')}>
+                  {v.opencc_config === k && <span className="size-2 rounded-full bg-primary" />}
+                </span>
+                <span className="min-w-0">
+                  <span className="flex flex-wrap items-baseline gap-x-2 text-[13px] font-medium">
+                    {label} <code className="font-mono text-[11px] font-normal text-fg-3">{k}</code>
+                  </span>
+                  <span className="block text-xs leading-5 text-fg-3">{hint}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </Row>
+      </CardBody>
+      <SaveBar dirty={JSON.stringify(v) !== JSON.stringify(current)} saving={save.isPending} onSave={() => save.mutate()} onReset={() => setV(current)} />
+    </Card>
   )
 }
 
@@ -355,6 +438,7 @@ function PipelineTab() {
         </CardBody>
         <SaveBar dirty={JSON.stringify(th) !== JSON.stringify(s.data.quality_thresholds)} saving={saveT.isPending} onSave={() => saveT.mutate()} onReset={() => setTh(s.data.quality_thresholds)} />
       </Card>
+      <TextCard current={s.data.text ?? TEXT_DEFAULT} />
     </div>
   )
 }
