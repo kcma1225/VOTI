@@ -27,6 +27,9 @@ DEFAULT_SETTINGS: dict[str, dict] = {
     "quality_thresholds": {"low_speech_ratio": 0.5, "low_snr_db": 10, "clipping_ratio": 0.001},
     "validation": {"enabled": True, "lid_min_prob": 0.7, "lid_min_speech_sec": 1.0, "align_min_score": 0.4,
                    "align_min_units": 4},
+    # hard-subtitle OCR (voti.pipeline.ocr.DEFAULTS)
+    "ocr": {"enabled": True, "auto_when_no_captions": True, "fps": 5.0, "discovery_step_sec": 2.0,
+            "max_discovery_frames": 900, "model": "server", "cpu_model": "mobile", "keep_crops": True, "min_event_conf": 0.85},
 }
 
 

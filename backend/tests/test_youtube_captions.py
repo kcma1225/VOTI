@@ -394,7 +394,7 @@ def test_download_guard_and_recheck_restores(db, h, monkeypatch, annotator_clien
     assert db.scalars(select(Job).where(Job.parent_id == job.id)).all() == []  # no pipeline follow-up
 
     # download endpoint skips it (and queues it only with include_auto when ASR exists)
-    r = annotator_client.post("/api/media/download", json={"media_ids": [str(m.id)]})
+    r = annotator_client.post("/api/media/download", json={"media_ids": [str(m.id)], "ocr": False})
     assert r.json()["queued"] == 0 and r.json()["skipped_reasons"] == {"empty_captions": 1}
 
     # still empty on re-check → stays skipped

@@ -19,7 +19,8 @@ Decision (settings `validation`, see DEFAULTS):
   * caption nan*/hak*/yue (no VoxLingua107 class; Taiwanese is often heard as zh, vi, …): only a confident LID
     top in CLEARLY_DIFFERENT (en, ja, ko, fr, de, …)            → invalid, language_mismatch
   * otherwise align_score < align_min_score (enough timed units)          → invalid, text_mismatch
-  * otherwise valid when at least one signal was available, else unknown.
+  * otherwise valid when at least one signal was available, else unknown — except OCR text (text_source
+    ocr_caption, voti.pipeline.ocr): without a usable alignment score it stays unknown (note ocr_unverified).
 Manual decisions (validity_source = "manual", PATCH /segments/{id}) are never overwritten.
 
 A segment's result is current while `validation.revision` / `validation.text_hash` match the segment (and, when it
@@ -53,6 +54,7 @@ LID_MODEL_ID = "speechbrain/lang-id-voxlingua107-ecapa"
 LID_MAX_SEC = 20.0               # longest speech fed to the classifier per segment
 BATCH_SAMPLES = SR * 200         # padded samples per forward pass
 VERSION = 1                      # bump when the decision logic changes (results are then recomputed)
+# (the ocr_caption rule only affects the new text source, so VERSION stays 1)
 
 DEFAULTS: dict = {
     "enabled": True,
@@ -138,6 +140,11 @@ def decide(*, text: str, text_source: str | None, language: str | None, lid: lis
         if align_score < cfg["align_min_score"]:
             return Verdict("invalid", "text_mismatch", details)
         return Verdict("valid", None, details)
+    if text_source == "ocr_caption":
+        # OCR text is only trusted with a usable alignment score (a language ID alone accepts ~10 % of swapped
+        # texts); without one the segment stays unknown — datasets take ocr_caption segments only when valid
+        details["note"] = "ocr_unverified"
+        return Verdict("unknown", None, details)
     if lid:
         return Verdict("valid", None, details)
     details["note"] = "no_signal"

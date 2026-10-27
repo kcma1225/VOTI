@@ -722,6 +722,7 @@ def media_download(ctx: JobContext) -> dict:
     caption_langs = [str(x) for x in (ctx.payload.get("caption_langs") or []) if x] or None
     include_auto = bool(ctx.payload.get("include_auto", False))
     require_captions = not bool(ctx.payload.get("allow_no_captions", False))
+    video_only = bool(ctx.payload.get("video_only"))
     with session_scope() as s:
         m = s.get(Media, ctx.media_id)
         if m is None:
@@ -729,7 +730,11 @@ def media_download(ctx: JobContext) -> dict:
         if m.platform != "youtube":
             raise JobError("unsupported_platform", f"不支援的平台 {m.platform}", retryable=False)
         vid = m.platform_media_id
-        m.status, m.stage, m.failure_code, m.failure_message = "downloading", "download", None, None
+        video = ocr_video_mode(s, ctx.payload)
+        if not video_only:
+            m.status, m.stage, m.failure_code, m.failure_message = "downloading", "download", None, None
+    if video == "if_no_captions" or video == "always":
+        require_captions = False  # burned-in subtitles are read by OCR when no CC track is usable
     settings = youtube_settings()
 
     cancelled = {"flag": False}
@@ -744,17 +749,74 @@ def media_download(ctx: JobContext) -> dict:
     import yt_dlp
 
     try:
+        if video_only:
+            return _download_video_only(ctx, vid, settings, progress, cancelled, yt_dlp)
         return _download(ctx, vid, settings, caption_langs, include_auto, require_captions, progress, cancelled,
-                         yt_dlp)
+                         yt_dlp, video)
     except Cancelled:
         with session_scope() as s:
             m = s.get(Media, ctx.media_id)
-            if m is not None and m.status == "downloading":
+            if m is not None and m.status == "downloading" and not video_only:
                 m.status, m.stage = ("detailed" if m.detailed_at else "listed"), None
         raise
 
 
-def _download(ctx, vid, settings, caption_langs, include_auto, require_captions, progress, cancelled, yt_dlp):
+def ocr_video_mode(s, payload: dict) -> str | None:  # noqa: ANN001
+    """Video download for hard-subtitle OCR: "always" (payload ocr: true), "if_no_captions" (payload ocr_auto,
+    default settings.ocr.auto_when_no_captions), or None. Nothing when settings.ocr.enabled is false."""
+    from ..pipeline.common import get_setting
+    cfg = get_setting(s, "ocr")
+    if not cfg.get("enabled", True) or payload.get("ocr") is False:
+        return None
+    if payload.get("ocr") is True:
+        return "always"
+    auto = payload.get("ocr_auto")
+    if auto is None:
+        auto = cfg.get("auto_when_no_captions", True)
+    return "if_no_captions" if auto else None
+
+
+def _store_ocr_video(s, m: Media, path: Path, fmt: dict, requested: str) -> Asset:  # noqa: ANN001
+    ext = path.suffix.lstrip(".").lower() or "mp4"
+    for old in s.scalars(select(Asset).where(Asset.media_id == m.id, Asset.kind == "ocr_video")):
+        s.delete(old)
+    s.flush()
+    asset = storage.store_asset(s, path, storage.media_key(m.id, f"ocr/video.{ext}"), "ocr_video", media_id=m.id,
+                                content_type=f"video/{'mp4' if ext == 'mp4' else ext}",
+                                params={"format": fmt, "temporary": True, "requested": requested})
+    prev = dict((m.metadata_ or {}).get("ocr") or {})
+    prev.update(status="pending", requested=requested, video_bytes=asset.bytes, video_format=fmt,
+                queued_at=utcnow().isoformat())
+    m.metadata_ = {**(m.metadata_ or {}), "ocr": prev}
+    return asset
+
+
+def _download_video_only(ctx, vid, settings, progress, cancelled, yt_dlp):  # noqa: ANN001
+    """POST /media/{id}/ocr after the OCR video was deleted: fetch only the video, then run media.ocr {rerun}."""
+    with download_slot(ctx, settings.get("max_concurrent_downloads", 1)):
+        throttle(ctx, "download", float(settings.get("sleep_between_downloads_sec") or 0))
+        ctx.progress(0.05, "download", "取得影片資訊", force=True)
+        with fetch_options(settings) as fo, yt.new_tempdir(get_config().work_dir) as td:
+            try:
+                res = yt.download(vid, Path(td), fo, progress=progress, should_cancel=lambda: cancelled["flag"],
+                                  video_only=True)
+            except yt_dlp.utils.DownloadCancelled as e:
+                raise Cancelled() from e
+            except yt.YouTubeError as e:
+                raise _job_error(e, _cookies_used(fo)) from e
+            if cancelled["flag"]:
+                raise Cancelled()
+            with session_scope() as s:
+                m = s.get(Media, ctx.media_id)
+                asset = _store_ocr_video(s, m, res.video_path, res.video_format, "rerun")
+                out = {"video_key": asset.key, "video_bytes": asset.bytes, "video": res.video_format}
+                channel_id = m.channel_id
+    ctx.then("media.ocr", {"rerun": True}, media_id=ctx.media_id, channel_id=channel_id)
+    return out
+
+
+def _download(ctx, vid, settings, caption_langs, include_auto, require_captions, progress, cancelled, yt_dlp,
+              video=None):
     with download_slot(ctx, settings.get("max_concurrent_downloads", 1)):
         throttle(ctx, "download", float(settings.get("sleep_between_downloads_sec") or 0))
         ctx.progress(0.05, "download", "取得影片資訊", force=True)
@@ -762,7 +824,7 @@ def _download(ctx, vid, settings, caption_langs, include_auto, require_captions,
             try:
                 res = yt.download(vid, Path(td), fo, caption_langs=caption_langs, include_auto=include_auto,
                                   require_captions=require_captions, progress=progress,
-                                  should_cancel=lambda: cancelled["flag"])
+                                  should_cancel=lambda: cancelled["flag"], video=video)
             except yt_dlp.utils.DownloadCancelled as e:
                 raise Cancelled() from e
             except yt.YouTubeError as e:
@@ -874,6 +936,10 @@ def _store_download(ctx: JobContext, res: yt.DownloadResult) -> dict:
         media_id = m.id
         result = {"audio_key": key, "audio_bytes": audio.bytes, "audio": res.audio_format, "tracks": tracks_out,
                   "subtitle_errors": res.subtitle_errors, **({"warnings": res.warnings[:5]} if res.warnings else {})}
+        if res.video_path is not None:  # hard-subtitle OCR follows in the pipeline (media.ocr, deletes the video)
+            requested = "manual" if ctx.payload.get("ocr") is True else "auto_no_captions"
+            v = _store_ocr_video(s, m, res.video_path, res.video_format, requested)
+            result.update(video_key=v.key, video_bytes=v.bytes, video=res.video_format)
     for k in stale_keys:
         try:
             storage.delete(k)

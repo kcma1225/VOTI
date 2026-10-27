@@ -26,7 +26,7 @@ from pathlib import Path
 
 import soundfile as sf
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import and_, cast, exists, func, null, select, true
+from sqlalchemy import and_, cast, exists, func, null, or_, select, true
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Session
 from sqlalchemy.types import Text
@@ -48,6 +48,8 @@ class DatasetFilters(BaseModel):
     channel_ids: list[uuid.UUID] = []
     media_ids: list[uuid.UUID] = []
     speaker_ids: list[uuid.UUID] = []
+    # add "auto_caption" (YouTube ASR) / "ocr_caption" (burned-in subtitles, voti.pipeline.ocr) to include them;
+    # ocr_caption segments are taken only when validated (validity "valid"), never "unknown"
     text_sources: list[str] = ["manual_caption"]
     review_status: list[str] = ["passed", "unchecked"]
     exclude_repeated: bool = True
@@ -92,6 +94,8 @@ def conditions(f: DatasetFilters) -> dict[str, list]:
     g["scope"].append(Segment.active.is_(True))
     # caption does not match the audio (voti.pipeline.validate): never part of a dataset, not a filter
     g["validity"].append(Segment.validity != "invalid")
+    # OCR text is used only when its alignment validated it (unknown = unverified)
+    g["validity"].append(or_(Segment.text_source != "ocr_caption", Segment.validity == "valid"))
     if f.channel_ids:
         g["scope"].append(Media.channel_id.in_(f.channel_ids))
     if f.media_ids:
@@ -218,6 +222,10 @@ def preview(s: Session, raw_filters: dict | None) -> dict:
         "low_quality": _count(s, groups, {"quality"}) - n_all,
         "speaker_cap": n_all - len(rows),
         "invalid": _count(s, groups, {"validity"}, Segment.validity == "invalid"),
+        "ocr_caption": _count(s, groups, {"text_source"}, Segment.text_source == "ocr_caption")
+        if "ocr_caption" not in f.text_sources else 0,
+        "ocr_unverified": _count(s, groups, {"validity"}, and_(Segment.text_source == "ocr_caption",
+                                                                Segment.validity == "unknown")),
     }
     return {
         "segment_count": len(rows), "total_sec": round(sum(r.duration for r in rows), 3),
@@ -406,6 +414,9 @@ def readme(name: str, description: str, export_id: uuid.UUID, filters: dict, sta
               "- `text` is the human-corrected text when `text_corrected` is true, else the caption text.",
               "- `text_converted` is true when the caption text was converted from Simplified to Traditional "
               "Chinese (Taiwan) with OpenCC.",
+              "- `text_source`: `manual_caption` (uploader CC), `auto_caption` (YouTube ASR), `uploaded`, "
+              "`ocr_caption` (burned-in subtitles read by OCR and paired with speech; only segments whose text "
+              "passed forced-alignment validation are exported).",
               "- `speaker` is a *candidate* cluster from automatic speaker clustering, not a confirmed identity "
               "unless `override` is true (named by a reviewer).",
               "- `profile` (age/sex/emotion) are model predictions (Vox-Profile) and may be wrong.",

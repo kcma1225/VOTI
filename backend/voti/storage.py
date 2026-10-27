@@ -7,6 +7,9 @@ Key layout (all under one bucket):
   media/<media_id>/subtitles/<lang>.<kind>.<fmt>
   media/<media_id>/frames_quality.npz        per-frame arrays, see voti.pipeline.quality
   media/<media_id>/fingerprint.npz
+  media/<media_id>/ocr/video.<ext>           temporary video for hard-subtitle OCR (deleted by media.ocr)
+  media/<media_id>/ocr/events.json           OCR events (voti.pipeline.ocr), asset kind ocr_events
+  media/<media_id>/ocr/crops/<idx>.webp      one small crop per OCR event
   exports/<export_id>/manifest.jsonl | manifest.csv | README.md | dataset.tar
   system/cookies.txt                          admin-uploaded yt-dlp cookies
 """

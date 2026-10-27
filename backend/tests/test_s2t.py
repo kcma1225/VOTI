@@ -92,7 +92,7 @@ TRACKS = [("zh-Hans", "manual", _json3("这个视频", "大家好"), True),
 
 def _fake_download(tracks):  # noqa: ANN001
     def fake(vid, workdir, fo, caption_langs=None, include_auto=False, require_captions=True, progress=None,
-             should_cancel=None):
+             should_cancel=None, **kw):  # noqa: ANN003 (video= for hard-subtitle OCR)
         audio = Path(workdir) / "original.webm"
         audio.write_bytes(b"\x1aE\xdf\xa3" + b"0" * 100)
         subs = []

@@ -105,6 +105,20 @@ class ValidationSettings(BaseModel):
     align_min_units: int = Field(default=4, ge=1, le=100)
 
 
+class OcrSettings(BaseModel):
+    """Hard-subtitle OCR (voti.pipeline.ocr; docs/ARCHITECTURE.md "Hard-subtitle OCR")."""
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = True                     # media.download may fetch a video for OCR at all
+    auto_when_no_captions: bool = True       # no usable CC → download video + OCR instead of skipping
+    fps: float = Field(default=5.0, ge=1, le=15)                      # tracking frame rate
+    discovery_step_sec: float = Field(default=2.0, ge=0.5, le=10)     # full-frame sampling for style discovery
+    max_discovery_frames: int = Field(default=900, ge=50, le=5000)
+    model: Literal["server", "mobile"] = "server"                     # PP-OCRv5 model size on a GPU
+    cpu_model: Literal["server", "mobile"] = "mobile"                 # … when the worker runs OCR on the CPU
+    keep_crops: bool = True                  # one small webp crop per subtitle event (review UI)
+    min_event_conf: float = Field(default=0.85, ge=0, le=1)           # lower mean OCR confidence → rejected
+
+
 class CookiesStatus(BaseModel):
     present: bool
     updated_at: datetime | None = None
@@ -116,6 +130,7 @@ class SettingsOut(BaseModel):
     quality_thresholds: QualityThresholds
     text: TextSettings = TextSettings()
     validation: ValidationSettings = ValidationSettings()
+    ocr: OcrSettings = OcrSettings()
     cookies: CookiesStatus
 
 
@@ -159,6 +174,7 @@ class DownloadOut(BaseModel):
     queued: int
     skipped: int
     skipped_reasons: dict[str, int] = {}
+    ocr: int = 0        # of `queued`: media that will also download video for hard-subtitle OCR (forced or no CC)
 
 
 # ───────────────────────────── channels / playlists ─────────────────────────────
@@ -421,6 +437,8 @@ class MediaDetailOut(BaseModel):
     text_conversion: dict | None = None  # metadata["text_conversion"] summary (counts, config, opencc version)
     validity_counts: dict[str, int] = {}  # {valid, invalid, unknown} over active segments
     validation_job_active: bool = False   # a media.validate job is queued/running
+    ocr: dict | None = None               # metadata.ocr (hard-subtitle OCR status/summary), see OcrStatus docs
+    ocr_job_active: bool = False          # a media.ocr job (or its video-only download) is queued/running
 
 
 class MediaFacets(BaseModel):
@@ -575,6 +593,49 @@ class AlignIn(BaseModel):
 
 class ValidateIn(BaseModel):
     force: bool = False
+
+
+class OcrEventOut(BaseModel):
+    """One burned-in subtitle event (voti.pipeline.ocr; events.json row + its cue)."""
+    idx: int
+    cue_id: uuid.UUID | None = None
+    start: float
+    end: float
+    raw_text: str                       # OCR consensus as read
+    text: str                           # cleaned (editor notes removed, 「」 fixed) + Simplified → Traditional
+    s2t_converted: bool = False
+    track: int                          # subtitle track (style group) index
+    style: int                          # style id (see OcrOut.styles)
+    bbox: list[int]                     # [x0, y0, x1, y1] in OcrOut.frame_size pixels
+    lines: int = 1
+    conf: float                         # mean recognition confidence of the voting frames
+    n_frames: int                       # frames (at OcrOut.fps) the subtitle was seen in
+    agreement: float                    # share of readings equal to the consensus
+    status: Literal["paired", "rejected"]
+    reason: str | None = None           # rejection: no_speech | little_speech | rate_mismatch | static_text |
+    #                                     concurrent_tracks | low_ocr_confidence | too_short_text | too_long | too_short
+    speech_sec: float = 0.0             # speech inside the (padded) event
+    paired_start: float | None = None   # speech-snapped span (paired only)
+    paired_end: float | None = None
+    crop_url: str | None = None         # /api/media/{id}/ocr/crops/{idx}.webp
+
+
+class OcrOut(BaseModel):
+    status: str                         # none | pending | done | no_subtitles | failed
+    summary: dict = {}                  # metadata.ocr
+    model: str | None = None
+    frame_size: list[int] | None = None
+    fps: float | None = None
+    styles: list[dict] = []             # accepted styles {id, cy, h, fill, edge, stats, …}
+    tracks: list[dict] = []             # [{track, styles: [style ids], band: [y0, y1]}]
+    events: list[OcrEventOut] = []
+    total: int = 0
+    job_active: bool = False
+    video_available: bool = False       # the temporary OCR video is still stored (re-run without re-download)
+
+
+class OcrRunIn(BaseModel):
+    force: bool = False                 # re-run even when an OCR track exists
 
 
 class SegmentNeighbors(BaseModel):

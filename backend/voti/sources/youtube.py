@@ -14,6 +14,7 @@ Caption vocabulary
 """
 from __future__ import annotations
 
+import copy
 import json
 import re
 import shutil
@@ -851,24 +852,34 @@ def caption_state(manual_keys, check: dict | None) -> dict:  # noqa: ANN001
 # ───────────────────────────── download ─────────────────────────────
 
 AUDIO_FORMAT = "bestaudio[vcodec=none][protocol^=http][format_id!*=-drc]/bestaudio[vcodec=none]/bestaudio"
+# video for hard-subtitle OCR (voti.pipeline.ocr): ≤ 720p, video-only, H.264 preferred (any ffmpeg decodes it)
+VIDEO_FORMAT = ("bestvideo[height<=720][vcodec^=avc1][protocol^=http]/bestvideo[height<=720][vcodec^=avc1]/"
+                "bestvideo[height<=720]/best[height<=720]")
 
 
 @dataclass
 class DownloadResult:
     info: dict
-    audio_path: Path
+    audio_path: Path | None
     audio_format: dict
     subtitles: list[dict]           # {"key","language","kind","primary","path","format"}
     subtitle_errors: list[dict]     # {"key","kind","error"}
     warnings: list[str]
     caption_check: dict = field(default_factory=dict)  # {manual key: track_content result} of fetched tracks
+    video_path: Path | None = None  # video-only stream for OCR (video="always" / "if_no_captions" / video_only)
+    video_format: dict = field(default_factory=dict)
 
 
 def download(video_id: str, workdir: Path, fo: FetchOptions, caption_langs: list[str] | None = None,
              include_auto: bool = False, require_captions: bool = True,
              progress: Callable[[float, str], None] | None = None,
-             should_cancel: Callable[[], bool] | None = None) -> DownloadResult:
+             should_cancel: Callable[[], bool] | None = None, video: str | None = None,
+             video_only: bool = False) -> DownloadResult:
     """Best audio-only stream as served (no re-encode) + the chosen subtitle tracks.
+
+    video (hard-subtitle OCR): "always" also downloads a ≤ 720p video-only stream (VIDEO_FORMAT) after the audio;
+    "if_no_captions" only when no usable subtitle track was fetched. video_only=True downloads just that video
+    (no subtitles, no audio; result.audio_path is None) — re-running OCR after the video was deleted.
 
     Order: extract info → choose tracks (raise no_usable_captions before downloading anything when
     require_captions and nothing fits) → subtitles → audio.
@@ -910,6 +921,12 @@ def download(video_id: str, workdir: Path, fo: FetchOptions, caption_langs: list
                 raise YouTubeError("metadata_mismatch", "下載回傳的影片 ID 不一致")
             if info.get("live_status") in ("is_live", "is_upcoming"):
                 raise classify_error(str(info.get("live_status")))
+            raw_info = copy.deepcopy(info)
+            if video_only:
+                vpath, vfmt = _download_video(raw_info, workdir, opts, progress, should_cancel)
+                return DownloadResult(info=ydl.sanitize_info(info), audio_path=None, audio_format={}, subtitles=[],
+                                      subtitle_errors=[], warnings=logger.warnings, video_path=vpath,
+                                      video_format=vfmt)
             caps = caption_tracks(info)
             chosen = choose_tracks(caps, caption_langs, include_auto)
             if require_captions and not chosen:
@@ -998,6 +1015,9 @@ def download(video_id: str, workdir: Path, fo: FetchOptions, caption_langs: list
                 progress(0.0, "audio")
             result = ydl.process_ie_result(info, download=True)
             info = ydl.sanitize_info(result)
+            vpath, vfmt = None, {}
+            if video == "always" or (video == "if_no_captions" and not subs):
+                vpath, vfmt = _download_video(raw_info, workdir, opts, progress, should_cancel)
     except YouTubeError:
         raise
     except yt_dlp.utils.DownloadCancelled:
@@ -1012,7 +1032,40 @@ def download(video_id: str, workdir: Path, fo: FetchOptions, caption_langs: list
     for f in info.get("requested_downloads") or []:
         fmt.update({k: f.get(k) for k in ("filesize", "ext", "format_id") if f.get(k) is not None})
     return DownloadResult(info=info, audio_path=audio, audio_format=fmt, subtitles=subs,
-                          subtitle_errors=sub_errors, warnings=logger.warnings, caption_check=checked)
+                          subtitle_errors=sub_errors, warnings=logger.warnings, caption_check=checked,
+                          video_path=vpath, video_format=vfmt)
+
+
+def _download_video(raw_info: dict, workdir: Path, opts: dict, progress, should_cancel) -> tuple[Path, dict]:  # noqa: ANN001
+    """Download the VIDEO_FORMAT stream of an already extracted video into workdir/video.<ext>."""
+    import yt_dlp
+
+    def hook(d):  # noqa: ANN001, ANN202
+        if should_cancel and should_cancel():
+            raise yt_dlp.utils.DownloadCancelled("cancelled")
+        if progress and d.get("status") == "downloading":
+            total = d.get("total_bytes") or d.get("total_bytes_estimate")
+            if total:
+                progress(min(1.0, (d.get("downloaded_bytes") or 0) / total), "video")
+    vopts = {**opts, "format": VIDEO_FORMAT, "outtmpl": {"default": str(Path(workdir) / "video.%(ext)s")},
+             "progress_hooks": [hook]}
+    if progress:
+        progress(0.0, "video")
+    with yt_dlp.YoutubeDL(vopts) as ydl:
+        res = ydl.process_ie_result(copy.deepcopy(raw_info), download=True)
+    path = None
+    for f in res.get("requested_downloads") or []:
+        p = Path(f.get("filepath") or "")
+        if p.is_file():
+            path = p
+    if path is None:
+        path = next((p for p in sorted(Path(workdir).glob("video.*")) if not p.name.endswith((".part", ".ytdl"))),
+                    None)
+    if path is None:
+        raise YouTubeError("video_unavailable", "影片（OCR 用）未成功下載")
+    fmt = {k: res.get(k) for k in ("format_id", "ext", "width", "height", "vcodec", "fps", "filesize", "tbr")
+           if res.get(k) is not None}
+    return path, fmt
 
 
 def _find_audio(workdir: Path, info: dict) -> Path | None:

@@ -1,7 +1,7 @@
 """Job handlers for the audio and ml queues (pipeline after media.download).
 
 Every media step: Media.status="processing", Media.stage=<kind>; on success it chains the next kind in
-voti.queue.PIPELINE via ctx.then (media.segment → media.align → media.validate → media.embed → media.profile, implemented in pipeline/profile.py,
+voti.queue.PIPELINE via ctx.then (media.diarize → media.ocr [only with an ocr_video asset] → media.segment → media.align → media.validate → media.embed → media.profile, implemented in pipeline/profile.py,
 which chains media.fingerprint). The last step (media.fingerprint) sets Media.status="ready" and enqueues channel.dedup
 (debounced). payload {"chain": false} runs a single step without chaining (used by the API for lazy
 re-embedding after boundary edits); payload {"force": true} on media.embed recomputes all embeddings.
@@ -50,7 +50,12 @@ def _chain(ctx: JobContext) -> None:
         with session_scope() as s:
             m = s.get(Media, ctx.media_id)
             channel_id = m.channel_id if m else None
-        ctx.then(PIPELINE[i + 1], payload, media_id=ctx.media_id, channel_id=channel_id)
+            nxt = PIPELINE[i + 1]
+            if nxt == "media.ocr":  # only media with a video waiting for OCR run the OCR step
+                from . import ocr
+                if not ocr.needed(s, ctx.media_id):
+                    nxt = PIPELINE[i + 2]
+        ctx.then(nxt, payload, media_id=ctx.media_id, channel_id=channel_id)
 
 
 def _finish_single_step(ctx: JobContext) -> None:
@@ -146,6 +151,30 @@ def h_diarize(ctx: JobContext) -> dict:
     _begin(ctx)
     res = diarize.run(ctx.media_id, _progress(ctx))
     _chain(ctx)
+    _finish_single_step(ctx)
+    return res
+
+
+@handler("media.ocr")
+def h_ocr(ctx: JobContext) -> dict:
+    """Hard-subtitle OCR (voti.pipeline.ocr). Chained after media.diarize when an `ocr_video` asset exists; payload
+    {"rerun": true} (POST /media/{id}/ocr) re-segments afterwards (media.segment {"reprocess": true} → the chain
+    continues). Failures keep the video for a retry and record Media.metadata.ocr.status = failed."""
+    from . import ocr
+    _begin(ctx)
+    try:
+        res = ocr.run(ctx.media_id, _progress(ctx))
+    except JobError as e:
+        if not ctx.will_retry(e):
+            ocr.mark_failed(ctx.media_id, e.code, e.message)
+        raise
+    if ctx.payload.get("rerun"):
+        with session_scope() as s:
+            m = s.get(Media, ctx.media_id)
+            channel_id = m.channel_id if m else None
+        ctx.then("media.segment", {"reprocess": True}, media_id=ctx.media_id, channel_id=channel_id)
+    else:
+        _chain(ctx)
     _finish_single_step(ctx)
     return res
 

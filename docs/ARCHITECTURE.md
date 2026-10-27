@@ -30,7 +30,8 @@ index `jobs_running_heartbeat`, `media.discovered_at` (+ partial index `media_di
 columns of `segments` (`validity` NOT NULL DEFAULT 'unknown' — metadata-only in Postgres ≥ 11, `invalid_reason`,
 `validity_source`, `lid_lang`, `lid_prob`, `align_score`, `validation` JSONB) + partial index `segments_invalid`
 on `segments (media_id) WHERE validity = 'invalid'`, `media.captions_empty` (BOOLEAN NOT NULL DEFAULT false; caption
-verification). New tables
+verification). Hard-subtitle OCR needs no migration (new values only: `tracks.kind = 'ocr'`, `segments.text_source =
+'ocr_caption'`, asset kinds `ocr_video` / `ocr_events`, `media.metadata.ocr`, settings key `ocr`). New tables
 (e.g. `word_alignments`) come from `create_all` and need no migration.
 
 ## Code layout
@@ -51,6 +52,8 @@ backend/voti/
   pipeline/quality.py diarize.py segment.py embed.py profile.py fingerprint.py cluster.py
   pipeline/align.py                                  ← media.align: MMS_FA forced alignment → word_alignments
   pipeline/validate.py                               ← media.validate: caption ↔ audio check (language ID + alignment)
+  pipeline/hardsub.py                                ← burned-in subtitle logic (styles, tracking, voting, pairing; pure)
+  pipeline/ocr.py                                    ← media.ocr: PP-OCRv5 engine, video decoding, OCR track storage
   pipeline/gpu.py                                    ← CUDA OOM policy (GPU retry → CPU → retryable error)
   pipeline/handlers.py                               ← job handlers for audio/ml queues
   textconv.py                                        ← Simplified → Traditional (OpenCC) + media.convert_text handler
@@ -99,6 +102,7 @@ shorter than 1 s: result null).
 | `pipeline` | `{"voxprofile_backbone": "whisper-large-v3", "diarization_enabled": true, "segment_min_sec": 1.0, "segment_max_sec": 20.0, "edge_pad_sec": 0.1}` |
 | `quality_thresholds` | `{"low_speech_ratio": 0.5, "low_snr_db": 10, "clipping_ratio": 0.001}` (used to set segment flags) |
 | `validation` | `{"enabled": true, "lid_min_prob": 0.7, "lid_min_speech_sec": 1.0, "align_min_score": 0.4, "align_min_units": 4}` — caption ↔ audio validation (see "Caption validation"). `enabled: false`: `media.validate` does nothing (existing results stay). |
+| `ocr` | `{"enabled": true, "auto_when_no_captions": true, "fps": 5.0, "discovery_step_sec": 2.0, "max_discovery_frames": 900, "model": "server", "cpu_model": "mobile", "keep_crops": true, "min_event_conf": 0.85}` — hard-subtitle OCR (see "Hard-subtitle OCR"). `enabled: false`: no video is ever downloaded for OCR. `auto_when_no_captions`: a download of a media without usable CC fetches the video and OCRs it instead of skipping the media (`POST /media/download` `ocr: false` opts out per request). `fps` ∈ [1, 15] tracking rate; `discovery_step_sec` ∈ [0.5, 10]; `max_discovery_frames` ∈ [50, 5000]; `model` (on a GPU) / `cpu_model` (on the CPU) `server` (PP-OCRv5 server det+rec, ~173 MB, GPU default) or `mobile` (~21 MB; CPU default — server recognition takes ~3 s per band crop on the CPU); `keep_crops`: one small webp per subtitle event for review; `min_event_conf` ∈ [0, 1]. |
 | `text` | `{"convert_simplified": true, "opencc_config": "s2twp"}` — convert Simplified-Chinese captions to Traditional (Taiwan) on ingestion and allow `convert-text` jobs. `opencc_config`: `s2twp` (default: Taiwan standard + Taiwanese phrases, 视频→影片, 软件→軟體), `s2tw`, `s2t`. See "Caption text conversion". |
 
 ## Caption track choice (`voti.sources.youtube.choose_tracks`)
@@ -168,7 +172,8 @@ A listing that is not the channel's first sets `Media.discovered_at` on the vide
 
 ## Character alignment (`media.align`, `voti/pipeline/align.py`)
 
-Pipeline: `normalize → quality → diarize → segment → align → validate → embed → profile → fingerprint` (ml queue).
+Pipeline: `normalize → quality → diarize → [ocr] → segment → align → validate → embed → profile → fingerprint`
+(`media.ocr` only for media with an `ocr_video` asset, see "Hard-subtitle OCR").
 Per active segment, text = `corrected_text` if set else `original_text`, window `[start − 0.2 s, end + 0.2 s]`,
 torchaudio `MMS_FA` (with star token) CTC forced alignment; weights downloaded once to
 `MODEL_CACHE/mms_fa/mms_fa_ctc_alignment_mling_uroman.pt` (1.26 GB). Units: one per Han character (toneless
@@ -249,6 +254,84 @@ chains `media.validate {chain: false, segment_ids}`; a non-chained validate that
 enqueues lazy `media.embed`/`media.profile` (`chain: false`). `media.validate {chain: false}` never touches
 `Media.status`. GPU: same OOM policy as embed/align; CUDA cache emptied after the job.
 
+## Hard-subtitle OCR (`media.ocr`, `voti/pipeline/ocr.py` + `voti/pipeline/hardsub.py`)
+
+Many videos have no CC track but subtitles burned into the picture. For those, `media.download` also stores a ≤ 720p
+video-only stream (yt-dlp format `bestvideo[height<=720][vcodec^=avc1]…`) as asset `ocr_video`
+(`media/<id>/ocr/video.<ext>`, temporary) and the pipeline runs `media.ocr` (ml queue) between `media.diarize` and
+`media.segment` (`pipeline.handlers._chain` skips the step for media without an `ocr_video` asset). When it is
+done the video is deleted; only the results and small crops stay (a failed run keeps it for the retry).
+
+**When a video is downloaded** (`media.download` payload, set by `POST /media/download`):
+- `ocr: true` — always (user opted in; the media's CC, if any, still wins in segmentation);
+- no `ocr` key (default) — `settings.ocr.auto_when_no_captions` (read by the worker; payload `ocr_auto: bool`
+  overrides it): video only when no usable caption track was fetched; such media are then downloaded instead of
+  failing / being skipped as `no_usable_captions` / `empty_captions`;
+- `ocr: false` or `settings.ocr.enabled = false` — never.
+`POST /media/{id}/ocr` re-runs OCR later: `media.ocr {rerun: true}` while the video is still stored, otherwise
+`media.download {video_only: true, ocr: true}` (a side job: no audio/subtitles, never changes `Media.status`) which
+chains `media.ocr {rerun: true}`. A rerun re-segments afterwards (`media.segment {reprocess: true}` → align →
+validate → …; reviewed / corrected / boundary-edited segments are kept as in any re-segmentation).
+
+**Method** (no decision is taken from a single frame):
+1. Discovery — full frames every `discovery_step_sec` (longer side scaled to ≤ 1280 px) → PP-OCRv5 text boxes →
+   clustered into *styles* by line position, glyph height and the (fill, outline) colour pair (order-insensitive:
+   white-with-black-outline text over a white background flips). A style counts as subtitles only with temporal
+   evidence over the whole video: ≥ 6 appearances and ≥ 2 % of samples, median text run ≤ 8 s and < 35 % of its
+   time in runs > 20 s (titles, logos, caption cards), text changing between ≥ 20 % of adjacent samples, not
+   scrolling (tickers), centred or consistently left/right-anchored, mostly Han text (≥ 50 %, median ≥ 3 Han
+   characters — labels, numbers and translation lines in another script are dropped), not scattered (tables,
+   charts, UI), mostly during speech. Styles seen < 12 % as often as the strongest one are kept only as colour
+   variants at the position of a strong style. Accepted styles form *tracks*: colour variants at one position and
+   stacked lines of one block (two-line subtitles); a style at another position or with another look (e.g. the
+   boxed captions of an embedded clip) is its own track.
+2. Tracking — each track's band (merged with overlapping bands into crop regions) at `fps`; a region whose content
+   did not change since its last OCR (8×8-tile difference of a ¼-scale thumbnail) reuses that result (15–85 % of
+   frames). A box belongs to a track when its position and height fit one of the track's styles and it is centred
+   or its colours match.
+3. Events — consecutive readings with similar text (≥ 0.6) and overlapping x-extent, one missed frame tolerated,
+   ≥ 2 frames; character-level consensus (medoid backbone + confidence-weighted alignment votes) over the readings
+   with confidence ≥ 0.75; `agreement` = share of readings equal to the consensus.
+4. Pairing with speech (Brouhaha speech regions of `frames_quality`) — rejected: `concurrent_tracks` (two tracks on
+   screen at once, e.g. a clip's captions under the host's subtitles), `static_text` (> 12 s), `low_ocr_confidence`
+   (mean < `min_event_conf`), `too_short_text` (< 2 characters), `no_speech` / `little_speech` (speech within the
+   event ± 0.4 s < 0.15 s / < 45 % of the event), `rate_mismatch` (outside 1–12 Han characters per second of
+   speech), `too_long` / `too_short`. Paired events get a span snapped to their speech.
+5. Text — `raw_text` = consensus; `text` = bracketed editor notes removed (`（無法證實）`, `[音效]`), corner brackets
+   re-derived from their nesting (PP-OCR reads 「 as 『), then Simplified → Traditional with the `text` setting when
+   the paired text is Simplified by content (cue flag `s2t_converted`).
+
+**Storage**: `Track(kind="ocr", language="zh-TW" (Han text) | "und", format="json", asset = ocr_events)`; one `Cue`
+per event (`idx`, event start/end, `raw_text`, `text`, flags `ocr` + `ocr_paired` | `ocr_rejected`
+[+ `s2t_converted`]); asset `ocr_events` = `media/<id>/ocr/events.json` `{version, model, frame_size, styles,
+tracks: [{track, styles, band}], events: [rows as OcrEvent + crop_key], stats, s2t}`; crops
+`media/<id>/ocr/crops/<idx>.webp` (≤ 96 px high, a few kB each); `Media.metadata.ocr` (below). A re-run replaces
+track, cues, events and crops.
+
+**Segmentation & validation**: the OCR track is used only when the media has no manual / uploaded / auto track
+(`segment.choose_track`), and only its `ocr_paired` cues (never merged across a rejected event); `text_source =
+"ocr_caption"`. Speech without a paired subtitle gets no segment. The segments then go through `media.align` and
+`media.validate`; for `ocr_caption` the validation requires a usable alignment score — without one (too few
+timed units, alignment failed) the segment stays `unknown` (`validation.note = "ocr_unverified"`) instead of
+becoming `valid` on language ID alone (that would accept ~10 % of wrong texts). Datasets take `ocr_caption` segments
+only when chosen in `text_sources` (default `["manual_caption"]`: opt-in) and only when `validity = "valid"`.
+
+**Engine**: PP-OCRv5 server det + rec (PaddleOCR, Apache-2.0; ONNX files from RapidOCR 3.10.0's ModelScope mirror,
+sha256-pinned, downloaded on first use to `MODEL_CACHE/ocr`, 88 + 85 MB; `mobile` 5 + 17 MB) with RapidOCR
+(Apache-2.0) pre/post-processing on onnxruntime: CUDA when available (one session per input shape — the CUDA EP
+re-plans convolutions on every shape change; recogniser widths bucketed to 640/1280 px and batches to 1/8; ≈ 4.5 GB
+GPU memory while running), else CPU. GPU failures at engine start fall back to the CPU for the job.
+Phase-1 evaluation (5 reference videos, 76 min): ~0.25 × real time on a shared RTX A6000; subtitle precision
+98–100 %, character accuracy ≥ 99 % on validated segments, alignment pass rate 84–99 % (see the POC report).
+
+`Media.metadata.ocr` (= `MediaDetail.ocr`): `{status: pending|done|no_subtitles|failed, requested:
+manual|auto_no_captions|rerun, queued_at, video_bytes, video_format, at, model, device, fps, styles: [{id, cy, h,
+fill, edge}], tracks, events, paired, rejected: {reason: n}, paired_sec, crops, text_converted, video_deleted,
+elapsed_sec, stats: {frame_size, duration, discovery_step_sec, discovery_frames, discovery_boxes, styles_found,
+styles_accepted, tracks, tracking_frames, ocr_frames, reused_frames, discovery_sec, tracking_sec, events, paired,
+rejected}, speech_source, track_id, error_code?, error?}`. `MediaDetail.ocr_job_active` = a `media.ocr` job (or its
+video-only download) is queued/running.
+
 ## Caption text conversion (Simplified → Traditional, `voti/textconv.py`)
 
 OpenCC (`opencc` PyPI package, version pinned in requirements/base.txt) with the `text.opencc_config` setting.
@@ -295,7 +378,7 @@ Timestamps ISO-8601 UTC strings. IDs are UUID strings.
 `UserRef = {id, display_name}` (used wherever a row points at a user)
 
 ### Settings (admin)
-- `GET /settings` → `{youtube: {...}, pipeline: {...}, quality_thresholds: {...}, text: {...}, validation: {...}, cookies: {present: bool, updated_at}}`
+- `GET /settings` → `{youtube: {...}, pipeline: {...}, quality_thresholds: {...}, text: {...}, validation: {...}, ocr: {...}, cookies: {present: bool, updated_at}}`
   (`PUT /settings/validation`: `lid_min_prob`, `align_min_score` ∈ [0, 1], `lid_min_speech_sec` ∈ [0, 10],
   `align_min_units` ∈ [1, 100])
 - `PUT /settings/{key}` body = value (partial ok, merged over the current value; unknown fields → 422) → updated value
@@ -360,8 +443,12 @@ media_with_quality}, kind_counts: {video: n, short: n, live?: n, ...}, playlist_
   `captions_empty` media count as `none` (also when YouTube ASR exists) and never as `manual`/`auto_only`/`unknown`;
   `empty` is the subset of `none` with `captions_empty` (`captions=empty` filters them).
 - `GET /media/{id}` → `MediaDetail`
-- `POST /media/download` `{media_ids?: [...], filter?: <same query object as GET /media>, caption_langs?: ["zh-TW", ...], include_auto: false}`
-  → `{queued: n, skipped: n, skipped_reasons: {already_downloaded|members_only|empty_captions|no_usable_captions|not_found: n}}`.
+- `POST /media/download` `{media_ids?: [...], filter?: <same query object as GET /media>, caption_langs?: ["zh-TW", ...], include_auto: false, ocr?: true|false|null}`
+  → `{queued: n, skipped: n, skipped_reasons: {already_downloaded|members_only|empty_captions|no_usable_captions|not_found: n}, ocr: n}`.
+  `ocr` (hard-subtitle OCR): `true` = also download video and OCR every queued media; `false` = never (media without
+  usable captions are skipped as before); `null` (default) = `settings.ocr.auto_when_no_captions` — media without
+  usable captions are queued with OCR instead of skipped (not yet detailed media: OCR only if the download finds no
+  usable track). Response `ocr` = queued media that will be OCRed (forced, or known to have no usable captions).
   Either explicit ids or "everything matching filter" (select-all). Media without the required captions are skipped
   unless include_auto/no-caption allowed (POC: skip when no usable track); `captions_empty` media are skipped as
   `empty_captions` unless `include_auto` and the media has YouTube ASR.
@@ -396,6 +483,20 @@ media_with_quality}, kind_counts: {video: n, short: n, live?: n, ...}, playlist_
   `sex`/`sex_prob`).
 - `POST /media/{id}/align` `{force?: false}` → `{queued: 0|1}` (0 when the media has no segments)
 - `POST /media/{id}/validate` `{force?: false}` → `{queued: 0|1}` (`media.validate {chain: false}`; 0 without segments)
+- `GET /media/{id}/ocr` → `OcrOut` — hard-subtitle OCR result (all events, time order):
+  `{status: none|pending|done|no_subtitles|failed, summary: metadata.ocr, model, frame_size: [w, h], fps,
+  styles: [{id, cy, h, fill: [r,g,b], edge: [r,g,b], accepted, reasons, stats}], tracks: [{track, styles: [id],
+  band: [y0, y1]}], events: [OcrEvent], total, job_active, video_available}`;
+  `OcrEvent = {idx, cue_id, start, end, raw_text, text, s2t_converted, track, style, bbox: [x0, y0, x1, y1] (frame_size
+  px), lines, conf, n_frames, agreement, status: paired|rejected, reason: no_speech|little_speech|rate_mismatch|
+  static_text|concurrent_tracks|low_ocr_confidence|too_short_text|too_long|too_short|null, speech_sec, paired_start,
+  paired_end, crop_url|null}`
+- `GET /media/{id}/ocr/crops/{idx}.webp` → `image/webp` crop of one event (≤ 96 px high; `private, max-age=86400`)
+- `POST /media/{id}/ocr` `{force?: false}` → `Job` (`media.ocr {rerun}` or `media.download {video_only, ocr}`); 409
+  `ocr_disabled`, `unsupported_platform`, `not_downloaded` (no original audio yet), `job_active`, `ocr_exists` (an OCR
+  track exists and `force` is false). Progress: the media's jobs; `MediaDetail.ocr_job_active`.
+- `POST /media/{id}/reprocess` `{from_step: "media.ocr"}` → 409 `ocr_video_missing` when the video was deleted (use
+  `POST /media/{id}/ocr`).
 - `GET /media/{id}/quality` → `MediaQuality` (all columns) + `details` (passed through as stored; the pipeline stores
   `details.spectrum: [{hz, db}]`, the long-term average spectrum of the original audio, when available)
 
@@ -409,8 +510,9 @@ media_with_quality}, kind_counts: {video: n, short: n, live?: n, ...}, playlist_
  age_limit, metadata, failure_message, jobs: [Job], tracks: [Track], quality: MediaQuality|null,
  text_converted: bool (some track converted Simplified → Traditional), text_convertible: bool (convert-text would
  still change something), text_conversion: metadata.text_conversion|null, validity_counts: {valid, invalid, unknown},
- validation_job_active: bool (a media.validate job is queued/running)}`
-`Track = {id, language, kind, format, s2t_converted: bool, script: simplified|traditional|neutral|mixed|unknown|not_chinese|null
+ validation_job_active: bool (a media.validate job is queued/running), ocr: metadata.ocr|null (see "Hard-subtitle OCR"),
+ ocr_job_active: bool}`
+`Track = {id, language, kind (manual|auto|uploaded|ocr), format, s2t_converted: bool, script: simplified|traditional|neutral|mixed|unknown|not_chinese|null
  (null = never examined), cues_converted: n|null}`
 
 ### Segments & review
@@ -486,7 +588,9 @@ media_with_quality}, kind_counts: {video: n, short: n, live?: n, ...}, playlist_
 ### Datasets & export
 - `GET /datasets`, `POST /datasets` `{name, description, filters}`, `GET/PATCH/DELETE /datasets/{id}`
 - `POST /datasets/preview` `{filters}` → `{segment_count, total_sec, speakers: n, channels: n, by_channel: [...],
-   by_sex: {...}, excluded: {repeated: n, auto_caption: n, low_quality: n, speaker_cap: n, invalid: n}}`
+   by_sex: {...}, excluded: {repeated: n, auto_caption: n, ocr_caption: n, ocr_unverified: n, low_quality: n,
+   speaker_cap: n, invalid: n}}` (`ocr_caption`: OCR segments left out because the source was not chosen;
+   `ocr_unverified`: OCR segments with validity `unknown`)
    (invalid segments are always excluded — not a filter; `excluded.invalid` = segments matching every other
    criterion but invalid)
 - `POST /datasets/{id}/export` `{format: "jsonl"|"csv", include_audio: true}` → `DatasetExport`
@@ -503,7 +607,8 @@ media_with_quality}, kind_counts: {video: n, short: n, live?: n, ...}, playlist_
 ```json
 {
   "channel_ids": [], "media_ids": [], "speaker_ids": [],
-  "text_sources": ["manual_caption"],          // add "auto_caption" to include YouTube ASR captions
+  "text_sources": ["manual_caption"],          // add "auto_caption" (YouTube ASR) / "ocr_caption" (burned-in
+                                               // subtitles; only validity "valid" ones are taken)
   "review_status": ["passed", "unchecked"],
   "exclude_repeated": true, "max_repeated_overlap": 0.2,
   "speaker_states": ["single", "unknown"],
@@ -515,7 +620,7 @@ media_with_quality}, kind_counts: {video: n, short: n, live?: n, ...}, playlist_
 }
 ```
 
-Manifest row: `{segment_id, revision, audio_path, start_sec, end_sec, duration, text, text_source, text_corrected,
+Manifest row (`text_source`: manual_caption | auto_caption | uploaded | ocr_caption | none): `{segment_id, revision, audio_path, start_sec, end_sec, duration, text, text_source, text_corrected,
 text_converted (caption text was converted Simplified → Traditional, segment flag s2t_converted), language,
 media: {platform, id, url, title, published_at, license}, channel: {id, title}, speaker: {id, label, display_name},
 quality: {snr, c50, dnsmos_*, speech_ratio, bandwidth_hz, sample_rate}, profile: {...}, sha256}`

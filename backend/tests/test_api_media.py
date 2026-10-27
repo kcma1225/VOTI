@@ -107,7 +107,8 @@ def test_download_explicit_ids(annotator_client, corpus, db):
     from voti.models import Job, Media
     _, _, m = corpus
     ids = [str(m[k].id) for k in ("manual", "auto_only", "ready", "unknown")]
-    r = annotator_client.post("/api/media/download", json={"media_ids": ids, "caption_langs": ["zh-TW"]})
+    r = annotator_client.post("/api/media/download", json={"media_ids": ids, "caption_langs": ["zh-TW"],
+                                                           "ocr": False})  # no hard-subtitle OCR fallback
     assert r.status_code == 200, r.text
     body = r.json()
     # manual: ok; unknown captions: queued (worker decides); auto_only: skipped; ready: already done
@@ -118,7 +119,7 @@ def test_download_explicit_ids(annotator_client, corpus, db):
     assert db.get(Media, m["auto_only"].id).status == "detailed"
     jobs = db.scalars(select(Job).where(Job.kind == "media.download")).all()
     assert {j.media_id for j in jobs} == {m["manual"].id, m["unknown"].id}
-    assert jobs[0].payload == {"caption_langs": ["zh-TW"], "include_auto": False}
+    assert jobs[0].payload == {"caption_langs": ["zh-TW"], "include_auto": False, "ocr": False}
     assert jobs[0].queue == "download"
     # include_auto lets auto-only through
     r = annotator_client.post("/api/media/download", json={"media_ids": [str(m["auto_only"].id)],
@@ -132,11 +133,11 @@ def test_download_select_all_uses_media_filter(annotator_client, corpus, db):
     flt = {"channel_id": str(ch1.id), "kind": "video", "captions": "manual"}
     listed = _ids(annotator_client.get("/api/media", params=flt))
     assert listed == {str(m[k].id) for k in ("manual", "manual_en", "ready")}
-    r = annotator_client.post("/api/media/download", json={"filter": flt, "caption_langs": ["zh-TW"]})
+    r = annotator_client.post("/api/media/download", json={"filter": flt, "caption_langs": ["zh-TW"], "ocr": False})
     assert r.status_code == 200, r.text
     # manual_en lacks zh-TW manual captions, ready is already done
     assert r.json() == {"queued": 1, "skipped": 2,
-                        "skipped_reasons": {"no_usable_captions": 1, "already_downloaded": 1}}
+                        "skipped_reasons": {"no_usable_captions": 1, "already_downloaded": 1}, "ocr": 0}
     jobs = db.scalars(select(Job.media_id).where(Job.kind == "media.download")).all()
     assert jobs == [m["manual"].id]
     # list form of kind is accepted in the body filter too

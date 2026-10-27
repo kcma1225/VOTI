@@ -256,7 +256,7 @@ NAN_JSON3 = {"events": [{"tStartMs": 1000, "dDurationMs": 1500, "segs": [{"utf8"
 
 def _fake_download(captured):
     def fake(vid, workdir, fo, caption_langs=None, include_auto=False, require_captions=True, progress=None,
-             should_cancel=None):
+             should_cancel=None, **kw):  # noqa: ANN003 (video= for hard-subtitle OCR)
         captured.update(caption_langs=caption_langs, include_auto=include_auto, cookiefile=fo.cookiefile,
                         cookie_text=Path(fo.cookiefile).read_text() if fo.cookiefile else None)
         audio = Path(workdir) / "original.webm"

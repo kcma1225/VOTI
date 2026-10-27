@@ -199,7 +199,8 @@ class PlaylistItem(Base):
 class Asset(Base):
     """An object in RustFS. kind:
     info_json | original_audio | normalized_audio (16 kHz mono wav) | subtitle |
-    frames_quality (npz: brouhaha vad/snr/c50, silero vad, per-frame) | fingerprint | export_archive | export_manifest
+    frames_quality (npz: brouhaha vad/snr/c50, silero vad, per-frame) | fingerprint | export_archive | export_manifest |
+    ocr_video (temporary ≤720p video-only stream for media.ocr; deleted after OCR) | ocr_events (OCR events json)
     """
     __tablename__ = "assets"
     __table_args__ = (Index("assets_media_kind", "media_id", "kind"),)
@@ -215,7 +216,8 @@ class Asset(Base):
 
 
 class Track(Base):
-    """Subtitle track. kind: manual | auto | translated | uploaded"""
+    """Subtitle track. kind: manual | auto | translated | uploaded | ocr (burned-in subtitles read by
+    voti.pipeline.ocr; format "json", asset = ocr_events)"""
     __tablename__ = "tracks"
     id: Mapped[uuid.UUID] = pk()
     media_id: Mapped[uuid.UUID] = fk("media.id")
@@ -321,7 +323,7 @@ class RepeatedRegion(Base):
 class Segment(Base):
     """A unit of the corpus: [start_sec, end_sec) on the media's normalized audio.
 
-    text_source: manual_caption | auto_caption | uploaded | none
+    text_source: manual_caption | auto_caption | uploaded | ocr_caption (burned-in subtitles, voti.pipeline.ocr) | none
     review_status: unchecked | passed | needs_fix | excluded
     speaker_state: unknown | single | multiple | overlap
     flags (list[str]): low_speech, low_snr, clipped, repeated, overlap, boundary_adjusted, too_short, too_long,

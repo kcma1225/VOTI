@@ -24,6 +24,7 @@ from ..sources.youtube import caption_rank
 from ..queue import PIPELINE, enqueue, is_side_job, requeue
 from . import schemas as S
 from .errors import ApiError
+from .settings import get_setting
 from .views import (Paging, _media_base, downloaded_condition, get_or_404, job_out, job_outs, media_summaries,
                     current_run_id, new_condition, paging, segment_summaries)
 
@@ -229,6 +230,9 @@ class DownloadIn(BaseModel):
     filter: MediaFilter | None = None
     caption_langs: list[str] = []
     include_auto: bool = False
+    # hard-subtitle OCR: true = also download video and OCR every selected media; false = never; null (default) =
+    # settings.ocr.auto_when_no_captions decides for media without usable captions
+    ocr: bool | None = None
 
 
 # media already in flight or done are not re-queued
@@ -266,9 +270,12 @@ def download(body: DownloadIn, user: User = Depends(current_user), s: Session = 
         rows = s.scalars(select(Media).where(Media.id.in_(body.media_ids))).all()
     else:
         rows = s.scalars(filtered_media(body.filter)).all()
-    queued = 0
+    queued = ocr_n = 0
     reasons: dict[str, int] = {}
     payload = {"caption_langs": body.caption_langs, "include_auto": body.include_auto}
+    ocr_cfg = get_setting(s, "ocr").model_dump()
+    ocr_ok = ocr_cfg["enabled"] and body.ocr is not False
+    ocr_auto = ocr_ok and (body.ocr is True or ocr_cfg["auto_when_no_captions"])
     for m in rows:
         if m.status in NOT_DOWNLOADABLE:
             reasons["already_downloaded"] = reasons.get("already_downloaded", 0) + 1
@@ -276,21 +283,26 @@ def download(body: DownloadIn, user: User = Depends(current_user), s: Session = 
         if m.failure_code == "members_only" or (m.availability or "") in ("subscriber_only", "premium_only"):
             reasons["members_only"] = reasons.get("members_only", 0) + 1
             continue
-        if m.captions_empty and not (body.include_auto and m.has_auto_captions):
-            reasons["empty_captions"] = reasons.get("empty_captions", 0) + 1
+        no_cc = (m.captions_empty and not (body.include_auto and m.has_auto_captions)) or \
+            _usable_captions(m, body.caption_langs, body.include_auto) is False
+        if no_cc and not ocr_auto:
+            key = "empty_captions" if m.captions_empty else "no_usable_captions"
+            reasons[key] = reasons.get(key, 0) + 1
             continue
-        if _usable_captions(m, body.caption_langs, body.include_auto) is False:
-            reasons["no_usable_captions"] = reasons.get("no_usable_captions", 0) + 1
-            continue
+        p = dict(payload)
+        if body.ocr is not None:     # true: video always; false: never. null: settings.ocr decides in the worker
+            p["ocr"] = body.ocr
+        if (ocr_ok and body.ocr is True) or (no_cc and ocr_auto):
+            ocr_n += 1
         m.status, m.failure_code, m.failure_message = "queued", None, None
-        enqueue(s, "media.download", media_id=m.id, channel_id=m.channel_id, payload=payload, created_by=user.id)
+        enqueue(s, "media.download", media_id=m.id, channel_id=m.channel_id, payload=p, created_by=user.id)
         queued += 1
     if body.media_ids is not None:
         missing = len(set(body.media_ids)) - len(rows)
         if missing:
             reasons["not_found"] = missing
     s.commit()
-    return S.DownloadOut(queued=queued, skipped=sum(reasons.values()), skipped_reasons=reasons)
+    return S.DownloadOut(queued=queued, skipped=sum(reasons.values()), skipped_reasons=reasons, ocr=ocr_n)
 
 
 # ───────────────────────────── detail ─────────────────────────────
@@ -310,6 +322,7 @@ def media_detail(media_id: uuid.UUID, _: User = Depends(current_user), s: Sessio
                                           .group_by(Segment.validity)).all()))
     validating = s.scalar(select(Job.id).where(Job.kind == "media.validate", Job.media_id == m.id,
                                                Job.status.in_(("queued", "running"))).limit(1)) is not None
+    ocr_active = _ocr_job_active(s, m.id)
     track_outs = [S.TrackOut(id=t.id, language=t.language, kind=t.kind, format=t.format,
                              s2t_converted=bool(s2t.get(t.id, {}).get("converted")),
                              script=s2t.get(t.id, {}).get("script"),
@@ -325,7 +338,13 @@ def media_detail(media_id: uuid.UUID, _: User = Depends(current_user), s: Sessio
         text_converted=any(tr.s2t_converted for tr in track_outs),
         text_convertible=any(textconv.convertible(t.language, s2t.get(t.id)) for t in tracks),
         text_conversion=(m.metadata_ or {}).get("text_conversion"), validity_counts=validity_counts,
-        validation_job_active=validating)
+        validation_job_active=validating, ocr=(m.metadata_ or {}).get("ocr"), ocr_job_active=ocr_active)
+
+
+def _ocr_job_active(s: Session, media_id: uuid.UUID) -> bool:
+    jobs = s.scalars(select(Job).where(Job.media_id == media_id, Job.kind.in_(("media.ocr", "media.download")),
+                                       Job.status.in_(("queued", "running")))).all()
+    return any(j.kind == "media.ocr" or (j.payload or {}).get("video_only") for j in jobs)
 
 
 RECHECK_PAYLOAD = {"force": True, "verify": True}
@@ -382,9 +401,99 @@ def reprocess(media_id: uuid.UUID, body: S.ReprocessIn, user: User = Depends(cur
         raise ApiError(400, "invalid_step", f"from_step 必須是 {', '.join(PIPELINE)} 之一")
     if m.status not in ("downloaded", "processing", "ready", "failed", "blocked"):
         raise ApiError(409, "not_downloaded", "影片尚未下載，無法重新處理")
+    if body.from_step == "media.ocr":
+        from ..pipeline import ocr as ocr_mod
+        if ocr_mod.video_asset(s, m.id) is None:
+            raise ApiError(409, "ocr_video_missing", "OCR 用的影片已刪除；請用 POST /media/{id}/ocr 重新辨識")
     job = enqueue(s, body.from_step, media_id=m.id, channel_id=m.channel_id, payload={"reprocess": True},
                   created_by=user.id)
     m.status, m.stage, m.failure_code, m.failure_message = "processing", body.from_step, None, None
+    s.commit()
+    return job_out(s, job)
+
+
+# ───────────────────────────── hard-subtitle OCR ─────────────────────────────
+
+@router.get("/{media_id}/ocr", response_model=S.OcrOut)
+def media_ocr(media_id: uuid.UUID, _: User = Depends(current_user), s: Session = Depends(get_session)):
+    """Burned-in subtitle events of the media's OCR track (voti.pipeline.ocr), all of them, in time order."""
+    import json as _json
+
+    from ..models import Asset
+    from ..pipeline import ocr as ocr_mod
+    m = get_or_404(s, Media, media_id, "影片")
+    summary = dict((m.metadata_ or {}).get("ocr") or {})
+    out = S.OcrOut(status=summary.get("status") or "none", summary=summary, job_active=_ocr_job_active(s, m.id),
+                   video_available=ocr_mod.video_asset(s, m.id) is not None)
+    track = s.scalar(select(Track).where(Track.media_id == m.id, Track.kind == "ocr").order_by(Track.created_at.desc()))
+    asset = s.get(Asset, track.asset_id) if track is not None and track.asset_id else None
+    if asset is None:
+        return out
+    data = _json.loads(storage.get_bytes(asset.key))
+    cues = {c.idx: c.id for c in s.scalars(select(Cue).where(Cue.track_id == track.id))}
+    events = []
+    for r in data.get("events", []):
+        events.append(S.OcrEventOut(
+            **{k: r.get(k) for k in ("idx", "start", "end", "raw_text", "text", "s2t_converted", "track", "style",
+                                     "bbox", "lines", "conf", "n_frames", "agreement", "status", "reason",
+                                     "speech_sec", "paired_start", "paired_end") if r.get(k) is not None},
+            cue_id=cues.get(r["idx"]),
+            crop_url=f"/api/media/{m.id}/ocr/crops/{r['idx']}.webp" if r.get("crop_key") else None))
+    out.model, out.frame_size, out.fps = data.get("model"), data.get("frame_size"), summary.get("fps")
+    out.styles, out.tracks, out.events, out.total = data.get("styles", []), data.get("tracks", []), events, len(events)
+    return out
+
+
+@router.get("/{media_id}/ocr/crops/{name}")
+def media_ocr_crop(media_id: uuid.UUID, name: str, _: User = Depends(current_user), s: Session = Depends(get_session)):
+    """The webp crop of one OCR event (`{idx}.webp`), proxied from storage; cacheable."""
+    from fastapi import Response
+
+    from ..pipeline import ocr as ocr_mod
+    get_or_404(s, Media, media_id, "影片")
+    stem = name[:-5] if name.endswith(".webp") else name
+    if not stem.isdigit():
+        raise ApiError(404, "not_found", "找不到截圖")
+    try:
+        data = storage.get_bytes(ocr_mod.crop_key(media_id, int(stem)))
+    except Exception:  # noqa: BLE001
+        raise ApiError(404, "not_found", "找不到截圖") from None
+    return Response(content=data, media_type="image/webp", headers={"Cache-Control": "private, max-age=86400"})
+
+
+@router.post("/{media_id}/ocr", response_model=S.JobOut)
+def run_ocr(media_id: uuid.UUID, body: S.OcrRunIn | None = None, user: User = Depends(current_user),
+            s: Session = Depends(get_session)):
+    """(Re-)run hard-subtitle OCR: media.ocr {rerun} when the temporary video is still stored, otherwise a
+    video-only media.download {video_only, ocr} that chains media.ocr {rerun}. Either way the media is re-segmented
+    afterwards (media.segment {reprocess} → align → validate → …); reviewed / corrected segments are kept."""
+    from ..pipeline import ocr as ocr_mod
+    body = body or S.OcrRunIn()
+    m = get_or_404(s, Media, media_id, "影片")
+    if not get_setting(s, "ocr").enabled:
+        raise ApiError(409, "ocr_disabled", "硬字幕 OCR 已在設定中停用")
+    if m.platform != "youtube":
+        raise ApiError(409, "unsupported_platform", "只有 YouTube 影片可以下載影片做 OCR")
+    from ..models import Asset
+    has_audio = s.scalar(select(Asset.id).where(Asset.media_id == m.id, Asset.kind == "original_audio")
+                         .limit(1)) is not None
+    if not has_audio or m.status in ("queued", "downloading"):
+        raise ApiError(409, "not_downloaded", "影片尚未下載，請先下載（可在下載時選擇 OCR）")
+    if _ocr_job_active(s, m.id):
+        raise ApiError(409, "job_active", "OCR 工作已在執行中")
+    has_track = s.scalar(select(Track.id).where(Track.media_id == m.id, Track.kind == "ocr").limit(1)) is not None
+    if has_track and not body.force:
+        raise ApiError(409, "ocr_exists", "已有 OCR 字幕；要重新辨識請帶 force: true")
+    if ocr_mod.video_asset(s, m.id) is not None:
+        job = enqueue(s, "media.ocr", media_id=m.id, channel_id=m.channel_id, payload={"rerun": True},
+                      created_by=user.id)
+        m.status, m.stage, m.failure_code, m.failure_message = "processing", "media.ocr", None, None
+    else:
+        job = enqueue(s, "media.download", media_id=m.id, channel_id=m.channel_id,
+                      payload={"video_only": True, "ocr": True}, created_by=user.id)
+    meta = dict(m.metadata_ or {})
+    meta["ocr"] = {**dict(meta.get("ocr") or {}), "status": "pending", "requested": "rerun"}
+    m.metadata_ = meta
     s.commit()
     return job_out(s, job)
 

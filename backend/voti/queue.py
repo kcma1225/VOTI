@@ -69,6 +69,7 @@ KINDS: dict[str, str] = {
     "media.normalize": "audio",       # → normalized.wav, ffprobe, bandwidth, loudness, clipping
     "media.quality": "ml",            # brouhaha (legacy-ml) + silero + dnsmos → media_quality, speech_regions
     "media.diarize": "ml",            # pyannote → diarization_turns
+    "media.ocr": "ml",                # burned-in subtitles (PP-OCR on the ocr_video asset) → Track(kind="ocr") + cues
     "media.segment": "audio",         # cues + VAD + diarization → segments with quality snapshot
     "media.align": "ml",              # MMS_FA CTC forced alignment → per-character times (word_alignments)
     "media.validate": "ml",           # caption ↔ audio check: VoxLingua107 language ID + alignment confidence
@@ -82,8 +83,9 @@ KINDS: dict[str, str] = {
 }
 
 # Pipeline order after download; each step enqueues the next on success (see pipeline.chain).
-PIPELINE = ["media.normalize", "media.quality", "media.diarize", "media.segment", "media.align", "media.validate",
-            "media.embed", "media.profile", "media.fingerprint"]
+# media.ocr runs only for media with an `ocr_video` asset (pipeline.handlers._chain skips it otherwise).
+PIPELINE = ["media.normalize", "media.quality", "media.diarize", "media.ocr", "media.segment", "media.align",
+            "media.validate", "media.embed", "media.profile", "media.fingerprint"]
 
 # media.* kinds that are not pipeline steps: their failure must not change Media.status
 SIDE_KINDS = {"media.convert_text"}
@@ -91,8 +93,10 @@ SIDE_KINDS = {"media.convert_text"}
 
 def is_side_job(kind: str, payload: dict | None) -> bool:
     """Side jobs never change Media.status. media.align / media.validate run outside the pipeline chain
-    (re-alignment / re-validation after an edit, backfill: payload chain=false) are side jobs too."""
-    return kind in SIDE_KINDS or (kind in ("media.align", "media.validate") and (payload or {}).get("chain") is False)
+    (re-alignment / re-validation after an edit, backfill: payload chain=false) are side jobs too, and so is a
+    media.download that only re-fetches the video for OCR (payload video_only=true, POST /media/{id}/ocr)."""
+    return kind in SIDE_KINDS or (kind in ("media.align", "media.validate") and (payload or {}).get("chain") is False) \
+        or (kind == "media.download" and bool((payload or {}).get("video_only")))
 
 # Failure codes that mean "not eligible" rather than "broken": media becomes `skipped`.
 SKIP_CODES = {"no_usable_captions", "members_only", "empty_captions"}

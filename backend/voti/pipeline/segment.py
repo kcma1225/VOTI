@@ -15,6 +15,9 @@ Re-running is idempotent: ids are uuid5(media_id, start, end); rows that disappe
 human-touched rows (reviewed / corrected / boundary-edited) are kept and new segments overlapping them dropped.
 Segments whose cues were converted Simplified → Traditional (cue flag s2t_converted, voti.textconv) get the flag
 s2t_converted; their original_text is the converted text.
+OCR tracks (kind "ocr", voti.pipeline.ocr) are used only when the media has no manual/uploaded/auto track, and only
+their cues flagged `ocr_paired` (subtitle text that coexists with speech); text_source "ocr_caption". Speech
+without such a cue gets no segment (gaps between OCR cues stay unsegmented).
 """
 from __future__ import annotations
 
@@ -47,7 +50,8 @@ MUST_MERGE_GAP = 1.5      # …and below segment_min_sec they are merged up to t
 SOFT_TARGET_SEC = 10.0
 PAUSE_SEC = 0.3
 SENTENCE_END = re.compile(r"[。！？!?…\.]\s*[」』”\"')）]*\s*$")
-TEXT_SOURCE = {"manual": "manual_caption", "auto": "auto_caption", "uploaded": "uploaded"}
+TEXT_SOURCE = {"manual": "manual_caption", "auto": "auto_caption", "uploaded": "uploaded", "ocr": "ocr_caption"}
+OCR_PAIRED = "ocr_paired"  # voti.pipeline.ocr: only OCR cues paired with speech become segments
 S2T_FLAG = "s2t_converted"  # voti.textconv.FLAG (not imported: textconv pulls in opencc)
 
 
@@ -240,7 +244,7 @@ def group_cues(cues: Sequence[CueIn], vad: Vad, cfg: Config) -> list[Plan]:
             gap = c.start - g_end
             merged = c.end - g_start
             cur_dur = g_end - g_start
-            if "speaker_change" in c.flags and cur_dur >= 0.5:
+            if ("speaker_change" in c.flags and cur_dur >= 0.5) or OCR_GAP in c.flags:
                 plans.append(_plan_of(cur))
                 cur = [c]
                 continue
@@ -255,6 +259,22 @@ def group_cues(cues: Sequence[CueIn], vad: Vad, cfg: Config) -> list[Plan]:
     if cur:
         plans.append(_plan_of(cur))
     return plans
+
+
+OCR_GAP = "ocr_after_gap"  # (in-memory flag) the previous OCR event was rejected: never merge across it
+
+
+def ocr_cues(rows: Sequence) -> list[CueIn]:
+    """OCR track cues → only the paired ones; a cue that follows a rejected event starts a new group (its audio
+    gap holds speech whose subtitle was rejected, e.g. a concurrent clip caption)."""
+    out, prev_ok = [], True
+    for c in rows:
+        ok = OCR_PAIRED in (c.flags or [])
+        if ok:
+            flags = list(c.flags or []) + ([] if prev_ok else [OCR_GAP])
+            out.append(CueIn(str(c.id), c.start_sec, c.end_sec, c.text, flags))
+        prev_ok = ok
+    return out
 
 
 def _plan_of(cues: Sequence[CueIn]) -> Plan:
@@ -372,7 +392,7 @@ def choose_track(tracks: Sequence[Track], preferred_id: str | None = None) -> Tr
         if lang.startswith("zh") or lang.startswith("nan"):
             return 10
         return 20
-    kind_rank = {"manual": 0, "uploaded": 1, "auto": 2}
+    kind_rank = {"manual": 0, "uploaded": 1, "auto": 2, "ocr": 3}  # burned-in subtitles only without any CC
     usable = [t for t in tracks if t.kind in kind_rank]
     if not usable:
         return None
@@ -440,8 +460,9 @@ def run(media_id: uuid.UUID, progress: Callable[[float, str], None] = lambda f, 
                              primary.get("track_id"))
         cues = []
         if track is not None:
-            cues = [CueIn(str(c.id), c.start_sec, c.end_sec, c.text, list(c.flags or []))
-                    for c in s.scalars(select(Cue).where(Cue.track_id == track.id).order_by(Cue.idx))]
+            rows = s.scalars(select(Cue).where(Cue.track_id == track.id).order_by(Cue.idx)).all()
+            cues = ocr_cues(rows) if track.kind == "ocr" else \
+                [CueIn(str(c.id), c.start_sec, c.end_sec, c.text, list(c.flags or [])) for c in rows]
         turns = [(t.local_speaker, t.start_sec, t.end_sec, t.is_overlap) for t in
                  s.scalars(select(DiarizationTurn).where(DiarizationTurn.media_id == media_id)
                            .order_by(DiarizationTurn.start_sec))]

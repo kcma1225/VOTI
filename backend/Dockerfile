@@ -55,7 +55,7 @@ RUN set -eux; \
         pip uninstall -y onnxruntime; \
         pip install --uploaded-prior-to "${PIP_CUTOFF}" "onnxruntime-gpu==${ONNXRUNTIME_GPU_VERSION}"; \
     fi; \
-    python -c "import torch, torchaudio, speechbrain, pyannote.audio, silero_vad, onnxruntime, librosa, sklearn; \
+    python -c "import torch, torchaudio, speechbrain, pyannote.audio, silero_vad, onnxruntime, librosa, sklearn, cv2, rapidocr; \
 print('torch', torch.__version__, 'onnxruntime', onnxruntime.__version__, onnxruntime.get_available_providers())"
 
 COPY backend/voti /app/voti
