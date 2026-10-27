@@ -1,0 +1,14 @@
+torch==2.7.1
+torchaudio==2.7.1
+numpy==1.26.4
+pyannote.audio==3.3.0
+lightning==2.4.0
+speechbrain==1.0.3
+transformers==4.46.3
+huggingface_hub==0.26.2
+loralib==0.1.2
+einops==0.8.0
+soundfile==0.12.1
+boto3==1.40.64
+fastapi==0.120.4
+uvicorn==0.38.0

@@ -76,15 +76,15 @@ shorter than 1 s: result null).
 
 | key | value |
 |---|---|
-| `youtube` | `{"rate_limit_kbps": 0, "sleep_between_downloads_sec": 5, "max_concurrent_downloads": 1, "cookies_enabled": false}` |
+| `youtube` | `{"rate_limit_kbps": 0, "sleep_between_downloads_sec": 5, "sleep_between_requests_sec": 2, "max_concurrent_downloads": 1, "cookies_enabled": false}` |
 | `pipeline` | `{"voxprofile_backbone": "whisper-large-v3", "diarization_enabled": true, "segment_min_sec": 1.0, "segment_max_sec": 20.0, "edge_pad_sec": 0.1}` |
 | `quality_thresholds` | `{"low_speech_ratio": 0.5, "low_snr_db": 10, "clipping_ratio": 0.001}` (used to set segment flags) |
 
 ## HTTP API
 
 All under `/api`. JSON. Auth by `voti_session` cookie (HttpOnly, SameSite=Lax, Secure when
-`X-Forwarded-Proto: https`). State-changing requests require same-origin (`Origin` host == `Host`, or
-`Sec-Fetch-Site: same-origin`). Errors: `{"detail": "<message zh-TW>", "code": "<machine code>"}`.
+`X-Forwarded-Proto: https`). State-changing requests require same-origin (`Sec-Fetch-Site: same-origin|none` when sent, else
+`Origin` host == `Host`; requests with neither header are refused, so scripts must send `Origin`). Unknown `Host` → 400. Errors: `{"detail": "<message zh-TW>", "code": "<machine code>"}`.
 List endpoints: `?limit=&offset=` (default 50, max 500), response `{"items": [...], "total": n}`.
 Timestamps ISO-8601 UTC strings. IDs are UUID strings.
 
@@ -93,15 +93,16 @@ Timestamps ISO-8601 UTC strings. IDs are UUID strings.
 - `POST /auth/logout` → 204
 - `GET /auth/me` → `User` (401 when not logged in)
 - `POST /auth/password` `{current_password, new_password}` → 204
-- `GET /users` (admin) → list of `User`
+- `GET /users` (admin) → `{items: [User], total}`
 - `POST /users` (admin) `{username, display_name, password, role}` → `User`
 - `PATCH /users/{id}` (admin) `{display_name?, role?, is_active?, password?}` → `User`
 
 `User = {id, username, display_name, role: "admin"|"annotator", is_active, created_at, last_login_at}`
+`UserRef = {id, display_name}` (used wherever a row points at a user)
 
 ### Settings (admin)
 - `GET /settings` → `{youtube: {...}, pipeline: {...}, quality_thresholds: {...}, cookies: {present: bool, updated_at}}`
-- `PUT /settings/{key}` body = value → updated value
+- `PUT /settings/{key}` body = value (partial ok, merged over the current value; unknown fields → 422) → updated value
 - `PUT /settings/cookies` multipart `file` (Netscape cookies.txt) → `{present: true, updated_at}`; `DELETE /settings/cookies`
 
 ### Sources (adding things)
@@ -115,19 +116,24 @@ Timestamps ISO-8601 UTC strings. IDs are UUID strings.
 - `POST /channels/{id}/refresh` → `Job` (re-list)
 - `POST /channels/{id}/detail` `{media_ids?: [...]}` → `{queued: n}` (fetch full metadata for listed media; all un-detailed when omitted)
 - `PATCH /channels/{id}` `{notes}` → `ChannelDetail`
-- `GET /playlists/{id}` → `Playlist` + `media_count`
+- `GET /playlists?channel_id=` → `{items: [Playlist], total}`
+- `GET /playlists/{id}` → `Playlist`
+
+`Playlist = {id, platform, platform_playlist_id, channel_id, title, description, url, list_status, last_listed_at,
+ created_at, media_count, thumbnail_url}` (thumbnail from the playlist's extractor metadata when present)
 
 `ChannelSummary = {id, platform, title, handle, url, thumbnail_url, subscriber_count, video_count, list_status,
 last_listed_at, counts: {listed, detailed, with_manual_captions, downloaded, ready, failed}, hours: {listed, ready, speech}}`
 `ChannelDetail = ChannelSummary + {description, banner_url, country, tags, notes, metadata,
-speakers: {candidates: n, total_sec}, quality: {snr_mean, dnsmos_ovrl, ...}}`
+speakers: {candidates: n, total_sec}, quality: {snr_mean, dnsmos_ovrl, c50_mean, speech_ratio, real_bandwidth_hz,
+media_with_quality}, kind_counts: {video: n, short: n, live?: n, ...}, playlist_count: n}`
 
 ### Media (videos)
 - `GET /media` — filters (all optional):
   `channel_id, playlist_id, q (title/description), kind (video|short|live, comma list), status (comma list),
    captions (manual|auto|any|none), include_auto (bool, default false — auto-only videos hidden unless true or captions=auto),
    caption_lang, license (youtube|creative_commons), min_duration, max_duration, published_after, published_before,
-   detailed (bool), sort (published_at|-published_at|duration|-duration|views|-views|title), limit, offset`
+   detailed (bool), upsampled_suspect (bool: media_quality.upsampled_suspect is / is not true), sort (published_at|-published_at|duration|-duration|views|-views|title), limit, offset`
   → `{items: [MediaSummary], total, facets: {kind: {video: n, short: n}, captions: {manual: n, auto_only: n, none: n, unknown: n}, license: {...}, status: {...}}}`
 - `GET /media/{id}` → `MediaDetail`
 - `POST /media/download` `{media_ids?: [...], filter?: <same query object as GET /media>, caption_langs?: ["zh-TW", ...], include_auto: false}`
@@ -138,17 +144,21 @@ speakers: {candidates: n, total_sec}, quality: {snr_mean, dnsmos_ovrl, ...}}`
 - `GET /media/{id}/timeline` → `{duration, hop_sec, vad: [..downsampled ≤2000 pts], snr: [...], speech_regions: [[s,e]],
    diarization: [{speaker, start, end, overlap}], repeated: [{id, start, end, position, excluded}], cues: [{start,end,text}],
    segments: [SegmentSummary]}`
-- `GET /media/{id}/quality` → `MediaQuality` (all columns) + `details`
+- `GET /media/{id}/quality` → `MediaQuality` (all columns) + `details` (passed through as stored; the pipeline stores
+  `details.spectrum: [{hz, db}]`, the long-term average spectrum of the original audio, when available)
 
 `MediaSummary = {id, platform, platform_media_id, url, kind, title, thumbnail_url, duration_sec, published_at, view_count,
  license, has_manual_captions, has_auto_captions, manual_caption_langs, auto_caption_langs, status, stage, failure_code,
- channel: {id, title}, quality?: {snr_mean, dnsmos_ovrl, real_bandwidth_hz, speech_ratio}, segment_count}`
+ channel: {id, title}, quality?: {snr_mean, dnsmos_ovrl, real_bandwidth_hz, speech_ratio, sample_rate, upsampled_suspect},
+ segment_count}`
 `MediaDetail = MediaSummary + {description, tags, categories, chapters, language, like_count, comment_count, availability,
  age_limit, metadata, failure_message, jobs: [Job], tracks: [{id, language, kind}], quality: MediaQuality|null}`
 
 ### Segments & review
 - `GET /segments` — filters: `media_id, channel_id, speaker_id, review_status, text_source, q, min_snr, min_dnsmos,
-   min_speech_ratio, flags (comma, any-of), exclude_flags, has_profile, sort, limit, offset` → `{items: [SegmentSummary], total}`
+   min_speech_ratio, flags (comma, any-of), exclude_flags, has_profile, sort, limit, offset`
+   (sort: `start` (default: media then time), `snr`, `-snr`, `dnsmos`, `-dnsmos`, `duration`, `-duration`,
+   `speech_ratio`, `-speech_ratio`, `created_at`, `-created_at`, `-updated_at`) → `{items: [SegmentSummary], total}`
 - `GET /segments/{id}` → `SegmentDetail`
 - `PATCH /segments/{id}` `{corrected_text?, review_status?, review_note?, speaker_state?, start_sec?, end_sec?}` → `SegmentDetail`
   (boundary change bumps revision, re-enqueues embed/profile for that media lazily)
@@ -159,16 +169,19 @@ speakers: {candidates: n, total_sec}, quality: {snr_mean, dnsmos_ovrl, ...}}`
  original_text, corrected_text, text_source, local_speaker, speaker: {id, label, display_name}|null, speaker_state,
  speech_ratio, snr, c50, dnsmos_ovrl, dnsmos_p808, flags, review_status, revision, profile?: {age, sex, emotion_label}}`
 `SegmentDetail = SegmentSummary + {track_id, cue_ids, dnsmos_sig, dnsmos_bak, clipping_ratio, lufs, repeated_overlap,
- review_note, reviewed_by, reviewed_at, profile: VoiceProfile|null, history: [AuditLog]}`
+ review_note, reviewed_by: UserRef|null, reviewed_at, profile: VoiceProfile|null, history: [AuditLog]}`
+`AuditLog = {id, at, user: UserRef|null, action, entity_type, entity_id, before, after}` (newest first)
 
 ### Audio
-- `GET /audio/segments/{id}?pad=0.3` → `audio/wav` cut from normalized audio (supports HEAD)
+- `GET /audio/segments/{id}?pad=0.3&rev=<revision>` → `audio/wav` cut from normalized audio (supports HEAD).
+  `rev` only busts caches: when it equals the segment's current revision the response is cacheable
+  (`private, max-age=86400`), otherwise `private, no-cache` (+ `ETag`, `X-Segment-Revision`).
 - `GET /audio/media/{id}` → normalized wav, HTTP Range supported (proxied from S3)
 
 ### Speakers (diversity)
 - `POST /speakers/cluster` `{threshold: 0.0-1.0, scope: {channel_ids?: [...]}}` → `Job`
 - `GET /speakers/runs` → list of ClusterRun
-- `GET /speakers?run_id=(default current)&channel_id=&sort=-total_sec` → `{items: [Speaker], total}`
+- `GET /speakers?run_id=(default current)&channel_id=&q=(label/display_name)&sort=-total_sec` → `{items: [Speaker], total}`
 - `GET /speakers/{id}` → `Speaker + {segments: [SegmentSummary (top 50)], channels: [{id,title,total_sec}]}`
 - `PATCH /speakers/{id}` `{display_name?, verified?}`
 - `GET /speakers/diversity?channel_id=` → `{by_sex: {male: sec, female: sec, unknown: sec}, by_age_group: {...},
@@ -180,11 +193,12 @@ speakers: {candidates: n, total_sec}, quality: {snr_mean, dnsmos_ovrl, ...}}`
 
 ### Quality overview
 - `GET /quality/summary?channel_id=` → `{histograms: {snr: [{bin, count}], dnsmos_ovrl: [...], c50: [...],
-   bandwidth_hz: [...], speech_ratio: [...]}, sample_rates: {44100: n, 48000: n}, codecs: {...}, upsampled_suspect: n}`
+   bandwidth_hz: [...], speech_ratio: [...]}, sample_rates: {44100: n, 48000: n}, codecs: {...}, upsampled_suspect: n, media_count: n}` (per media)
 
 ### Repeated regions (intro/outro)
-- `GET /channels/{id}/repeated` → `[{group_id, position, duration, match_count, excluded, examples: [{media_id, start, end}]}]`
-- `PATCH /repeated/{group_id}` `{excluded: bool}` → applies to all regions of the group, recomputes segment repeated_overlap
+- `GET /channels/{id}/repeated` → `[{group_id, position, duration, match_count, excluded, region_count, examples: [{media_id, media_title, start, end}]}]`
+- `PATCH /repeated/{group_id}` `{excluded: bool}` → the updated group (same shape) + `{regions, segments_updated}`;
+  applies to all regions of the group, recomputes segment repeated_overlap
 - `POST /channels/{id}/dedup` → `Job`
 
 ### Datasets & export
@@ -192,7 +206,14 @@ speakers: {candidates: n, total_sec}, quality: {snr_mean, dnsmos_ovrl, ...}}`
 - `POST /datasets/preview` `{filters}` → `{segment_count, total_sec, speakers: n, channels: n, by_channel: [...],
    by_sex: {...}, excluded: {repeated: n, auto_caption: n, low_quality: n}}`
 - `POST /datasets/{id}/export` `{format: "jsonl"|"csv", include_audio: true}` → `DatasetExport`
-- `GET /datasets/{id}/exports` → list; `GET /exports/{id}/download/{manifest.jsonl|manifest.csv|README.md|dataset.tar}`
+- `GET /datasets/{id}/exports` → `{items: [DatasetExport], total}`; `GET /exports/{id}` → `DatasetExport`;
+  `GET /exports/{id}/download/{manifest.jsonl|manifest.csv|README.md|dataset.tar}`
+
+`Dataset = {id, name, description, filters (defaults filled in), created_by: UserRef|null, created_at, updated_at,
+ export_count, segment_count|null, total_sec|null (from the latest completed export), last_export: DatasetExport|null}`
+`DatasetExport = {id, dataset_id, status: queued|running|completed|failed, format, include_audio, filters (frozen),
+ segment_count, total_sec, stats, progress (0..1, from its job), size_bytes|null, files: ["manifest.jsonl", ...]
+ (downloadable names), file_details: [{name, size_bytes, url}], job: Job|null, created_by, created_at, finished_at}`
 
 #### Dataset filters
 ```json
@@ -219,8 +240,12 @@ quality: {snr, c50, dnsmos_*, speech_ratio, bandwidth_hz, sample_rate}, profile:
 - `POST /jobs/{id}/retry`, `POST /jobs/{id}/cancel`
 - `GET /stats/overview` → `{channels, media: {listed, detailed, downloaded, ready, failed}, hours: {listed, downloaded,
    speech, segments, reviewed}, segments: {total, passed, needs_fix}, speakers: {candidates, verified}, storage_bytes,
-   workers: [{name, queues, alive}], queue_depth: {fetch, audio, ml, export}}`
+   workers: [{name, queues, alive, last_seen_at, current_job: {id, kind, media_title}|null}],
+   queue_depth: {fetch, audio, ml, export}}` (workers: Redis `voti:worker:<name>` announcements, plus workers that
+   still own running jobs but stopped announcing → `alive: false`, `last_seen_at` = job heartbeat)
 - `GET /healthz` → `{ok: true}` (no auth)
 
 `Job = {id, kind, queue, status, progress, phase, message, error_code, error_message, attempts, media_id, channel_id,
- media_title?, created_at, started_at, finished_at, eta_sec?}`
+ media_title?, channel_title? (job's channel, else its media's channel), payload, result, created_at, started_at,
+ finished_at, eta_sec? (linear estimate from progress and started_at)}`
+- `GET /jobs/{id}` → `Job`

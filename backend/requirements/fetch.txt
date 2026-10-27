@@ -1,0 +1,10 @@
+# Fetch worker (YouTube). yt-dlp breaks whenever YouTube changes: bump these regularly.
+# Pins = newest releases published before 2026-10-13.
+#   [default]   yt-dlp-ejs (YouTube JS-challenge solver scripts), brotli, certifi, mutagen, pycryptodomex,
+#               requests, urllib3, websockets
+#   [curl-cffi] browser TLS impersonation; YouTube subtitle (timedtext) requests ask for it
+#   [deno]      the JS runtime yt-dlp recommends, as a wheel (binary lands in the Python scripts dir, which
+#               yt-dlp searches) - so the image needs no separate node/deno install. node on PATH also works.
+yt-dlp[default,curl-cffi,deno]==2026.8.19
+curl-cffi==0.16.0
+deno==2.9.7

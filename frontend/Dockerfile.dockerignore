@@ -1,0 +1,10 @@
+# Used instead of the root .dockerignore when building frontend/Dockerfile (context = repo root).
+*
+!frontend
+frontend/node_modules
+frontend/dist
+frontend/dist-mock
+frontend/.env*
+!frontend/.env.mock
+frontend/scripts
+**/.DS_Store

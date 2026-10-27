@@ -61,7 +61,9 @@ KINDS: dict[str, str] = {
 PIPELINE = ["media.normalize", "media.quality", "media.diarize", "media.segment", "media.embed",
             "media.profile", "media.fingerprint"]
 
-STALE_AFTER = timedelta(minutes=10)  # running job without heartbeat → interrupted
+STALE_AFTER = timedelta(minutes=10)
+# Failure codes that mean "not eligible" rather than "broken": media becomes `skipped`.
+SKIP_CODES = {"no_usable_captions"}  # running job without heartbeat → interrupted
 
 
 class JobError(Exception):
@@ -233,8 +235,13 @@ def _on_media_failure(ctx: JobContext, code: str, message: str, blocked: bool) -
     from .models import Media
     with session_scope() as s:
         m = s.get(Media, ctx.media_id)
-        if m is not None:
-            m.status, m.failure_code, m.failure_message = ("blocked" if blocked else "failed"), code, message[:2000]
+        if m is None:
+            return
+        # A failed re-detail must not push an already downloaded/ready media backwards.
+        if ctx.kind == "media.detail" and m.status not in ("listed", "detailed"):
+            return
+        status = "skipped" if code in SKIP_CODES else ("blocked" if blocked else "failed")
+        m.status, m.failure_code, m.failure_message = status, code, message[:2000]
 
 
 def sweep(queues: list[str]) -> None:

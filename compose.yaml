@@ -28,7 +28,7 @@ x-backend: &backend
     TORCH_HOME: /models/torch
     WORK_DIR: /work
   volumes:
-    - models:/models
+    - ${MODELS_DIR:-./models}:/models
   tmpfs:
     - /work:size=20g,uid=1000,gid=1000
   depends_on:
@@ -93,8 +93,9 @@ services:
       S3_BUCKET: voti
       MODEL_CACHE: /models
       HF_HOME: /models/hf
+      TORCH_HOME: /models/torch
     volumes:
-      - models:/models
+      - ${MODELS_DIR:-./models}:/models
     depends_on:
       rustfs: {condition: service_started}
 
@@ -139,4 +140,3 @@ volumes:
   pgdata:
   redisdata:
   objects:
-  models:
