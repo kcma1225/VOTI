@@ -20,6 +20,7 @@ from ..db import get_session
 from ..models import (Cue, DiarizationTurn, Job, Media, MediaQuality, PlaylistItem, RepeatedRegion, Segment,
                       Speaker, SpeakerAssignment, SpeechRegion, Track, User, VoiceProfile, WordAlignment)
 from .. import textconv
+from ..sources.youtube import caption_rank
 from ..queue import PIPELINE, enqueue, is_side_job, requeue
 from . import schemas as S
 from .errors import ApiError
@@ -245,8 +246,11 @@ def _usable_captions(m: Media, langs: list[str], include_auto: bool) -> bool | N
             return False
         if not langs:
             return True
-        return any(a == lang or a.startswith(lang + "-") or lang.startswith(a + "-") for lang in langs
-                   for a in available)
+        if any(a == lang or a.startswith(lang + "-") or lang.startswith(a + "-") for lang in langs
+               for a in available):
+            return True
+        # any Chinese variant stands in for a requested one (Simplified is converted on ingestion)
+        return any(caption_rank(lang) <= 4 for lang in langs) and any(caption_rank(a) <= 4 for a in available)
     if m.has_manual_captions and ok(m.manual_caption_langs or (["*"] if not langs else [])):
         return True
     if include_auto and m.has_auto_captions and ok(m.auto_caption_langs or (["*"] if not langs else [])):

@@ -27,3 +27,11 @@ def test_download_skips_members_only(admin_client, factory):
 def test_members_only_job_failure_is_skipped():
     from voti import queue
     assert "members_only" in queue.SKIP_CODES
+
+
+def test_download_accepts_other_chinese_variant(admin_client, factory):
+    ch = factory.channel()
+    a = factory.media(channel_id=ch.id, status="detailed", has_manual_captions=True, manual_caption_langs=["zh-Hans"])
+    b = factory.media(channel_id=ch.id, status="detailed", has_manual_captions=True, manual_caption_langs=["en"])
+    r = admin_client.post("/api/media/download", json={"media_ids": [str(a.id), str(b.id)], "caption_langs": ["zh-TW"]})
+    assert r.json()["queued"] == 1 and r.json()["skipped_reasons"] == {"no_usable_captions": 1}

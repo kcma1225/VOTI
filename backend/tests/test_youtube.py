@@ -139,6 +139,13 @@ def test_choose_manual_wins_primary_over_auto():
                                                                      ("zh-orig", "auto", False)]
 
 
+def test_choose_explicit_chinese_falls_back_to_other_chinese_variant():
+    caps = _caps(["en", "zh-Hans"], [])
+    assert [c["key"] for c in yt.choose_tracks(caps, ["zh-TW"])] == ["zh-Hans"]
+    assert [c["key"] for c in yt.choose_tracks(caps, ["en"])] == ["en"]
+    assert yt.choose_tracks(_caps(["en"], []), ["zh-TW"]) == []
+
+
 def test_choose_explicit_langs():
     caps = _caps(["en", "nan-TW", "zh-TW"], ["en"])
     assert [c["key"] for c in yt.choose_tracks(caps, ["nan-TW"])] == ["nan-TW"]

@@ -690,6 +690,12 @@ def choose_tracks(caps: dict, caption_langs: list[str] | None = None, include_au
             k = _match(manual_keys, want)
             if k:
                 add(k, k, "manual")
+        # A Chinese variant was asked for but the video only has another one (e.g. zh-TW asked, zh-Hans present):
+        # take the best Chinese manual track instead; Simplified text is converted to Traditional on ingestion.
+        if not chosen and any(caption_rank(w) <= 4 for w in caption_langs):
+            zh = [k for k in _ranked(manual_keys) if caption_rank(k) <= 4]
+            if zh:
+                add(zh[0], zh[0], "manual")
     else:
         ranked = _ranked(manual_keys)
         if ranked:
