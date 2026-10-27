@@ -34,6 +34,7 @@ from ..db import session_scope
 from ..models import Asset, Channel, Cue, Job, Media, Playlist, PlaylistItem, Setting, Track, utcnow
 from ..queue import Cancelled, JobContext, JobError, enqueue, handler, redis_client
 from .. import subtitles as subs_mod
+from .. import textconv
 from . import youtube as yt
 
 log = logging.getLogger("voti.sources")
@@ -78,11 +79,17 @@ def _cookies_used(fo: yt.FetchOptions) -> bool:
     return bool(fo.cookiefile)
 
 
+# YouTube failures the queue retries automatically (delayed backoff). Blocked codes (bot_check, rate_limited,
+# age/members/region restrictions) need a human (cookies, slower settings) and are never auto-retried.
+YT_TRANSIENT_CODES = {"network_or_extractor", "subtitle_unavailable", "audio_unavailable"}
+
+
 def _job_error(e: yt.YouTubeError, cookies: bool = False) -> JobError:
     msg = e.message
     if e.code == "bot_check" and cookies:
         msg += "\n（已使用 cookies 仍被擋：cookies 可能已過期，請重新匯出上傳。）"
-    return JobError(e.code, msg, blocked=e.blocked, retryable=e.retryable)
+    return JobError(e.code, msg, blocked=e.blocked,
+                    retryable=bool(e.retryable and not e.blocked and e.code in YT_TRANSIENT_CODES))
 
 
 # ───────────────────────────── Redis spacing / slots ─────────────────────────────
@@ -127,6 +134,11 @@ def download_slot(ctx: JobContext, max_concurrent: int) -> Iterator[None]:
                 if r.set(k, str(ctx.job_id), nx=True, ex=900):
                     held = k
                     break
+                if _slot_abandoned(r.get(k), ctx.job_id):
+                    # held by this job's previous (interrupted) attempt or by a job no longer running
+                    r.set(k, str(ctx.job_id), ex=900)
+                    held = k
+                    break
             if held is None:
                 _wait(ctx, 3.0, "waiting_slot")
     except Cancelled:
@@ -143,6 +155,21 @@ def download_slot(ctx: JobContext, max_concurrent: int) -> Iterator[None]:
                     r.delete(held)
             except Exception:  # noqa: BLE001
                 pass
+
+
+def _slot_abandoned(owner: bytes | None, job_id: uuid.UUID) -> bool:
+    if not owner:
+        return False
+    owner_s = owner.decode()
+    if owner_s == str(job_id):
+        return True
+    try:
+        oid = uuid.UUID(owner_s)
+    except ValueError:
+        return True
+    with session_scope() as s:
+        status = s.scalar(select(Job.status).where(Job.id == oid))
+    return status != "running"
 
 
 def _refresh_slot(ctx: JobContext) -> None:
@@ -650,27 +677,30 @@ def _store_download(ctx: JobContext, res: yt.DownloadResult) -> dict:
                                     content_type=yt.AUDIO_CONTENT_TYPES.get(ext, "application/octet-stream"),
                                     params={"format": res.audio_format, "yt_dlp": _ytdlp_version(),
                                             "reencoded": False})
-        # a re-download with a different container leaves a stale original.<old ext>
+        # a re-download with a different container leaves a stale original.<old ext>; its object is deleted
+        # only after this transaction commits (an interrupted run must not leave a row without its object)
+        stale_keys = []
         for old in s.scalars(select(Asset).where(Asset.media_id == m.id, Asset.kind == "original_audio",
                                                  Asset.id != audio.id)):
-            try:
-                storage.delete(old.key)
-            except Exception:  # noqa: BLE001
-                log.warning("could not delete stale %s", old.key)
+            stale_keys.append(old.key)
             s.delete(old)
 
         tracks_out = []
+        conversions = []
+        text_cfg = textconv.text_settings(s)
         for sub in res.subtitles:
             lang = str(sub["language"])[:16]
             fmt = sub["format"]
             skey = storage.media_key(m.id, f"subtitles/{lang}.{sub['kind']}.{fmt}")
             data = Path(sub["path"]).read_bytes()
             cues = subs_mod.parse_subtitle(data, fmt, auto=sub["kind"] == "auto", duration_sec=d["duration_sec"])
+            # Simplified → Traditional (Taiwan): Cue.text converted, raw_text and the stored file stay original
+            s2t = textconv.convert_parsed_cues(cues, lang, text_cfg)
             stats = subs_mod.summary(cues)
             asset = storage.store_bytes_asset(s, data, skey, "subtitle", media_id=m.id,
                                               content_type=yt.SUBTITLE_CONTENT_TYPES.get(fmt, "text/plain"),
                                               params={"language": lang, "kind": sub["kind"], "yt_key": sub["key"],
-                                                      "primary": sub["primary"], **stats})
+                                                      "primary": sub["primary"], **stats, "s2t": s2t})
             tr = s.scalar(select(Track).where(Track.media_id == m.id, Track.language == lang,
                                               Track.kind == sub["kind"]))
             if tr is None:
@@ -683,9 +713,11 @@ def _store_download(ctx: JobContext, res: yt.DownloadResult) -> dict:
             s.add_all([Cue(track_id=tr.id, idx=c.idx, start_sec=c.start_sec, end_sec=c.end_sec,
                            raw_text=c.raw_text, text=c.text, flags=c.flags) for c in cues])
             tracks_out.append({"track_id": str(tr.id), "language": lang, "kind": sub["kind"], "format": fmt,
-                               "primary": sub["primary"], "cues": stats["cues"], "usable": stats["usable"]})
+                               "primary": sub["primary"], "cues": stats["cues"], "usable": stats["usable"],
+                               "s2t_converted": bool(s2t.get("converted"))})
+            conversions.append({"track_id": str(tr.id), "language": lang, "kind": sub["kind"], **s2t})
         primary = next((t for t in tracks_out if t["primary"]), None)
-        m.metadata_ = {**(m.metadata_ or {}), "download": {
+        m.metadata_ = {**(m.metadata_ or {}), "text_conversion": textconv.media_summary(conversions), "download": {
             "downloaded_at": utcnow().isoformat(), "audio": res.audio_format, "tracks": tracks_out,
             "primary_track": {"language": primary["language"], "kind": primary["kind"],
                               "track_id": primary["track_id"]} if primary else None,
@@ -694,5 +726,10 @@ def _store_download(ctx: JobContext, res: yt.DownloadResult) -> dict:
         media_id = m.id
         result = {"audio_key": key, "audio_bytes": audio.bytes, "audio": res.audio_format, "tracks": tracks_out,
                   "subtitle_errors": res.subtitle_errors, **({"warnings": res.warnings[:5]} if res.warnings else {})}
+    for k in stale_keys:
+        try:
+            storage.delete(k)
+        except Exception:  # noqa: BLE001
+            log.warning("could not delete stale %s", k)
     ctx.then("media.normalize", media_id=media_id)
     return result

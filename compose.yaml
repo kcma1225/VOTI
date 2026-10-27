@@ -12,6 +12,8 @@ x-backend: &backend
   image: voti-backend:${TORCH_VARIANT:-cpu}
   init: true
   restart: unless-stopped
+  # workers requeue their running job on SIGTERM within VOTI_SHUTDOWN_GRACE_SEC (8 s) — keep this above it
+  stop_grace_period: 20s
   env_file:
     - path: .env
       required: false

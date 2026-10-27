@@ -145,8 +145,13 @@ def run(media_id: uuid.UUID, progress: Callable[[float, str], None] = lambda f, 
         keep.append((sid, rev))
     progress(0.3, "ecapa")
     vecs = embed_batch(clips)
-    with session_scope() as s:
-        for (sid, rev), v in zip(keep, vecs):
-            s.add(Embedding(segment_id=sid, revision=rev, model_id=MODEL_ID, vector=v.astype(np.float32).tolist()))
+    if keep:
+        # ON CONFLICT: a re-run after an interrupted attempt (or a concurrent lazy re-embed) never duplicates
+        from sqlalchemy.dialects.postgresql import insert
+        with session_scope() as s:
+            s.execute(insert(Embedding).values(
+                [{"id": uuid.uuid4(), "segment_id": sid, "revision": rev, "model_id": MODEL_ID,
+                  "vector": v.astype(np.float32).tolist()} for (sid, rev), v in zip(keep, vecs)])
+                .on_conflict_do_nothing(index_elements=["segment_id", "revision", "model_id"]))
     return {"embedded": len(keep), "skipped": skipped, "already": len(have),
             "speech_sec": round(sum(c.size for c in clips) / SR, 2), "elapsed_sec": round(time.monotonic() - t0, 2)}

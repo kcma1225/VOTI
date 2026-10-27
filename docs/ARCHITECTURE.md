@@ -19,6 +19,12 @@ This document is the contract between the backend API, workers and the frontend.
 TLS terminates at an external proxy on another LAN machine which forwards `voti.gugulu.tw` to `<this host>:8080`
 with the original `Host` and `X-Forwarded-Proto: https`.
 
+## Deployment / migrations
+
+`voti.db.init_db()` (API startup, every worker startup, `voti init`) runs `create_all` and then the idempotent
+statements in `voti.db.MIGRATIONS` (`ALTER TABLE … ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`) under an
+advisory lock. Every column added to an existing table must be listed there.
+
 ## Code layout
 
 ```
@@ -36,7 +42,8 @@ backend/voti/
   pipeline/legacy_client.py                          ← HTTP client for legacy-ml (brouhaha, voxprofile)
   pipeline/quality.py diarize.py segment.py embed.py profile.py fingerprint.py cluster.py
   pipeline/handlers.py                               ← job handlers for audio/ml queues
-  workers/run.py                                     ← imports all handlers, runs voti.queue.worker_loop
+  textconv.py                                        ← Simplified → Traditional (OpenCC) + media.convert_text handler
+  workers/run.py                                     ← init_db, imports all handlers, runs voti.queue.Worker
   cli.py                                             ← `python -m voti.cli init|create-user|doctor|...`
 services/legacy-ml/                                  ← separate image (py3.8), FastAPI-free minimal HTTP server ok
 frontend/                                            ← React + Vite + TS + Tailwind SPA
@@ -79,6 +86,32 @@ shorter than 1 s: result null).
 | `youtube` | `{"rate_limit_kbps": 0, "sleep_between_downloads_sec": 5, "sleep_between_requests_sec": 2, "max_concurrent_downloads": 1, "cookies_enabled": false}` |
 | `pipeline` | `{"voxprofile_backbone": "whisper-large-v3", "diarization_enabled": true, "segment_min_sec": 1.0, "segment_max_sec": 20.0, "edge_pad_sec": 0.1}` |
 | `quality_thresholds` | `{"low_speech_ratio": 0.5, "low_snr_db": 10, "clipping_ratio": 0.001}` (used to set segment flags) |
+| `text` | `{"convert_simplified": true, "opencc_config": "s2twp"}` — convert Simplified-Chinese captions to Traditional (Taiwan) on ingestion and allow `convert-text` jobs. `opencc_config`: `s2twp` (default: Taiwan standard + Taiwanese phrases, 视频→影片, 软件→軟體), `s2tw`, `s2t`. See "Caption text conversion". |
+
+## Caption text conversion (Simplified → Traditional, `voti/textconv.py`)
+
+OpenCC (`opencc` PyPI package, version pinned in requirements/base.txt) with the `text.opencc_config` setting.
+
+Which tracks: language tag first — `zh-Hans`, `zh-Hans-*`, `zh-CN`, `zh-SG`, `zh-MY` are Simplified (converted);
+`zh-TW`, `zh-Hant*`, `zh-HK`, `zh-MO` are Traditional (never touched); `zh`, `cmn`, other `zh-*` are decided by
+content (characters changed by OpenCC `s2t` = Simplified-only, by `t2s` = Traditional-only; text identical in both
+scripts counts for neither; needs ≥ 6 Han characters, ≥ 2 and ≥ 1 % Simplified-only characters and > 3× more
+Simplified-only than Traditional-only). Any other language — in particular `nan-*` (Taiwanese Hokkien written in Han
+characters), `hak*`, `yue` — is never converted.
+
+On ingestion (`media.download`): `Cue.raw_text` keeps the original, `Cue.text` is the converted cleaned text and gets
+the flag `s2t_converted` (only cues whose text changed). The stored subtitle file is unchanged. The decision is
+recorded per track in the subtitle asset `params.s2t = {script, source: language|content, converted, config, opencc,
+cues_converted, han, simplified_chars, traditional_chars, reason?}` and per media in
+`Media.metadata.text_conversion = {converted, tracks: [...], cues_converted, segments_converted, config, opencc, at}`.
+Segments built from converted cues get the segment flag `s2t_converted`; their `original_text` is the converted text.
+
+Retroactive: job `media.convert_text` (queue `audio`) converts the cues of a media's not-yet-converted Simplified (or
+never examined Chinese) tracks and the `original_text` of their segments **in place** — segment ids, boundaries,
+revision, review state and `corrected_text` are kept — in one transaction, sets the flags, updates `params.s2t` /
+`metadata.text_conversion` and writes one `audit_log` row (`action = "media.convert_text"`, `entity_type = "media"`,
+`after` = counts). Re-running is a no-op for converted tracks. With `text.convert_simplified = false` the job does
+nothing and the endpoints answer 409 `text_conversion_disabled`.
 
 ## HTTP API
 
@@ -101,7 +134,7 @@ Timestamps ISO-8601 UTC strings. IDs are UUID strings.
 `UserRef = {id, display_name}` (used wherever a row points at a user)
 
 ### Settings (admin)
-- `GET /settings` → `{youtube: {...}, pipeline: {...}, quality_thresholds: {...}, cookies: {present: bool, updated_at}}`
+- `GET /settings` → `{youtube: {...}, pipeline: {...}, quality_thresholds: {...}, text: {...}, cookies: {present: bool, updated_at}}`
 - `PUT /settings/{key}` body = value (partial ok, merged over the current value; unknown fields → 422) → updated value
 - `PUT /settings/cookies` multipart `file` (Netscape cookies.txt) → `{present: true, updated_at}`; `DELETE /settings/cookies`
 
@@ -115,6 +148,9 @@ Timestamps ISO-8601 UTC strings. IDs are UUID strings.
 - `GET /channels/{id}` → `ChannelDetail`
 - `POST /channels/{id}/refresh` → `Job` (re-list)
 - `POST /channels/{id}/detail` `{media_ids?: [...]}` → `{queued: n}` (fetch full metadata for listed media; all un-detailed when omitted)
+- `POST /channels/{id}/convert-text` (any logged-in user) → `{queued: n}`: one `media.convert_text` job for every media
+  of the channel that has a convertible caption track (Simplified, or Chinese never examined); 409
+  `text_conversion_disabled` when the `text` setting is off
 - `PATCH /channels/{id}` `{notes}` → `ChannelDetail`
 - `GET /playlists?channel_id=` → `{items: [Playlist], total}`
 - `GET /playlists/{id}` → `Playlist`
@@ -141,6 +177,8 @@ media_with_quality}, kind_counts: {video: n, short: n, live?: n, ...}, playlist_
   required captions are skipped unless include_auto/no-caption allowed (POC: skip when no usable track).
 - `POST /media/{id}/retry` → `Job` (re-run the failed step)
 - `POST /media/{id}/reprocess` `{from_step: "media.quality"|...}` → `Job`
+- `POST /media/{id}/convert-text` (any logged-in user) → `{queued: 0|1}` (0 when nothing is convertible; 409
+  `text_conversion_disabled` when the `text` setting is off). Progress: the media's jobs (`kind = "media.convert_text"`).
 - `GET /media/{id}/timeline` → `{duration, hop_sec, vad: [..downsampled ≤2000 pts], snr: [...], speech_regions: [[s,e]],
    diarization: [{speaker, start, end, overlap}], repeated: [{id, start, end, position, excluded}], cues: [{start,end,text}],
    segments: [SegmentSummary]}`
@@ -152,7 +190,11 @@ media_with_quality}, kind_counts: {video: n, short: n, live?: n, ...}, playlist_
  channel: {id, title}, quality?: {snr_mean, dnsmos_ovrl, real_bandwidth_hz, speech_ratio, sample_rate, upsampled_suspect},
  segment_count}`
 `MediaDetail = MediaSummary + {description, tags, categories, chapters, language, like_count, comment_count, availability,
- age_limit, metadata, failure_message, jobs: [Job], tracks: [{id, language, kind}], quality: MediaQuality|null}`
+ age_limit, metadata, failure_message, jobs: [Job], tracks: [Track], quality: MediaQuality|null,
+ text_converted: bool (some track converted Simplified → Traditional), text_convertible: bool (convert-text would
+ still change something), text_conversion: metadata.text_conversion|null}`
+`Track = {id, language, kind, format, s2t_converted: bool, script: simplified|traditional|neutral|mixed|unknown|not_chinese|null
+ (null = never examined), cues_converted: n|null}`
 
 ### Segments & review
 - `GET /segments` — filters: `media_id, channel_id, speaker_id, review_status, text_source, q, min_snr, min_dnsmos,
@@ -231,7 +273,8 @@ media_with_quality}, kind_counts: {video: n, short: n, live?: n, ...}, playlist_
 }
 ```
 
-Manifest row: `{segment_id, revision, audio_path, start_sec, end_sec, duration, text, text_source, language,
+Manifest row: `{segment_id, revision, audio_path, start_sec, end_sec, duration, text, text_source, text_corrected,
+text_converted (caption text was converted Simplified → Traditional, segment flag s2t_converted), language,
 media: {platform, id, url, title, published_at, license}, channel: {id, title}, speaker: {id, label, display_name},
 quality: {snr, c50, dnsmos_*, speech_ratio, bandwidth_hz, sample_rate}, profile: {...}, sha256}`
 
@@ -247,5 +290,54 @@ quality: {snr, c50, dnsmos_*, speech_ratio, bandwidth_hz, sample_rate}, profile:
 
 `Job = {id, kind, queue, status, progress, phase, message, error_code, error_message, attempts, media_id, channel_id,
  media_title?, channel_title? (job's channel, else its media's channel), payload, result, created_at, started_at,
- finished_at, eta_sec? (linear estimate from progress and started_at)}`
+ finished_at, eta_sec? (linear estimate from progress and started_at), run_after (queued for an automatic retry:
+ not started before this time; null otherwise)}`
 - `GET /jobs/{id}` → `Job`
+- `POST /jobs/{id}/retry` resets `attempts` to 0 and clears `run_after` (a manual retry gets the automatic retries again).
+
+## Job recovery (`voti/queue.py`)
+
+Postgres `jobs` is authoritative; Redis only carries ids (`voti:q:<queue>` lists, `voti:delayed:<queue>` sorted sets
+scored by `run_after`). Claiming is one atomic `UPDATE … WHERE status='queued' AND (run_after IS NULL OR run_after <= now)`,
+so duplicate ids in Redis never cause double execution; a popped id that is not yet due is parked in the delayed set.
+
+| what | timing |
+|---|---|
+| worker key `voti:worker:<hostname>:<pid>` | refreshed every 15 s by a heartbeat thread, `ex=45` s (deleted on clean exit) |
+| `jobs.heartbeat_at` of the running job | same thread, every 15 s, independent of handler progress (plus every `ctx.progress()`) |
+| orphan: worker key gone **and** heartbeat > 45 s old | requeued at the next sweep |
+| orphan: heartbeat > 2 min old (even if the key exists) | requeued at the next sweep |
+| sweep (orphans, delayed promotion, Redis re-push) | every 30 s and at every worker start; delayed ids are promoted every loop (≤ 2 s) |
+| graceful shutdown (SIGTERM/SIGINT) | stop taking jobs; handler interrupted at its next `ctx.progress()`; if still busy after `VOTI_SHUTDOWN_GRACE_SEC` (8 s) the row is requeued and the process exits. Compose `stop_grace_period: 20s`. A second signal forces it. |
+| automatic retry of transient errors | after 30 s, 2 min, 10 min (`max_attempts` = 4 runs for new jobs) |
+
+Outcomes visible on `Job` (status / phase / message):
+- **Shutdown** — `queued`, phase `requeued`, message "worker 停止中：工作已放回佇列…", attempt **not** counted, pushed to
+  the front of its queue: resumes as soon as a worker of that queue is back. A step that was mid-way simply re-runs.
+- **Recovered** (worker crashed / container killed / host rebooted / network partition) — `queued`, phase `recovered`,
+  message "已自動恢復：<reason>…", attempt counted. A worker that restarts on the same host (same container hostname)
+  recovers its previous life's jobs immediately at startup. With `attempts >= max_attempts` the job becomes
+  `interrupted` (`error_code = "interrupted"`, zh-TW message) instead; its media becomes `failed`.
+  A recovered job whose cancel was requested becomes `cancelled`.
+- **Retry wait** — transient error: `queued`, phase `retry_wait`, `run_after` = next start, `error_code`/`error_message`
+  keep the last error, message "暫時性錯誤（code），N 秒後自動重試（第 k/max 次）". When the attempts are exhausted the job
+  ends `failed` (or `blocked` for blocked+retryable errors such as `legacy_ml_unavailable`).
+  Transient = `JobError(retryable=True)` (legacy-ml unreachable / timeout / HTTP 5xx, YouTube `network_or_extractor`,
+  `subtitle_unavailable`, `audio_unavailable`, S3 audio fetch failing on connection errors) or an unclassified
+  exception whose cause chain is a connection reset / refused / timeout, httpx transport error or 5xx, botocore
+  connection error or S3 5xx/SlowDown, SQLAlchemy/psycopg `OperationalError`, Redis connection error.
+- **Blocked** errors that need a person (bot check, 429 rate limit, cookies, age/members/region restriction, HF token or
+  model terms, DNSMOS model missing) are never retried automatically.
+- **Redis loss** (restart without the AOF, flush): every sweep and every worker start re-pushes queued jobs that are in
+  neither the list nor the delayed set (the periodic sweep skips jobs younger than 10 s).
+
+Media / entity state follows the job: a requeued `media.download` puts the media back to `queued`; pipeline steps keep
+`processing` while queued for a retry; a terminal failure/interruption sets the media `failed`/`blocked`
+(`skipped` for `no_usable_captions`), `channel.list` / `playlist.list` `listing` → `failed`, a dataset export
+`queued` while waiting and `failed` at the end. `media.convert_text` never changes `Media.status`.
+
+Idempotency: every handler can re-run after a partial run — rows are replaced in one transaction (cues per track,
+speech regions, diarization turns, repeated regions, playlist items), upserted (segments by uuid5 id, voice profiles,
+embeddings `ON CONFLICT DO NOTHING`, assets by S3 key), and S3 objects are overwritten under the same key. A stale
+`original.<ext>` is deleted only after the new download committed. A download slot held by the interrupted attempt
+(or by a job that is no longer running) is taken over instead of waiting for its 15 min expiry.

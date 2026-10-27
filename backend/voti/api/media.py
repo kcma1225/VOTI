@@ -19,7 +19,8 @@ from ..auth import current_user
 from ..db import get_session
 from ..models import (Cue, DiarizationTurn, Job, Media, MediaQuality, PlaylistItem, RepeatedRegion, Segment,
                       SpeechRegion, Track, User)
-from ..queue import PIPELINE, enqueue, requeue
+from .. import textconv
+from ..queue import PIPELINE, SIDE_KINDS, enqueue, requeue
 from . import schemas as S
 from .errors import ApiError
 from .views import Paging, _media_base, get_or_404, job_out, job_outs, media_summaries, paging, segment_summaries
@@ -272,13 +273,20 @@ def media_detail(media_id: uuid.UUID, _: User = Depends(current_user), s: Sessio
     tracks = s.scalars(select(Track).where(Track.media_id == m.id).order_by(Track.created_at)).all()
     playlists = s.scalars(select(PlaylistItem.playlist_id).where(PlaylistItem.media_id == m.id)).all()
     q = s.get(MediaQuality, m.id)
+    s2t = textconv.track_infos(s, tracks)
+    track_outs = [S.TrackOut(id=t.id, language=t.language, kind=t.kind, format=t.format,
+                             s2t_converted=bool(s2t.get(t.id, {}).get("converted")),
+                             script=s2t.get(t.id, {}).get("script"),
+                             cues_converted=s2t.get(t.id, {}).get("cues_converted")) for t in tracks]
     return S.MediaDetailOut(
         **_media_base(m), channel=summary.channel, segment_count=summary.segment_count, description=m.description,
         tags=m.tags or [], categories=m.categories or [], chapters=m.chapters or [], language=m.language,
         like_count=m.like_count, comment_count=m.comment_count, availability=m.availability, age_limit=m.age_limit,
         metadata=m.metadata_ or {}, failure_message=m.failure_message, jobs=job_outs(s, jobs),
-        tracks=[S.TrackOut(id=t.id, language=t.language, kind=t.kind, format=t.format) for t in tracks],
-        playlists=list(playlists), quality=S.MediaQualityOut.model_validate(q) if q else None)
+        tracks=track_outs, playlists=list(playlists), quality=S.MediaQualityOut.model_validate(q) if q else None,
+        text_converted=any(tr.s2t_converted for tr in track_outs),
+        text_convertible=any(textconv.convertible(t.language, s2t.get(t.id)) for t in tracks),
+        text_conversion=(m.metadata_ or {}).get("text_conversion"))
 
 
 RETRYABLE = ("failed", "blocked", "interrupted", "cancelled")
@@ -287,7 +295,8 @@ RETRYABLE = ("failed", "blocked", "interrupted", "cancelled")
 @router.post("/{media_id}/retry", response_model=S.JobOut)
 def retry_media(media_id: uuid.UUID, user: User = Depends(current_user), s: Session = Depends(get_session)):
     m = get_or_404(s, Media, media_id, "影片")
-    job = s.scalar(select(Job).where(Job.media_id == m.id).order_by(Job.created_at.desc()).limit(1))
+    job = s.scalar(select(Job).where(Job.media_id == m.id, Job.kind.notin_(SIDE_KINDS))
+                   .order_by(Job.created_at.desc()).limit(1))
     if job is None or job.status not in RETRYABLE:
         raise ApiError(409, "nothing_to_retry", "這部影片沒有可重試的失敗步驟")
     _requeue_job(s, job)
@@ -320,6 +329,19 @@ def reprocess(media_id: uuid.UUID, body: S.ReprocessIn, user: User = Depends(cur
     m.status, m.stage, m.failure_code, m.failure_message = "processing", body.from_step, None, None
     s.commit()
     return job_out(s, job)
+
+
+@router.post("/{media_id}/convert-text", response_model=S.QueuedOut)
+def convert_text(media_id: uuid.UUID, user: User = Depends(current_user), s: Session = Depends(get_session)):
+    """Queue Simplified → Traditional conversion of this media's existing cues/segments (voti.textconv)."""
+    m = get_or_404(s, Media, media_id, "影片")
+    if not textconv.text_settings(s)["convert_simplified"]:
+        raise ApiError(409, "text_conversion_disabled", "簡轉繁已在設定中停用")
+    if m.id not in textconv.convertible_media(s, Media.id == m.id):
+        return S.QueuedOut(queued=0)
+    enqueue(s, "media.convert_text", media_id=m.id, channel_id=m.channel_id, created_by=user.id)
+    s.commit()
+    return S.QueuedOut(queued=1)
 
 
 # ───────────────────────────── timeline / quality ─────────────────────────────

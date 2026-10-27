@@ -228,7 +228,7 @@ class Cue(Base):
     start_sec: Mapped[float] = mapped_column(Float)
     end_sec: Mapped[float] = mapped_column(Float)
     raw_text: Mapped[str] = mapped_column(Text)
-    text: Mapped[str] = mapped_column(Text)        # cleaned
+    text: Mapped[str] = mapped_column(Text)        # cleaned (+ Simplified → Traditional when flag s2t_converted)
     flags: Mapped[list] = mapped_column(JSONB, default=list)
 
 
@@ -317,7 +317,9 @@ class Segment(Base):
     text_source: manual_caption | auto_caption | uploaded | none
     review_status: unchecked | passed | needs_fix | excluded
     speaker_state: unknown | single | multiple | overlap
-    flags (list[str]): low_speech, low_snr, clipped, repeated, overlap, boundary_adjusted, too_short, too_long, …
+    flags (list[str]): low_speech, low_snr, clipped, repeated, overlap, boundary_adjusted, too_short, too_long,
+                       s2t_converted (original_text converted Simplified → Traditional, voti.textconv), …
+    original_text is never edited by humans; the only automatic rewrite is that s2t conversion.
     """
     __tablename__ = "segments"
     __table_args__ = (Index("segments_media_start", "media_id", "start_sec"),
@@ -328,7 +330,7 @@ class Segment(Base):
     cue_ids: Mapped[list] = mapped_column(JSONB, default=list)
     start_sec: Mapped[float] = mapped_column(Float)
     end_sec: Mapped[float] = mapped_column(Float)
-    original_text: Mapped[str] = mapped_column(Text, default="")   # never overwritten
+    original_text: Mapped[str] = mapped_column(Text, default="")   # caption text (only s2t conversion rewrites it)
     corrected_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     text_source: Mapped[str] = mapped_column(String(16), default="none")
     language: Mapped[str | None] = mapped_column(String(16), nullable=True)
@@ -482,11 +484,15 @@ class Job(Base):
     """Persistent job record; Redis only carries job ids (see voti.queue).
 
     status: queued → running → completed | failed | blocked | cancelled | interrupted
+    A running job can go back to queued: worker shutdown (attempt not counted), orphan recovery
+    (phase "recovered") or a transient error (phase "retry_wait", run_after = earliest next start).
+    Columns added after the first release are also added by voti.db.init_db (ALTER TABLE … IF NOT EXISTS).
     """
     __tablename__ = "jobs"
     __table_args__ = (Index("jobs_status_created", "status", "created_at"),
                       Index("jobs_active_kind_media", "kind", "media_id", unique=True,
-                            postgresql_where="status IN ('queued','running') AND media_id IS NOT NULL"))
+                            postgresql_where="status IN ('queued','running') AND media_id IS NOT NULL"),
+                      Index("jobs_running_heartbeat", "heartbeat_at", postgresql_where="status = 'running'"))
     id: Mapped[uuid.UUID] = pk()
     kind: Mapped[str] = mapped_column(String(48))
     queue: Mapped[str] = mapped_column(String(16))
@@ -503,7 +509,7 @@ class Job(Base):
     error_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
-    max_attempts: Mapped[int] = mapped_column(Integer, default=3)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=4)  # first run + automatic retries
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
     worker: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_by: Mapped[uuid.UUID | None] = fk("users.id", nullable=True, ondelete="SET NULL", index=False)
@@ -511,3 +517,4 @@ class Job(Base):
     started_at: Mapped[datetime | None] = mapped_column(nullable=True)
     heartbeat_at: Mapped[datetime | None] = mapped_column(nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    run_after: Mapped[datetime | None] = mapped_column(nullable=True)  # not claimable before (retry backoff)

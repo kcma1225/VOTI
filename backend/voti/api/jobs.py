@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from ..auth import current_user
 from ..db import get_session
 from ..models import (Asset, Channel, ClusterRun, Job, Media, MediaQuality, Segment, Speaker, User, utcnow)
-from ..queue import KINDS, redis_client, requeue
+from ..queue import KINDS, WORKER_KEY_TTL, redis_client, requeue
 from . import schemas as S
 from .errors import ApiError
 from .views import DOWNLOADED_STATES, FAILED_STATES, Paging, get_or_404, job_out, job_outs, paging, split_csv
@@ -87,9 +87,6 @@ def cancel_job(job_id: uuid.UUID, _: User = Depends(current_user), s: Session = 
 
 
 # ───────────────────────────── stats ─────────────────────────────
-
-WORKER_KEY_TTL = 120  # voti.queue.worker_loop refreshes voti:worker:<name> with ex=120 about every 60 s
-
 
 def _workers(s: Session) -> list[S.WorkerOut]:
     """Workers announced in Redis (alive) plus workers that still own running jobs but stopped announcing."""

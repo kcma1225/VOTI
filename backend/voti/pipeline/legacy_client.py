@@ -7,8 +7,9 @@ See docs/ARCHITECTURE.md "legacy-ml HTTP contract". The service lives in its own
     voxprofile(key, spans, backbone)  -> {"results": [dict | None, ...], "model_versions": {...}, "backbone": str}
     health()                          -> {"ok": True, "device": "cuda|cpu", "loaded": [...]}
 
-Unreachable service → voti.queue.JobError("legacy_ml_unavailable", ..., blocked=True) so the media is
-parked as blocked (retryable once the service is back) instead of failed.
+Unreachable service → voti.queue.JobError("legacy_ml_unavailable", ..., blocked=True, retryable=True): the queue
+retries it automatically with backoff (the service may be restarting) and parks the media as blocked once the
+retries are exhausted. Timeouts and HTTP 5xx are retryable too; 4xx and malformed answers are not.
 """
 from __future__ import annotations
 
@@ -54,7 +55,7 @@ def _request(method: str, path: str, *, json: dict | None, timeout: httpx.Timeou
                 time.sleep(RETRY_BACKOFF_SEC * (attempt + 1))
             continue
         except httpx.TimeoutException as e:
-            raise JobError("legacy_ml_timeout", f"legacy-ml {path} 逾時：{e}", blocked=False) from e
+            raise JobError("legacy_ml_timeout", f"legacy-ml {path} 逾時：{e}", blocked=False, retryable=True) from e
         if r.status_code == 503:  # service up but model not loadable (e.g. download failed)
             last = RuntimeError(r.text[:500])
             if attempt + 1 < CONNECT_RETRIES:
@@ -64,9 +65,11 @@ def _request(method: str, path: str, *, json: dict | None, timeout: httpx.Timeou
         if r.status_code == 404:
             raise JobError("legacy_ml_not_found", f"legacy-ml {path}: {_detail(r)}", blocked=False, retryable=False)
         if r.status_code >= 400:
-            raise JobError("legacy_ml_error", f"legacy-ml {path} HTTP {r.status_code}: {_detail(r)}")
+            raise JobError("legacy_ml_error", f"legacy-ml {path} HTTP {r.status_code}: {_detail(r)}",
+                           retryable=r.status_code >= 500)
         return r.json()
-    raise JobError("legacy_ml_unavailable", f"無法連線 legacy-ml 服務（{_url(path)}）：{last}", blocked=True)
+    raise JobError("legacy_ml_unavailable", f"無法連線 legacy-ml 服務（{_url(path)}）：{last}", blocked=True,
+                   retryable=True)
 
 
 def _detail(r: httpx.Response) -> str:

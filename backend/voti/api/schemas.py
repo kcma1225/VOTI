@@ -85,6 +85,13 @@ class QualityThresholds(BaseModel):
     clipping_ratio: float = Field(default=0.001, ge=0, le=1)
 
 
+class TextSettings(BaseModel):
+    """Caption text normalisation (voti.textconv)."""
+    model_config = ConfigDict(extra="forbid")
+    convert_simplified: bool = True                               # Simplified → Traditional (Taiwan) on ingestion
+    opencc_config: Literal["s2twp", "s2tw", "s2t"] = "s2twp"      # OpenCC config
+
+
 class CookiesStatus(BaseModel):
     present: bool
     updated_at: datetime | None = None
@@ -94,6 +101,7 @@ class SettingsOut(BaseModel):
     youtube: YoutubeSettings
     pipeline: PipelineSettings
     quality_thresholds: QualityThresholds
+    text: TextSettings = TextSettings()
     cookies: CookiesStatus
 
 
@@ -120,6 +128,7 @@ class JobOut(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     eta_sec: float | None = None
+    run_after: datetime | None = None  # queued for an automatic retry: not started before this time
 
 
 class JobList(BaseModel):
@@ -311,6 +320,9 @@ class TrackOut(BaseModel):
     language: str
     kind: str
     format: str | None = None
+    s2t_converted: bool = False        # cues converted Simplified → Traditional
+    script: str | None = None          # simplified | traditional | neutral | mixed | unknown | not_chinese | None (never examined)
+    cues_converted: int | None = None
 
 
 class MediaDetailOut(BaseModel):
@@ -351,6 +363,9 @@ class MediaDetailOut(BaseModel):
     tracks: list[TrackOut] = []
     playlists: list[uuid.UUID] = []
     quality: MediaQualityOut | None = None
+    text_converted: bool = False       # some track's cues were converted Simplified → Traditional
+    text_convertible: bool = False     # POST /media/{id}/convert-text could still change something
+    text_conversion: dict | None = None  # metadata["text_conversion"] summary (counts, config, opencc version)
 
 
 class MediaFacets(BaseModel):

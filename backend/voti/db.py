@@ -42,8 +42,18 @@ def get_session() -> Iterator[Session]:
         yield s
 
 
+# Lightweight migrations for databases created before a column/index existed. create_all() never alters an
+# existing table, so every column added to a model after the first deployment is listed here too. Each
+# statement must be idempotent (IF NOT EXISTS) and cheap (no table rewrite: nullable columns without default).
+MIGRATIONS: tuple[str, ...] = (
+    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS run_after TIMESTAMPTZ",
+    "CREATE INDEX IF NOT EXISTS jobs_running_heartbeat ON jobs (heartbeat_at) WHERE status = 'running'",
+)
+
+
 def init_db() -> None:
-    """Create extensions and tables. Idempotent; called by the API on startup and by `voti init`."""
+    """Create extensions and tables, then apply MIGRATIONS. Idempotent; called by the API on startup,
+    by every worker on startup and by `voti init`."""
     from . import models  # noqa: F401  (register tables)
 
     engine = get_engine()
@@ -51,3 +61,5 @@ def init_db() -> None:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         conn.execute(text("SELECT pg_advisory_xact_lock(hashtext('voti.init_db'))"))
         models.Base.metadata.create_all(conn)
+        for stmt in MIGRATIONS:
+            conn.execute(text(stmt))

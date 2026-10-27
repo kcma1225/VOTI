@@ -348,7 +348,7 @@ def test_download_no_usable_captions(db, h, monkeypatch):  # noqa: ANN001
     job, follow = run(db, "media.download", media_id=m.id)
     assert job.status == "failed" and job.error_code == "no_usable_captions" and follow == []
     db.refresh(m)
-    assert m.status == "failed" and m.failure_code == "no_usable_captions"
+    assert m.status == "skipped" and m.failure_code == "no_usable_captions"
 
 
 def test_upsert_channel_replaces_placeholder(db, h):  # noqa: ANN001

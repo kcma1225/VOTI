@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from .. import textconv
 from ..auth import current_user, require_admin
 from ..deletion import channel_impact, delete_channel
 from ..db import get_session
@@ -90,6 +91,21 @@ def detail_channel(channel_id: uuid.UUID, body: S.ChannelDetailIn | None = None,
         n += 1
     s.commit()
     return S.QueuedOut(queued=n)
+
+
+@router.post("/channels/{channel_id}/convert-text", response_model=S.QueuedOut)
+def convert_channel_text(channel_id: uuid.UUID, user: User = Depends(current_user),
+                         s: Session = Depends(get_session)):
+    """Queue media.convert_text for every downloaded media of the channel with Simplified (or unexamined
+    Chinese) caption tracks."""
+    get_or_404(s, Channel, channel_id, "頻道")
+    if not textconv.text_settings(s)["convert_simplified"]:
+        raise ApiError(409, "text_conversion_disabled", "簡轉繁已在設定中停用")
+    ids = textconv.convertible_media(s, Media.channel_id == channel_id)
+    for mid in sorted(ids, key=str):
+        enqueue(s, "media.convert_text", media_id=mid, channel_id=channel_id, created_by=user.id)
+    s.commit()
+    return S.QueuedOut(queued=len(ids))
 
 
 @router.patch("/channels/{channel_id}", response_model=S.ChannelDetail)

@@ -36,7 +36,7 @@ from .config import get_config
 from .db import session_scope
 from .models import (Channel, ClusterRun, Dataset, DatasetExport, Media, MediaQuality, Segment, Speaker,
                      SpeakerAssignment, SpeakerOverride, VoiceProfile, utcnow)
-from .queue import JobContext, JobError, handler
+from .queue import JobContext, JobError, handler, is_transient
 
 log = logging.getLogger("voti.datasets")
 
@@ -245,7 +245,7 @@ def segment_sexes(s: Session, ids: list[uuid.UUID]) -> dict:
 # ───────────────────────────── export ─────────────────────────────
 
 CSV_COLUMNS = ["segment_id", "revision", "audio_path", "start_sec", "end_sec", "duration", "text", "text_source",
-               "text_corrected", "language", "media_platform", "media_id", "media_url", "media_title",
+               "text_corrected", "text_converted", "language", "media_platform", "media_id", "media_url", "media_title",
                "media_published_at", "media_license", "channel_id", "channel_title", "speaker_id", "speaker_label",
                "speaker_display_name", "snr", "c50", "dnsmos_sig", "dnsmos_bak", "dnsmos_ovrl", "dnsmos_p808",
                "speech_ratio", "bandwidth_hz", "sample_rate", "age", "age_group", "sex", "emotion", "sha256"]
@@ -298,6 +298,8 @@ def manifest_rows(s: Session, rows: list[Row]) -> list[dict]:
                 "duration": round(g.end_sec - g.start_sec, 3),
                 "text": g.corrected_text if g.corrected_text is not None else g.original_text,
                 "text_source": g.text_source, "text_corrected": g.corrected_text is not None,
+                # caption text was converted Simplified → Traditional (voti.textconv)
+                "text_converted": "s2t_converted" in (g.flags or []),
                 "language": g.language,
                 "media": {"platform": m.platform, "id": m.platform_media_id, "voti_id": str(m.id), "url": m.url,
                           "title": m.title, "published_at": _iso(m.published_at), "license": m.license},
@@ -320,7 +322,8 @@ def csv_row(r: dict) -> dict:
     sp, q, p = r["speaker"] or {}, r["quality"], r["profile"] or {}
     return {"segment_id": r["segment_id"], "revision": r["revision"], "audio_path": r["audio_path"] or "",
             "start_sec": r["start_sec"], "end_sec": r["end_sec"], "duration": r["duration"], "text": r["text"],
-            "text_source": r["text_source"], "text_corrected": r["text_corrected"], "language": r["language"] or "",
+            "text_source": r["text_source"], "text_corrected": r["text_corrected"],
+            "text_converted": r.get("text_converted", False), "language": r["language"] or "",
             "media_platform": r["media"]["platform"], "media_id": r["media"]["id"], "media_url": r["media"]["url"],
             "media_title": r["media"]["title"], "media_published_at": r["media"]["published_at"] or "",
             "media_license": r["media"]["license"] or "", "channel_id": r["channel"]["id"] or "",
@@ -359,7 +362,8 @@ def write_audio_tar(rows: list[dict], tar_path: Path, tmp: Path, progress=None) 
             try:
                 storage.get_file(key, local)
             except Exception as e:  # noqa: BLE001
-                raise JobError("audio_missing", f"找不到 {key}：{e}", retryable=True) from e
+                # S3 unreachable → automatic retry; object really missing (404) → fail
+                raise JobError("audio_missing", f"找不到 {key}：{e}", retryable=is_transient(e)) from e
             with sf.SoundFile(str(local)) as snd:
                 sr, n = snd.samplerate, snd.frames
                 for r in sorted(items, key=lambda x: x["start_sec"]):
@@ -397,6 +401,8 @@ def readme(name: str, description: str, export_id: uuid.UUID, filters: dict, sta
                      "`sha256` in the manifest is the hash of each wav file")
     lines += ["", "## Notes", "",
               "- `text` is the human-corrected text when `text_corrected` is true, else the caption text.",
+              "- `text_converted` is true when the caption text was converted from Simplified to Traditional "
+              "Chinese (Taiwan) with OpenCC.",
               "- `speaker` is a *candidate* cluster from automatic speaker clustering, not a confirmed identity "
               "unless `override` is true (named by a reviewer).",
               "- `profile` (age/sex/emotion) are model predictions (Vox-Profile) and may be wrong.",
@@ -425,10 +431,12 @@ def export_handler(ctx: JobContext) -> dict:
     try:
         result = _run_export(ctx, export_id, filters, name, description, include_audio, fmt)
     except BaseException as e:
+        # the queue puts the job back (worker shutdown / transient error): the export is waiting, not failed
+        retry = isinstance(e, Exception) and ctx.will_retry(e)
         with session_scope() as s:
             exp = s.get(DatasetExport, export_id)
             if exp is not None:
-                exp.status = "failed"
+                exp.status = "queued" if retry else "failed"
                 exp.stats = {**(exp.stats or {}), "error": f"{type(e).__name__}: {e}"[:2000]}
         raise
     return result

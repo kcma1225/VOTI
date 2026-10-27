@@ -39,10 +39,10 @@ def _brouhaha(key: str) -> dict:
     except JobError:
         raise
     except (OSError, ConnectionError) as e:
-        raise JobError("legacy_ml_unavailable", f"無法連線 legacy-ml：{e}", blocked=True) from e
+        raise JobError("legacy_ml_unavailable", f"無法連線 legacy-ml：{e}", blocked=True, retryable=True) from e
     except Exception as e:  # httpx errors etc.
         if "httpx" in type(e).__module__ or "Unavailable" in type(e).__name__:
-            raise JobError("legacy_ml_unavailable", f"無法連線 legacy-ml：{e}", blocked=True) from e
+            raise JobError("legacy_ml_unavailable", f"無法連線 legacy-ml：{e}", blocked=True, retryable=True) from e
         raise
     get = out.get if isinstance(out, dict) else (lambda k, d=None: getattr(out, k, d))
     return {"hop_sec": float(get("hop_sec")), "vad": np.asarray(get("vad"), dtype=np.float32),

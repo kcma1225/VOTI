@@ -2,6 +2,10 @@
 
 Handler modules are imported individually and guarded, so a worker without optional dependencies
 (e.g. no torch on a fetch-only box) still serves the queues whose handlers did load.
+
+Startup: schema migrations (voti.db.init_db, idempotent), bucket check, then voti.queue.Worker, which first
+recovers this host's interrupted jobs and re-pushes queued jobs Redis lost. SIGTERM/SIGINT stop gracefully:
+the running job goes back to `queued` (see voti.queue "Recovery"); a second signal forces it.
 """
 from __future__ import annotations
 
@@ -11,7 +15,8 @@ import logging
 import os
 import sys
 
-HANDLER_MODULES = ["voti.sources.handlers", "voti.pipeline.handlers", "voti.pipeline.profile", "voti.datasets"]
+HANDLER_MODULES = ["voti.sources.handlers", "voti.pipeline.handlers", "voti.pipeline.profile", "voti.datasets",
+                   "voti.textconv"]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -43,11 +48,18 @@ def main(argv: list[str] | None = None) -> int:
     if missing:
         log.warning("no handler on this worker for: %s (such jobs fail with no_handler)", ", ".join(missing))
     try:
+        from voti.db import init_db
+        init_db()  # adds columns introduced after the first deployment (e.g. jobs.run_after)
+    except Exception as e:  # noqa: BLE001 - DB not up yet: the loop retries; the API also migrates
+        log.warning("init_db failed: %s", e)
+    try:
         from voti.storage import ensure_bucket
         ensure_bucket()
     except Exception as e:  # noqa: BLE001
         log.warning("bucket check failed: %s", e)
-    queue.worker_loop(queues)
+    worker = queue.Worker(queues)
+    log.info("worker %s (shutdown grace %.0fs)", worker.name, worker.shutdown_grace)
+    worker.run()
     return 0
 
 

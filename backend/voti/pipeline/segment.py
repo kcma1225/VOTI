@@ -13,6 +13,8 @@ Planning (pure, unit-tested: `plan_from_cues`, `plan_from_vad`):
 Then each segment gets the dominant diarization speaker, speaker_state, a quality snapshot and flags.
 Re-running is idempotent: ids are uuid5(media_id, start, end); rows that disappear are set active=False;
 human-touched rows (reviewed / corrected / boundary-edited) are kept and new segments overlapping them dropped.
+Segments whose cues were converted Simplified → Traditional (cue flag s2t_converted, voti.textconv) get the flag
+s2t_converted; their original_text is the converted text.
 """
 from __future__ import annotations
 
@@ -46,6 +48,7 @@ SOFT_TARGET_SEC = 10.0
 PAUSE_SEC = 0.3
 SENTENCE_END = re.compile(r"[。！？!?…\.]\s*[」』”\"')）]*\s*$")
 TEXT_SOURCE = {"manual": "manual_caption", "auto": "auto_caption", "uploaded": "uploaded"}
+S2T_FLAG = "s2t_converted"  # voti.textconv.FLAG (not imported: textconv pulls in opencc)
 
 
 @dataclass
@@ -256,6 +259,8 @@ def group_cues(cues: Sequence[CueIn], vad: Vad, cfg: Config) -> list[Plan]:
 
 def _plan_of(cues: Sequence[CueIn]) -> Plan:
     flags = {"music"} if any("music" in c.flags for c in cues) else set()
+    if any(S2T_FLAG in c.flags for c in cues):  # text came (partly) from Simplified → Traditional conversion
+        flags.add(S2T_FLAG)
     if any("speaker_change" in c.flags for c in cues[1:]):
         flags.add("caption_speaker_change")
     return Plan(cues[0].start, cues[-1].end, join_text([c.text for c in cues]), [c.id for c in cues], flags)
@@ -487,6 +492,9 @@ def run(media_id: uuid.UUID, progress: Callable[[float, str], None] = lambda f, 
                     seg = Segment(id=sid, media_id=media_id, start_sec=a, end_sec=b, original_text=p.text,
                                   revision=1, review_status="unchecked")
                     s.add(seg)
+                elif S2T_FLAG in p.flags and S2T_FLAG not in (seg.flags or []):
+                    # unprotected row from before the cues were converted: take the converted caption text
+                    seg.original_text = p.text
                 seg.active = True
                 seg.track_id = track.id if (track is not None and cues) else None
                 seg.cue_ids = list(dict.fromkeys(p.cue_ids))
@@ -498,7 +506,8 @@ def run(media_id: uuid.UUID, progress: Callable[[float, str], None] = lambda f, 
             else:
                 seg = s.get(Segment, protected[i - len(plans)][0])
                 keep = {f for f in (seg.flags or []) if f in ("boundary_adjusted", "boundary_in_speech", "text_split",
-                                                             "music", "caption_speaker_change", "no_text")}
+                                                             "music", "caption_speaker_change", "no_text",
+                                                             S2T_FLAG)}
                 flags = quality_flags(q, b - a, state, cfg, thr) | keep
                 if seg.review_status != "unchecked":  # human may have set speaker_state
                     state, spk = seg.speaker_state, seg.local_speaker if seg.local_speaker else spk

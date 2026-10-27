@@ -101,7 +101,7 @@ def job_outs(s: Session, jobs: Sequence[Job]) -> list[S.JobOut]:
                      channel_id=j.channel_id, media_title=titles.get(j.media_id),
                      channel_title=ch_titles.get(job_channel[j.id]), payload=j.payload or {},
                      result=j.result or {}, created_at=j.created_at, started_at=j.started_at,
-                     finished_at=j.finished_at, eta_sec=job_eta(j)) for j in jobs]
+                     finished_at=j.finished_at, eta_sec=job_eta(j), run_after=j.run_after) for j in jobs]
 
 
 def job_out(s: Session, job: Job) -> S.JobOut:
