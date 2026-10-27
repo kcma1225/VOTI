@@ -65,7 +65,24 @@ export const ageGroupLabel = (g: string) =>
   g === 'unknown' ? L().ageUnknown : g === '<20' ? L().ageUnder20 : g === '60+' ? L().age60plus : L().ageRange(g)
 
 export const langLabel: Record<string, string> = localized(() => L().lang)
-export const lang = (code: string) => langLabel[code] ?? code
+export const lang = (code: string) => langLabel[code] ?? langLabel[code.split('-')[0]] ?? code
+
+/** Caption-language preference, same order as the backend picks tracks: Traditional / Taiwan Chinese first,
+ * then Taiwanese and Hakka (downloaded alongside), then Simplified (converted to Traditional), then the rest. */
+export function langRank(code: string): number {
+  const c = code.toLowerCase()
+  if (c === 'zh-tw') return 0
+  if (c === 'zh-hant' || c.startsWith('zh-hant-')) return 1
+  if (c === 'zh-hk' || c === 'zh-mo') return 2
+  if (c === 'zh' || c === 'cmn') return 3
+  if (c === 'nan' || c.startsWith('nan-')) return 4
+  if (c === 'hak' || c.startsWith('hak-')) return 5
+  if (c.startsWith('zh')) return 6
+  return 10
+}
+export const byLangPreference = (a: string, b: string) => langRank(a) - langRank(b) || a.localeCompare(b)
+/** Languages to pre-select for download: Chinese (any script) plus Taiwanese/Hakka. */
+export const isPreferredCaptionLang = (code: string) => langRank(code) < 10
 
 export const repeatPosition: Record<string, string> = localized(() => L().repeatPosition)
 export const mediaKind: Record<string, string> = localized(() => L().mediaKind)

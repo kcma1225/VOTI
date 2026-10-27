@@ -111,7 +111,7 @@ export const api = {
   media: (q: T.MediaQuery) => get<T.MediaList>('/media', q as Query),
   mediaDetail: (id: string) => get<T.MediaDetail>(`/media/${id}`),
   download: (b: { media_ids?: string[]; filter?: T.MediaQuery; caption_langs?: string[]; include_auto: boolean }) =>
-    post<{ queued: number; skipped: number }>('/media/download', b),
+    post<{ queued: number; skipped: number; skipped_reasons?: Record<string, number> }>('/media/download', b),
   retryMedia: (id: string) => post<T.Job>(`/media/${id}/retry`),
   reprocess: (id: string, from_step: string) => post<T.Job>(`/media/${id}/reprocess`, { from_step }),
   timeline: (id: string) => get<T.Timeline>(`/media/${id}/timeline`),

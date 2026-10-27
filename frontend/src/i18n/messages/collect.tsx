@@ -292,6 +292,11 @@ export const zh = {
       toast: (n: number) => `已排入 ${fmtInt(n)} 部影片下載`,
       toastSkipped: (n: number) => `${fmtInt(n)} 部因沒有可用字幕或已在處理中而略過`,
       toastHint: '處理進度可在工作佇列查看',
+      nothingQueued: '沒有排入下載',
+      reason: {
+        already_downloaded: '已下載或處理中', no_usable_captions: '沒有符合的字幕（可勾選「包含自動字幕」）',
+        members_only: '會員限定影片不支援', not_found: '找不到影片',
+      },
       title: (n: number) => `下載 ${fmtInt(n)} 部影片`,
       descFilter: '依目前的篩選條件選取（包含未載入到本頁的影片）。',
       descIds: '下載音訊與指定語言的字幕，完成後自動進入處理流程。',
@@ -639,6 +644,11 @@ export const en: Shape<typeof zh> = {
       toast: (n) => `Queued ${pl(n, 'video', 'videos')} for download`,
       toastSkipped: (n) => `${pl(n, 'video was', 'videos were')} skipped (no usable captions or already processing)`,
       toastHint: 'Track progress in the job queue',
+      nothingQueued: 'Nothing was queued',
+      reason: {
+        already_downloaded: 'already downloaded or processing', no_usable_captions: 'no matching captions (try including auto captions)',
+        members_only: 'members-only videos are not supported', not_found: 'video not found',
+      },
       title: (n) => `Download ${pl(n, 'video', 'videos')}`,
       descFilter: 'Selected by the current filters (including videos not loaded on this page).',
       descIds: 'Downloads audio plus captions in the chosen languages, then processing starts automatically.',

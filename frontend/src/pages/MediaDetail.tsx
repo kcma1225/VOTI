@@ -1,9 +1,10 @@
 import { t } from '@/i18n'
 import { useMemo, useState } from 'react'
+import { DownloadDialog } from '@/components/domain/media-browser'
 import { Link, useParams } from 'react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { AlertTriangle, AudioWaveform, Check, ChevronDown, ExternalLink, Languages, Loader2, Minus, RotateCw, X, ZoomIn, ZoomOut } from 'lucide-react'
+import { AlertTriangle, AudioWaveform, Check, ChevronDown, ExternalLink, Languages, Loader2, Minus, RotateCw, X, ZoomIn, ZoomOut, Download } from 'lucide-react'
 import { api } from '@/api/client'
 import { onErr, qk, useMediaDetail, useTimeline } from '@/api/queries'
 import type { Job, MediaDetail as TMedia, MediaQuality, Track } from '@/api/types'
@@ -197,6 +198,7 @@ export default function MediaDetail() {
   useTitle(m?.title)
   const qc = useQueryClient()
   const [descOpen, setDescOpen] = useState(false)
+  const [dlOpen, setDlOpen] = useState(false)
   const retry = useMutation({
     mutationFn: () => api.retryMedia(id),
     onSuccess: () => {
@@ -246,7 +248,9 @@ export default function MediaDetail() {
       </Page>
     )
 
-  const hasPipeline = !['listed', 'detailed'].includes(m.status)
+  const hasPipeline = !['listed', 'detailed', 'skipped', 'blocked'].includes(m.status)
+  const membersOnly = m.failure_code === 'members_only'
+  const canDownload = !membersOnly && ['listed', 'detailed', 'skipped', 'blocked', 'failed'].includes(m.status) && !m.jobs.some((j) => j.kind !== 'media.download' && ['queued', 'running'].includes(j.status)) && m.segment_count === 0
   return (
     <Page wide>
       {m.channel && (
@@ -276,6 +280,11 @@ export default function MediaDetail() {
             )}
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
+            {canDownload && (
+              <Button variant="primary" onClick={() => setDlOpen(true)}>
+                <Download /> {t('process.media.download')}
+              </Button>
+            )}
             {m.status === 'ready' && (
               <Button asChild variant="primary">
                 <Link to={`/review?media=${m.id}`}>
@@ -350,7 +359,14 @@ export default function MediaDetail() {
               <EmptyState
                 icon={hasPipeline ? <Loader2 className="animate-spin" /> : <Minus />}
                 title={hasPipeline ? (m.status === 'failed' ? t('process.media.stoppedMidway') : t('process.media.processing')) : t('process.media.notDownloaded')}
-                description={hasPipeline ? t('process.media.processingDesc') : t('process.media.notDownloadedDesc')}
+                description={hasPipeline ? t('process.media.processingDesc') : membersOnly ? t('process.media.notDownloadableDesc') : t('process.media.notDownloadedDesc')}
+                action={
+                  canDownload && !hasPipeline ? (
+                    <Button variant="primary" onClick={() => setDlOpen(true)}>
+                      <Download /> {t('process.media.download')}
+                    </Button>
+                  ) : undefined
+                }
               />
             </Card>
           )}
@@ -396,6 +412,15 @@ export default function MediaDetail() {
           </Card>
         </div>
       </div>
+      <DownloadDialog
+        open={dlOpen}
+        onOpenChange={setDlOpen}
+        count={1}
+        selection={{ ids: [m.id] }}
+        query={{ include_auto: !m.has_manual_captions && !!m.has_auto_captions }}
+        sample={[m]}
+        onDone={() => undefined}
+      />
     </Page>
   )
 }

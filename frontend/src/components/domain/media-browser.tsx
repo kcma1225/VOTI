@@ -7,7 +7,7 @@ import { api } from '@/api/client'
 import { errMsg, useMedia, usePlaylists } from '@/api/queries'
 import type { CaptionFilter, MediaKind, MediaQuery, MediaSort, MediaStatus, MediaSummary } from '@/api/types'
 import { fmtClock, fmtCompact, fmtDate, fmtDb, fmtHours, fmtInt, fmtMos } from '@/lib/format'
-import { lang, licenseLabel, mediaStatus } from '@/lib/labels'
+import { isPreferredCaptionLang, lang, langRank, licenseLabel, mediaStatus } from '@/lib/labels'
 import { cn } from '@/lib/cn'
 import { useIsDesktop } from '@/hooks/useMedia'
 import { Button } from '@/components/ui/button'
@@ -272,13 +272,15 @@ export function DownloadDialog({
     const s = new Map<string, number>()
     sample.forEach((m) => m.manual_caption_langs.forEach((l) => s.set(l, (s.get(l) ?? 0) + 1)))
     if (!s.size) s.set('zh-TW', 0)
-    return [...s.entries()].sort((a, b) => b[1] - a[1]).map(([l]) => l)
+    // preferred languages first (Traditional/Taiwan Chinese, Taiwanese, Hakka, Simplified), then by frequency
+    return [...s.entries()].sort((a, b) => langRank(a[0]) - langRank(b[0]) || b[1] - a[1]).map(([l]) => l)
   }, [sample])
   const [picked, setPicked] = useState<string[]>([])
   const [includeAuto, setIncludeAuto] = useState(false)
   useEffect(() => {
     if (open) {
-      setPicked(langs.slice(0, 2))
+      // default: every Chinese / Taiwanese / Hakka track present; none → let the server pick (it prefers zh-TW)
+      setPicked(langs.filter(isPreferredCaptionLang))
       setIncludeAuto(!!query.include_auto)
     }
   }, [open, langs, query.include_auto])
@@ -286,6 +288,14 @@ export function DownloadDialog({
   const m = useMutation({
     mutationFn: () => api.download({ media_ids: selection.ids, filter: selection.filter, caption_langs: picked, include_auto: includeAuto }),
     onSuccess: (r) => {
+      if (r.queued === 0) {
+        const known = ['already_downloaded', 'no_usable_captions', 'members_only', 'not_found'] as const
+        const reasons = Object.keys(r.skipped_reasons ?? {}).map((k) =>
+          (known as readonly string[]).includes(k) ? t(`collect.media.dl.reason.${k as (typeof known)[number]}`) : k,
+        )
+        toast.error(t('collect.media.dl.nothingQueued'), { description: reasons.join(t('common.listSep')) || undefined })
+        return
+      }
       toast.success(t('collect.media.dl.toast', r.queued), { description: r.skipped ? t('collect.media.dl.toastSkipped', r.skipped) : t('collect.media.dl.toastHint') })
       qc.invalidateQueries({ queryKey: ['media'] })
       qc.invalidateQueries({ queryKey: ['jobs'] })

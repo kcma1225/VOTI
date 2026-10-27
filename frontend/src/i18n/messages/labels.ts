@@ -75,6 +75,8 @@ export const zh = {
   lang: {
     'zh-TW': '中文（台灣）', 'zh-Hant': '繁體中文', zh: '中文', 'zh-Hans': '簡體中文', 'zh-CN': '簡體中文',
     nan: '台語', 'nan-TW': '台語', hak: '客語', en: '英文', ja: '日文',
+    'zh-HK': '中文（香港）', 'zh-SG': '簡體中文（新加坡）', yue: '粵語', ko: '韓文', vi: '越南文', id: '印尼文',
+    th: '泰文', ms: '馬來文', fr: '法文', de: '德文', es: '西班牙文',
   },
   repeatPosition: { intro: '片頭', outro: '片尾', middle: '片中' },
   mediaKind: { video: '影片', short: 'Shorts', live: '直播', upload: '上傳' },
@@ -155,6 +157,8 @@ export const en: Shape<typeof zh> = {
   lang: {
     'zh-TW': 'Chinese (Taiwan)', 'zh-Hant': 'Traditional Chinese', zh: 'Chinese', 'zh-Hans': 'Simplified Chinese', 'zh-CN': 'Simplified Chinese',
     nan: 'Taiwanese', 'nan-TW': 'Taiwanese', hak: 'Hakka', en: 'English', ja: 'Japanese',
+    'zh-HK': 'Chinese (Hong Kong)', 'zh-SG': 'Simplified Chinese (Singapore)', yue: 'Cantonese', ko: 'Korean', vi: 'Vietnamese',
+    id: 'Indonesian', th: 'Thai', ms: 'Malay', fr: 'French', de: 'German', es: 'Spanish',
   },
   repeatPosition: { intro: 'Intro', outro: 'Outro', middle: 'Mid-video' },
   mediaKind: { video: 'Video', short: 'Shorts', live: 'Live', upload: 'Upload' },

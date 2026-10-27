@@ -5,7 +5,7 @@ import { jobStatus, mediaStatus, reviewStatus, type Tone } from '@/lib/labels'
 import { Badge, Tag } from '@/components/ui/primitives'
 import { Tooltip } from '@/components/ui/overlay'
 import { cn } from '@/lib/cn'
-import { lang } from '@/lib/labels'
+import { byLangPreference, lang } from '@/lib/labels'
 import { Captions, Bot } from 'lucide-react'
 
 export function MediaStatusBadge({ status, stage, failureCode, className }: { status: MediaStatus; stage?: string | null; failureCode?: string | null; className?: string }) {
@@ -77,6 +77,8 @@ export function CaptionBadges({
   autoLangs: string[]
   compact?: boolean
 }) {
+  manualLangs = [...manualLangs].sort(byLangPreference)
+  autoLangs = [...autoLangs].sort(byLangPreference)
   if (manual === null && auto === null)
     return (
       <Tooltip content={t('process.status.captionsUnknownTip')}>
