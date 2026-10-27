@@ -295,7 +295,7 @@ def test_pipeline_align_step_chains_and_survives_missing_model(db, factory, monk
     db.expire_all()
     job = db.get(Job, job.id)
     assert job.status == "completed" and job.result["skipped"] is True
-    assert db.scalar(select(Job).where(Job.parent_id == job.id)).kind == "media.embed"
+    assert db.scalar(select(Job).where(Job.parent_id == job.id)).kind == "media.validate"
     assert db.get(Media, m.id).status == "processing"
     # outside the chain the same error fails the job but never the media
     job = enqueue(db, "media.align", media_id=m.id, payload={"chain": False})

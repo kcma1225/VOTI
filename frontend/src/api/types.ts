@@ -54,6 +54,14 @@ export interface TextSettings {
   convert_simplified: boolean
   opencc_config: OpenccConfig
 }
+/** caption ↔ audio validation (settings key `validation`) */
+export interface ValidationSettings {
+  enabled: boolean
+  lid_min_prob: number
+  lid_min_speech_sec: number
+  align_min_score: number
+  align_min_units: number
+}
 export interface CookiesState {
   present: boolean
   updated_at: ISODate | null
@@ -63,6 +71,7 @@ export interface Settings {
   pipeline: PipelineSettings
   quality_thresholds: QualityThresholds
   text?: TextSettings
+  validation?: ValidationSettings
   cookies: CookiesState
 }
 
@@ -87,6 +96,7 @@ export type JobKind =
   | 'dataset.export'
   | 'media.convert_text'
   | 'media.align'
+  | 'media.validate'
   | 'channel.align'
 
 export interface Job {
@@ -165,7 +175,8 @@ export interface ChannelSummary {
   last_listed_at: ISODate | null
   /** `new` = videos found by a re-listing in the last 7 days that are still listed/detailed */
   counts: { listed: number; detailed: number; with_manual_captions: number; downloaded: number; ready: number; failed: number; new?: number }
-  hours: { listed: number; ready: number; speech: number }
+  /** segments = active segments that are not invalid; invalid = invalid segments (hours) */
+  hours: { listed: number; ready: number; speech: number; segments?: number; invalid?: number }
   listing_job?: ListingJobBrief | null // ext
   detail_progress?: DetailProgress | null // ext
   /** legacy name of counts.new */
@@ -246,6 +257,9 @@ export interface MediaSummary {
   is_new?: boolean
   discovered_at?: ISODate | null
   downloaded?: boolean
+  /** active segments whose caption does not match the audio */
+  invalid_count?: number
+  invalid_sec?: number
 }
 export interface MediaQuality {
   sample_rate: number | null
@@ -295,6 +309,9 @@ export interface MediaDetail extends Omit<MediaSummary, 'quality'> {
   jobs: Job[]
   tracks: Track[]
   quality: MediaQuality | null
+  validity_counts?: { valid: number; invalid: number; unknown: number }
+  /** a media.validate job is queued/running */
+  validation_job_active?: boolean
   /** some track was converted Simplified → Traditional */
   text_converted?: boolean
   /** POST /media/{id}/convert-text would still change something */
@@ -372,6 +389,8 @@ export interface Timeline {
 export type ReviewStatus = 'unchecked' | 'passed' | 'needs_fix' | 'excluded'
 export type SpeakerState = 'unknown' | 'single' | 'multiple' | 'overlap'
 export type TextSource = 'manual_caption' | 'auto_caption' | 'human_revision' | 'none' | string
+export type Validity = 'valid' | 'invalid' | 'unknown'
+export type InvalidReason = 'language_mismatch' | 'text_mismatch' | 'manual'
 export interface SegmentSummary {
   id: UUID
   media_id: UUID
@@ -396,6 +415,13 @@ export interface SegmentSummary {
   review_status: ReviewStatus
   revision: number
   profile?: { age: number | null; sex: string | null; emotion_label: string | null } | null
+  validity?: Validity
+  invalid_reason?: InvalidReason | null
+  validity_source?: 'auto' | 'manual' | null
+  /** VoxLingua107 code of the spoken language (e.g. en) */
+  lid_lang?: string | null
+  lid_prob?: number | null
+  align_score?: number | null
 }
 export type Dist = Record<string, number>
 export interface VoiceProfile {
@@ -436,6 +462,16 @@ export interface SegmentDetail extends Omit<SegmentSummary, 'profile'> {
   /** character/word timings; units concatenate exactly to `text`; null times = untimed (punctuation) */
   words?: WordUnit[] | null
   alignment?: SegmentAlignment | null
+  /** segments.validation: lid top-3, expected language, thresholds … */
+  validation?: {
+    lid?: [string, number][] | null
+    expected?: string | null
+    align_units?: number
+    thresholds?: Record<string, number>
+    at?: ISODate
+    note?: string
+    [k: string]: unknown
+  } | null
 }
 export type AlignStatus = 'aligned' | 'skipped' | 'failed' | 'pending' | 'stale' | 'none'
 export interface SegmentAlignment {
@@ -480,6 +516,7 @@ export interface SegmentQuery {
   flags?: string[]
   exclude_flags?: string[]
   has_profile?: boolean
+  validity?: Validity[]
   sort?: string
   limit?: number
   offset?: number
@@ -491,6 +528,8 @@ export interface SegmentPatch {
   speaker_state?: SpeakerState
   start_sec?: number
   end_sec?: number
+  /** human decision; auto = drop it and re-run the automatic check */
+  validity?: 'valid' | 'invalid' | 'auto'
 }
 
 // ─────────────── speakers ───────────────
@@ -634,8 +673,8 @@ export interface Dataset {
 export interface Overview {
   channels: number
   media: { listed: number; detailed: number; downloaded: number; ready: number; failed: number }
-  hours: { listed: number; downloaded: number; speech: number; segments: number; reviewed: number }
-  segments: { total: number; passed: number; needs_fix: number }
+  hours: { listed: number; downloaded: number; speech: number; segments: number; reviewed: number; invalid?: number }
+  segments: { total: number; passed: number; needs_fix: number; invalid?: number }
   speakers: { candidates: number; verified: number }
   storage_bytes: number
   workers: { name: string; queues: QueueName[]; alive: boolean; last_seen_at?: ISODate; current_job?: { id: string; kind: string; media_title?: string | null } | null }[]

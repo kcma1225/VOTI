@@ -5,7 +5,7 @@ import { toast } from 'sonner'
 import { Cookie, FileUp, KeyRound, Languages as LanguagesIcon, Pencil, Plus, RefreshCw, ShieldCheck, Trash2, UserRound, Users, Workflow, Youtube } from 'lucide-react'
 import { api } from '@/api/client'
 import { errMsg, onErr, qk, useMe, useSettings, useUsers } from '@/api/queries'
-import type { OpenccConfig, PipelineSettings, QualityThresholds, Role, TextSettings, User, YoutubeSettings } from '@/api/types'
+import type { OpenccConfig, PipelineSettings, QualityThresholds, Role, TextSettings, User, ValidationSettings, YoutubeSettings } from '@/api/types'
 import { fmtDateTime, fmtRelative } from '@/lib/format'
 import { Page, PageHeader } from '@/components/layout/page'
 import { Button } from '@/components/ui/button'
@@ -376,6 +376,62 @@ function TextCard({ current }: { current: TextSettings }) {
   )
 }
 
+/* ───────────── caption ↔ audio validation ───────────── */
+const VALIDATION_DEFAULT: ValidationSettings = { enabled: true, lid_min_prob: 0.7, lid_min_speech_sec: 1, align_min_score: 0.4, align_min_units: 4 }
+function ValidationCard({ current }: { current: ValidationSettings }) {
+  const t = useT()
+  const qc = useQueryClient()
+  const [v, setV] = useState<ValidationSettings>(current)
+  useEffect(() => setV(current), [current])
+  const save = useMutation({
+    mutationFn: () => api.putSetting('validation', v),
+    onSuccess: () => (qc.invalidateQueries({ queryKey: qk.settings }), toast.success(tr('validate.settings.saved'))),
+    onError: onErr,
+  })
+  const backfill = useMutation({
+    mutationFn: () => api.validateBackfill(),
+    onSuccess: (r) => (r.queued ? toast.success(tr('validate.settings.backfillQueued', r.queued)) : toast(tr('validate.settings.backfillQueued', 0))),
+    onError: onErr,
+  })
+  const off = !v.enabled && 'pointer-events-none opacity-50'
+  return (
+    <Card data-shot="validation-card">
+      <CardHeader title={t('validate.settings.title')} description={t('validate.settings.desc')} icon={<ShieldCheck />} />
+      <CardBody className="divide-y divide-border">
+        <Row label={t('validate.settings.enabled')} hint={t('validate.settings.enabledHint')}>
+          <Switch checked={v.enabled} onCheckedChange={(x) => setV({ ...v, enabled: x })} aria-label={t('validate.settings.enabled')} />
+        </Row>
+        <Row label={t('validate.settings.lidMinProb')} hint={t('validate.settings.lidMinProbHint')}>
+          <div className={cn(off)}>
+            <NumberInput value={v.lid_min_prob} onChange={(x) => setV({ ...v, lid_min_prob: x ?? 0 })} step={0.05} min={0} max={1} />
+          </div>
+        </Row>
+        <Row label={t('validate.settings.lidMinSpeech')} hint={t('validate.settings.lidMinSpeechHint')}>
+          <div className={cn(off)}>
+            <NumberInput value={v.lid_min_speech_sec} onChange={(x) => setV({ ...v, lid_min_speech_sec: x ?? 0 })} step={0.5} min={0} max={10} suffix={t('output.settings.youtube.sec')} />
+          </div>
+        </Row>
+        <Row label={t('validate.settings.alignMinScore')} hint={t('validate.settings.alignMinScoreHint')}>
+          <div className={cn(off)}>
+            <NumberInput value={v.align_min_score} onChange={(x) => setV({ ...v, align_min_score: x ?? 0 })} step={0.05} min={0} max={1} />
+          </div>
+        </Row>
+        <Row label={t('validate.settings.alignMinUnits')} hint={t('validate.settings.alignMinUnitsHint')}>
+          <div className={cn(off)}>
+            <NumberInput value={v.align_min_units} onChange={(x) => setV({ ...v, align_min_units: Math.max(1, Math.round(x ?? 1)) })} step={1} min={1} max={100} />
+          </div>
+        </Row>
+        <Row label={t('validate.settings.backfill')} hint={t('validate.settings.backfillHint')}>
+          <Button onClick={() => backfill.mutate()} loading={backfill.isPending} disabled={!current.enabled}>
+            <ShieldCheck /> {t('validate.settings.backfill')}
+          </Button>
+        </Row>
+      </CardBody>
+      <SaveBar dirty={JSON.stringify(v) !== JSON.stringify(current)} saving={save.isPending} onSave={() => save.mutate()} onReset={() => setV(current)} />
+    </Card>
+  )
+}
+
 /* ───────────── pipeline + thresholds ───────────── */
 function PipelineTab() {
   const s = useSettings()
@@ -438,6 +494,7 @@ function PipelineTab() {
         </CardBody>
         <SaveBar dirty={JSON.stringify(th) !== JSON.stringify(s.data.quality_thresholds)} saving={saveT.isPending} onSave={() => saveT.mutate()} onReset={() => setTh(s.data.quality_thresholds)} />
       </Card>
+      <ValidationCard current={s.data.validation ?? VALIDATION_DEFAULT} />
       <TextCard current={s.data.text ?? TEXT_DEFAULT} />
     </div>
   )

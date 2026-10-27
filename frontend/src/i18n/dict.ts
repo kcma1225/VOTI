@@ -8,6 +8,7 @@ import * as collect from './messages/collect'
 import * as process from './messages/process'
 import * as people from './messages/people'
 import * as output from './messages/output'
+import * as validate from './messages/validate'
 
 export const zh = {
   common: common.zh,
@@ -22,6 +23,8 @@ export const zh = {
   people: people.zh,
   /** Datasets, settings */
   output: output.zh,
+  /** Caption ↔ audio validation (invalid segments) */
+  validate: validate.zh,
 }
 
 export const en: Shape<typeof zh> = {
@@ -33,4 +36,5 @@ export const en: Shape<typeof zh> = {
   process: process.en,
   people: people.en,
   output: output.en,
+  validate: validate.en,
 }

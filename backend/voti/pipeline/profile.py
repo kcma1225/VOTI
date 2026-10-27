@@ -1,6 +1,6 @@
 """media.profile — Vox-Profile traits for a media's segments via the legacy-ml service.
 
-Selects active segments with speaker_state in (single, unknown) whose *current* revision has no VoiceProfile for
+Selects active, not invalid (voti.pipeline.validate) segments with speaker_state in (single, unknown) whose *current* revision has no VoiceProfile for
 the configured backbone (settings `pipeline.voxprofile_backbone`), sends them to legacy-ml in batches, writes one
 VoiceProfile row per (segment, revision, backbone), refreshes Speaker.profile of the current cluster run, and
 chains media.fingerprint.
@@ -41,6 +41,7 @@ def select_segments(media_id: uuid.UUID, backbone: str, force: bool = False) -> 
     with session_scope() as s:
         q = select(Segment.id, Segment.revision, Segment.start_sec, Segment.end_sec).where(
             Segment.media_id == media_id, Segment.active.is_(True), Segment.speaker_state.in_(PROFILE_STATES),
+            Segment.validity != "invalid",
             (Segment.end_sec - Segment.start_sec) >= MIN_SEC)
         if not force:
             q = q.outerjoin(VoiceProfile, and_(VoiceProfile.segment_id == Segment.id,

@@ -289,20 +289,28 @@ def media_detail(media_id: uuid.UUID, _: User = Depends(current_user), s: Sessio
     playlists = s.scalars(select(PlaylistItem.playlist_id).where(PlaylistItem.media_id == m.id)).all()
     q = s.get(MediaQuality, m.id)
     s2t = textconv.track_infos(s, tracks)
+    validity_counts = {"valid": 0, "invalid": 0, "unknown": 0}
+    validity_counts.update(dict(s.execute(select(Segment.validity, func.count())
+                                          .where(Segment.media_id == m.id, Segment.active.is_(True))
+                                          .group_by(Segment.validity)).all()))
+    validating = s.scalar(select(Job.id).where(Job.kind == "media.validate", Job.media_id == m.id,
+                                               Job.status.in_(("queued", "running"))).limit(1)) is not None
     track_outs = [S.TrackOut(id=t.id, language=t.language, kind=t.kind, format=t.format,
                              s2t_converted=bool(s2t.get(t.id, {}).get("converted")),
                              script=s2t.get(t.id, {}).get("script"),
                              cues_converted=s2t.get(t.id, {}).get("cues_converted")) for t in tracks]
     return S.MediaDetailOut(
         **_media_base(m), channel=summary.channel, segment_count=summary.segment_count,
-        downloaded=summary.downloaded, description=m.description,
+        downloaded=summary.downloaded, invalid_count=summary.invalid_count, invalid_sec=summary.invalid_sec,
+        description=m.description,
         tags=m.tags or [], categories=m.categories or [], chapters=m.chapters or [], language=m.language,
         like_count=m.like_count, comment_count=m.comment_count, availability=m.availability, age_limit=m.age_limit,
         metadata=m.metadata_ or {}, failure_message=m.failure_message, jobs=job_outs(s, jobs),
         tracks=track_outs, playlists=list(playlists), quality=S.MediaQualityOut.model_validate(q) if q else None,
         text_converted=any(tr.s2t_converted for tr in track_outs),
         text_convertible=any(textconv.convertible(t.language, s2t.get(t.id)) for t in tracks),
-        text_conversion=(m.metadata_ or {}).get("text_conversion"))
+        text_conversion=(m.metadata_ or {}).get("text_conversion"), validity_counts=validity_counts,
+        validation_job_active=validating)
 
 
 RETRYABLE = ("failed", "blocked", "interrupted", "cancelled")
@@ -489,6 +497,20 @@ def align_media(media_id: uuid.UUID, body: S.AlignIn | None = None, user: User =
     if s.scalar(select(Segment.id).where(Segment.media_id == m.id, Segment.active.is_(True)).limit(1)) is None:
         return S.QueuedOut(queued=0)
     enqueue(s, "media.align", media_id=m.id, channel_id=m.channel_id, created_by=user.id,
+            payload={"chain": False, "force": bool(body and body.force), "reason": "backfill"})
+    s.commit()
+    return S.QueuedOut(queued=1)
+
+
+@router.post("/{media_id}/validate", response_model=S.QueuedOut)
+def validate_media(media_id: uuid.UUID, body: S.ValidateIn | None = None, user: User = Depends(current_user),
+                   s: Session = Depends(get_session)):
+    """(Re-)check whether the captions match the audio (media.validate, outside the pipeline chain). force=true
+    re-checks segments whose result is still current (manual decisions are always kept). 0 without segments."""
+    m = get_or_404(s, Media, media_id, "影片")
+    if s.scalar(select(Segment.id).where(Segment.media_id == m.id, Segment.active.is_(True)).limit(1)) is None:
+        return S.QueuedOut(queued=0)
+    enqueue(s, "media.validate", media_id=m.id, channel_id=m.channel_id, created_by=user.id,
             payload={"chain": False, "force": bool(body and body.force), "reason": "backfill"})
     s.commit()
     return S.QueuedOut(queued=1)

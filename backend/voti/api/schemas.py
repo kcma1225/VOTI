@@ -93,6 +93,16 @@ class TextSettings(BaseModel):
     opencc_config: Literal["s2twp", "s2tw", "s2t"] = "s2twp"      # OpenCC config
 
 
+class ValidationSettings(BaseModel):
+    """Caption ↔ audio validation (voti.pipeline.validate; docs/ARCHITECTURE.md "Caption validation")."""
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = True
+    lid_min_prob: float = Field(default=0.7, ge=0, le=1)          # confident different spoken language
+    lid_min_speech_sec: float = Field(default=1.0, ge=0, le=10)   # less speech: no language ID
+    align_min_score: float = Field(default=0.4, ge=0, le=1)       # mean MMS_FA unit probability (calibrated)
+    align_min_units: int = Field(default=4, ge=1, le=100)
+
+
 class CookiesStatus(BaseModel):
     present: bool
     updated_at: datetime | None = None
@@ -103,6 +113,7 @@ class SettingsOut(BaseModel):
     pipeline: PipelineSettings
     quality_thresholds: QualityThresholds
     text: TextSettings = TextSettings()
+    validation: ValidationSettings = ValidationSettings()
     cookies: CookiesStatus
 
 
@@ -183,6 +194,8 @@ class ChannelHours(BaseModel):
     listed: float = 0.0
     ready: float = 0.0
     speech: float = 0.0
+    segments: float = 0.0   # active segments that are not invalid (usable)
+    invalid: float = 0.0    # invalid segments (caption does not match the audio)
 
 
 class ChannelSummary(BaseModel):
@@ -314,6 +327,8 @@ class MediaSummary(BaseModel):
     discovered_at: datetime | None = None  # found by a channel re-listing (not the first listing)
     is_new: bool = False                    # discovered within the last 7 days and not downloaded yet
     downloaded: bool = False                # original audio stored (or status downloaded/processing/ready)
+    invalid_count: int = 0                  # active segments with validity invalid
+    invalid_sec: float = 0.0
 
 
 class MediaQualityOut(ORM):
@@ -378,6 +393,8 @@ class MediaDetailOut(BaseModel):
     discovered_at: datetime | None = None
     is_new: bool = False
     downloaded: bool = False
+    invalid_count: int = 0
+    invalid_sec: float = 0.0
     description: str = ""
     tags: list = []
     categories: list = []
@@ -396,6 +413,8 @@ class MediaDetailOut(BaseModel):
     text_converted: bool = False       # some track's cues were converted Simplified → Traditional
     text_convertible: bool = False     # POST /media/{id}/convert-text could still change something
     text_conversion: dict | None = None  # metadata["text_conversion"] summary (counts, config, opencc version)
+    validity_counts: dict[str, int] = {}  # {valid, invalid, unknown} over active segments
+    validation_job_active: bool = False   # a media.validate job is queued/running
 
 
 class MediaFacets(BaseModel):
@@ -459,6 +478,12 @@ class SegmentSummary(BaseModel):
     review_status: str
     revision: int
     profile: ProfileBrief | None = None
+    validity: str = "unknown"              # valid | invalid | unknown (caption ↔ audio check)
+    invalid_reason: str | None = None      # language_mismatch | text_mismatch | manual
+    validity_source: str | None = None     # auto | manual
+    lid_lang: str | None = None            # VoxLingua107 code of the spoken language (top-1)
+    lid_prob: float | None = None
+    align_score: float | None = None       # mean MMS_FA unit probability
 
 
 class VoiceProfileOut(ORM):
@@ -512,6 +537,7 @@ class SegmentDetail(SegmentSummary):
     history: list[AuditOut] = []
     words: list[WordOut] | None = None  # per-character timing of `text` (null: not aligned / stale / skipped)
     alignment: AlignmentInfo | None = None
+    validation: dict | None = None          # segments.validation (lid top-3, expected language, thresholds, …)
 
 
 class WordOut(BaseModel):
@@ -541,6 +567,10 @@ class AlignIn(BaseModel):
     force: bool = False
 
 
+class ValidateIn(BaseModel):
+    force: bool = False
+
+
 class SegmentNeighbors(BaseModel):
     prev_id: uuid.UUID | None = None
     next_id: uuid.UUID | None = None
@@ -560,6 +590,7 @@ class SegmentPatchIn(BaseModel):
     speaker_state: SpeakerState | None = None
     start_sec: float | None = Field(default=None, ge=0)
     end_sec: float | None = Field(default=None, ge=0)
+    validity: Literal["valid", "invalid", "auto"] | None = None  # human decision; auto = back to the automatic check
 
 
 class SpeakerOverrideIn(BaseModel):

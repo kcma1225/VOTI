@@ -120,7 +120,8 @@ function facets(f: MF): T.MediaFacets {
 const mediaSummary = (m: MockMedia): T.MediaSummary => {
   const { channel_idx: _c, description: _d, sample_rate: _s, q: _q, speakers: _sp, like_count: _l, ...rest } = m
   void _c, _d, _s, _q, _sp, _l
-  return rest
+  const inv = (getDB().segments.get(m.id) ?? []).filter((s) => s.validity === 'invalid')
+  return { ...rest, invalid_count: inv.length, invalid_sec: Math.round(inv.reduce((a, s) => a + s.duration, 0) * 10) / 10 }
 }
 
 // ───────────── segment filtering ─────────────
@@ -158,6 +159,8 @@ function filterSegments(url: URL) {
   if (msr !== null) xs = xs.filter((s) => (s.speech_ratio ?? 0) >= msr)
   const fl = list(url, 'flags')
   if (fl.length) xs = xs.filter((s) => s.flags.some((f) => fl.includes(f)))
+  const vs = list(url, 'validity')
+  if (vs.length) xs = xs.filter((s) => vs.includes(s.validity ?? 'unknown'))
   const xf = list(url, 'exclude_flags')
   if (xf.length) xs = xs.filter((s) => !s.flags.some((f) => xf.includes(f)))
   const sort = url.searchParams.get('sort')
@@ -172,7 +175,7 @@ function filterSegments(url: URL) {
 function preview(f: T.DatasetFilters): T.DatasetPreview {
   const d = getDB()
   const all = allSegments()
-  const excluded = { repeated: 0, auto_caption: 0, low_quality: 0, review: 0, speaker_cap: 0 }
+  const excluded = { repeated: 0, auto_caption: 0, low_quality: 0, review: 0, speaker_cap: 0, invalid: 0 }
   const kept: T.SegmentDetail[] = []
   for (const s of all) {
     const m = d.mediaById.get(s.media_id)!
@@ -212,6 +215,11 @@ function preview(f: T.DatasetFilters): T.DatasetPreview {
     }
     if (f.sex.length && !(s.profile?.sex && f.sex.includes(s.profile.sex))) continue
     if (f.age_groups.length && !(s.profile?.age_group && f.age_groups.includes(s.profile.age_group))) continue
+    // caption does not match the audio: always excluded (not a filter)
+    if (s.validity === 'invalid') {
+      excluded.invalid++
+      continue
+    }
     kept.push(s)
   }
   let final = kept
@@ -345,7 +353,9 @@ function overview(): T.Overview {
   const d = getDB()
   const M = d.media
   const sumDur = (xs: MockMedia[]) => xs.reduce((a, m) => a + (m.duration_sec ?? 0), 0) / 3600
-  const segs = allSegments()
+  const everything = allSegments()
+  const bad = everything.filter((s) => s.validity === 'invalid')
+  const segs = everything.filter((s) => s.validity !== 'invalid')
   const segH = segs.reduce((a, s) => a + s.duration, 0) / 3600
   const revH = segs.filter((s) => s.review_status === 'passed').reduce((a, s) => a + s.duration, 0) / 3600
   const downloaded = M.filter((m) => ['downloaded', 'processing', 'ready'].includes(m.status))
@@ -366,11 +376,13 @@ function overview(): T.Overview {
       speech: ready.reduce((a, m) => a + (m.q?.speech_sec ?? 0), 0) / 3600,
       segments: segH,
       reviewed: revH,
+      invalid: bad.reduce((a, s) => a + s.duration, 0) / 3600,
     },
     segments: {
       total: segs.length,
       passed: segs.filter((s) => s.review_status === 'passed').length,
       needs_fix: segs.filter((s) => s.review_status === 'needs_fix').length,
+      invalid: bad.length,
     },
     speakers: { candidates: d.speakers.length, verified: d.speakers.filter((s) => s.verified).length },
     storage_bytes: 412.6 * 1024 ** 3,
@@ -394,7 +406,11 @@ const strip = <J extends T.Job>(j: J): T.Job => {
 function channelOut(c: T.ChannelDetail): T.ChannelDetail {
   const j = db.jobs.find((x) => x.kind === 'channel.list' && x.channel_id === c.id)
   const listing_job = j && (j.status === 'queued' || j.status === 'running') ? { id: j.id, kind: j.kind, status: j.status, progress: j.progress, phase: j.phase, message: j.message, run_after: j.run_after ?? null, error_code: j.error_code } : null
-  return { ...c, listing_job }
+  let segSec = 0
+  let badSec = 0
+  for (const m of db.media)
+    if (m.channel?.id === c.id) for (const s of db.segments.get(m.id) ?? []) s.validity === 'invalid' ? (badSec += s.duration) : (segSec += s.duration)
+  return { ...c, listing_job, hours: { ...c.hours, segments: segSec / 3600, invalid: badSec / 3600 } }
 }
 
 /** Caption tracks + Simplified → Traditional state of a media (deterministic demo data). */
@@ -497,7 +513,7 @@ export const handlers = [
     return new HttpResponse(null, { status: 204 })
   }),
   http.put(`${A}/settings/:key`, async ({ request, params }) => {
-    const k = params.key as 'youtube' | 'pipeline' | 'quality_thresholds' | 'text'
+    const k = params.key as 'youtube' | 'pipeline' | 'quality_thresholds' | 'text' | 'validation'
     const cur = (db.settings as unknown as Record<string, object>)[k] ?? {}
     ;(db.settings as unknown as Record<string, unknown>)[k] = { ...cur, ...((await request.json()) as object) }
     return json(db.settings[k])
@@ -550,6 +566,17 @@ export const handlers = [
   http.post(`${A}/channels/:id/align`, ({ params }) => {
     const ms = db.media.filter((m) => m.channel?.id === params.id && m.status === 'ready' && !db.aligned.has(m.id))
     ms.forEach((m) => newJob(db, 'media.align', { media_id: m.id, _dur: 6000 }))
+    return json({ queued: ms.length })
+  }),
+  http.post(`${A}/channels/:id/validate`, ({ params }) => {
+    const ms = db.media.filter((m) => m.channel?.id === params.id && m.status === 'ready')
+    ms.forEach((m) => newJob(db, 'media.validate', { media_id: m.id, _dur: 5000, payload: { chain: false } }))
+    return json({ queued: ms.length })
+  }),
+  http.post(`${A}/validate/backfill`, () => {
+    if (user()?.role !== 'admin') return err(403, '需要管理員權限', 'forbidden')
+    const ms = db.media.filter((m) => m.status === 'ready').slice(0, 6)
+    ms.forEach((m) => newJob(db, 'media.validate', { media_id: m.id, _dur: 5000, payload: { chain: false } }))
     return json({ queued: ms.length })
   }),
   http.get(`${A}/channels/:id/repeated`, ({ params }) => json(db.repeated.get(params.id as string) ?? [])),
@@ -665,6 +692,13 @@ export const handlers = [
     newJob(db, 'media.align', { media_id: m.id, _dur: 6000 })
     return json({ queued: 1 })
   }),
+  http.post(`${A}/media/:id/validate`, ({ params }) => {
+    const m = db.mediaById.get(params.id as string)
+    if (!m) return err(404, '找不到影片', 'not_found')
+    if (!(db.segments.get(m.id) ?? []).length) return json({ queued: 0 })
+    newJob(db, 'media.validate', { media_id: m.id, _dur: 5000, payload: { chain: false } })
+    return json({ queued: 1 })
+  }),
   http.post(`${A}/media/:id/convert-text`, ({ params }) => {
     const m = db.mediaById.get(params.id as string)
     if (!m) return err(404, '找不到影片', 'not_found')
@@ -711,6 +745,12 @@ export const handlers = [
       jobs: db.jobs.filter((j) => j.media_id === m.id).map(strip),
       quality: m.q,
       ...textState(m),
+      validity_counts: (() => {
+        const c = { valid: 0, invalid: 0, unknown: 0 }
+        for (const s of db.segments.get(m.id) ?? []) c[s.validity ?? 'unknown']++
+        return c
+      })(),
+      validation_job_active: db.jobs.some((j) => j.media_id === m.id && j.kind === 'media.validate' && (j.status === 'queued' || j.status === 'running')),
     }
     return json(det)
   }),
@@ -777,6 +817,19 @@ export const handlers = [
     }
     if (b.review_note !== undefined) s.review_note = b.review_note
     if (b.speaker_state) s.speaker_state = b.speaker_state
+    if (b.validity === 'valid' || b.validity === 'invalid') {
+      before.validity_source = s.validity_source
+      s.validity = b.validity
+      s.validity_source = 'manual'
+      s.invalid_reason = b.validity === 'invalid' ? 'manual' : null
+    } else if (b.validity === 'auto') {
+      // back to the automatic verdict (the mock re-derives it from the stored signals)
+      s.validity_source = 'auto'
+      const lid = s.validation?.lid?.[0]
+      if (lid && lid[0] !== 'zh' && lid[1] >= 0.7) Object.assign(s, { validity: 'invalid', invalid_reason: 'language_mismatch' })
+      else if ((s.align_score ?? 1) < 0.4) Object.assign(s, { validity: 'invalid', invalid_reason: 'text_mismatch' })
+      else Object.assign(s, { validity: lid ? 'valid' : 'unknown', invalid_reason: null })
+    }
     if (b.start_sec !== undefined || b.end_sec !== undefined) {
       s.start_sec = b.start_sec ?? s.start_sec
       s.end_sec = b.end_sec ?? s.end_sec

@@ -30,6 +30,7 @@ export const zh = {
     'media.convert_text': '字幕簡轉繁',
     'media.align': '逐字對齊',
     'channel.align': '頻道逐字對齊',
+    'media.validate': '字幕驗證',
   },
   /** Job phase codes (Job.phase) → label; unknown phases fall back to the raw text. */
   phase: {
@@ -38,7 +39,7 @@ export const zh = {
     brouhaha: 'Brouhaha 語音／SNR／殘響', silero: 'Silero VAD 交叉驗證', dnsmos: 'DNSMOS 評分', plan: '規劃音段',
     diarize: '語者分段', ecapa: '計算語者向量', voxprofile: 'Vox-Profile 語者特徵', fingerprint: '計算音訊指紋',
     load: '載入資料', match: '比對重複片段', cluster: '語者分群', save: '寫入結果', select: '篩選音段',
-    manifest: '寫入清單', convert_text: '簡轉繁', align: '逐字對齊', done: '完成', rate_limit: '等待（速率限制）',
+    manifest: '寫入清單', convert_text: '簡轉繁', align: '逐字對齊', lid: '辨識語言', load_model: '載入模型', done: '完成', rate_limit: '等待（速率限制）',
     waiting_slot: '等待下載名額', retry_wait: '等待自動重試', recovered: '已自動恢復', requeued: '已放回佇列',
   },
   listStatus: { new: '尚未列出', queued: '排隊中', listing: '列出中', listed: '已列出', failed: '列出失敗' },
@@ -112,6 +113,7 @@ export const en: Shape<typeof zh> = {
     'media.convert_text': 'Simplified → Traditional',
     'media.align': 'Word alignment',
     'channel.align': 'Channel word alignment',
+    'media.validate': 'Caption validation',
   },
   phase: {
     resolve: 'Resolving URL', listing: 'Listing videos', detail: 'Fetching details', download: 'Downloading', audio: 'Downloading audio',
@@ -119,7 +121,7 @@ export const en: Shape<typeof zh> = {
     brouhaha: 'Brouhaha speech / SNR / reverb', silero: 'Silero VAD cross-check', dnsmos: 'DNSMOS scoring', plan: 'Planning segments',
     diarize: 'Speaker diarization', ecapa: 'Speaker embeddings', voxprofile: 'Vox-Profile traits', fingerprint: 'Audio fingerprinting',
     load: 'Loading', match: 'Matching repeats', cluster: 'Clustering speakers', save: 'Saving results', select: 'Selecting segments',
-    manifest: 'Writing manifest', convert_text: 'Converting to Traditional', align: 'Aligning words', done: 'Done', rate_limit: 'Waiting (rate limit)',
+    manifest: 'Writing manifest', convert_text: 'Converting to Traditional', align: 'Aligning words', lid: 'Identifying language', load_model: 'Loading model', done: 'Done', rate_limit: 'Waiting (rate limit)',
     waiting_slot: 'Waiting for a download slot', retry_wait: 'Waiting to retry', recovered: 'Recovered', requeued: 'Requeued',
   },
   listStatus: { new: 'Not listed', queued: 'Queued', listing: 'Listing', listed: 'Listed', failed: 'Listing failed' },

@@ -166,8 +166,13 @@ export const useSettings = () => useQuery({ queryKey: qk.settings, queryFn: api.
 // ─────────────── mutations ───────────────
 type SegPage = T.Page<T.SegmentSummary>
 /** Apply a PATCH body to a cached segment the way the server will (text = corrected ?? original). */
-function applyPatch<S extends Pick<T.SegmentSummary, 'review_status' | 'corrected_text' | 'text' | 'original_text' | 'speaker_state'>>(s: S, p: T.SegmentPatch): S {
+function applyPatch<S extends Pick<T.SegmentSummary, 'review_status' | 'corrected_text' | 'text' | 'original_text' | 'speaker_state' | 'validity' | 'invalid_reason' | 'validity_source'>>(s: S, p: T.SegmentPatch): S {
   const n = { ...s, ...(p.review_status ? { review_status: p.review_status } : {}) }
+  if (p.validity === 'valid' || p.validity === 'invalid') {
+    n.validity = p.validity
+    n.validity_source = 'manual'
+    n.invalid_reason = p.validity === 'invalid' ? 'manual' : null
+  } else if (p.validity === 'auto') n.validity_source = 'auto'
   if (p.corrected_text !== undefined) {
     n.corrected_text = p.corrected_text
     n.text = p.corrected_text ?? s.original_text
@@ -204,6 +209,7 @@ export function useSegmentPatch() {
       )
       qc.invalidateQueries({ queryKey: ['timeline', d.media_id] })
       if (v.patch.corrected_text !== undefined) qc.invalidateQueries({ queryKey: qk.mediaWords(d.media_id) })
+      if (v.patch.validity !== undefined) qc.invalidateQueries({ queryKey: qk.mediaDetail(d.media_id) })
     },
   })
 }

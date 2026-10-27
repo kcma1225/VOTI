@@ -22,6 +22,7 @@ import {
   TriangleAlert,
   Users,
   Wand2,
+  ShieldCheck,
 } from 'lucide-react'
 import { api } from '@/api/client'
 import { errMsg, isListing, onErr, qk, useMe, useChannel, useDiversity, usePlaylists, useRepeated, useSpeakers } from '@/api/queries'
@@ -161,6 +162,11 @@ function Header({ c }: { c: TChannel }) {
     onSuccess: (r) => (r.queued ? toast.success(t('collect.channel.alignQueued', r.queued)) : toast(t('collect.channel.alignQueued', 0))),
     onError: onErr,
   })
+  const validateAll = useMutation({
+    mutationFn: () => api.validateChannel(c.id),
+    onSuccess: (r) => (r.queued ? toast.success(t('validate.validateChannelQueued', r.queued)) : toast(t('validate.validateChannelQueued', 0))),
+    onError: onErr,
+  })
   const saveNotes = useMutation({
     mutationFn: () => api.patchChannel(c.id, notes),
     onSuccess: (d) => {
@@ -175,7 +181,7 @@ function Header({ c }: { c: TChannel }) {
     { label: t('collect.channel.stats.shorts'), value: fmtInt(c.kind_counts?.short ?? 0) },
     { label: t('collect.channel.stats.manual'), value: fmtInt(c.counts.with_manual_captions), hint: t('collect.channel.stats.checked', c.counts.detailed) },
     { label: t('collect.channel.stats.downloaded'), value: fmtInt(c.counts.downloaded), hint: c.counts.failed ? t('collect.channel.stats.failed', c.counts.failed) : undefined, warn: !!c.counts.failed },
-    { label: t('collect.channel.stats.speech'), value: `${fmt1(c.hours.speech)}`, unit: hoursUnit(), hint: t('collect.channel.stats.totalLength', fmt1(c.hours.listed)) },
+    { label: t('collect.channel.stats.speech'), value: `${fmt1(c.hours.speech)}`, unit: hoursUnit(), hint: c.hours.invalid ? `${t('collect.channel.stats.totalLength', fmt1(c.hours.listed))} · ${t('validate.invalidHours', `${fmt1(c.hours.invalid)} ${hoursUnit()}`)}` : t('collect.channel.stats.totalLength', fmt1(c.hours.listed)) },
     { label: t('collect.channel.stats.candidates'), value: fmtInt(c.speakers.candidates), hint: fmtHours(c.speakers.total_sec) },
     { label: t('collect.channel.stats.snr'), value: c.quality.snr_mean != null ? fmt1(c.quality.snr_mean) : '—', unit: 'dB', hint: `DNSMOS ${fmtMos(c.quality.dnsmos_ovrl)}` },
   ]
@@ -239,6 +245,9 @@ function Header({ c }: { c: TChannel }) {
               </MenuItem>
               <MenuItem icon={<Wand2 />} onSelect={() => alignAll.mutate()}>
                 {t('collect.channel.alignAll')}
+              </MenuItem>
+              <MenuItem icon={<ShieldCheck />} onSelect={() => validateAll.mutate()}>
+                {t('validate.validateChannel')}
               </MenuItem>
               <MenuItem icon={<NotebookPen />} onSelect={() => setNotesOpen(true)}>
                 {t('collect.channel.editNotes')}

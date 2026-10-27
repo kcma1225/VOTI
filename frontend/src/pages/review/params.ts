@@ -1,7 +1,7 @@
 /* Review filters live in the URL query string, shared by the list (/review) and the reviewer (/review/:id), so
  * "back to list" restores the same filtered list and prev/next move within it. */
 import { useSearchParams } from 'react-router'
-import type { ReviewStatus, SegmentQuery } from '@/api/types'
+import type { ReviewStatus, SegmentQuery, Validity } from '@/api/types'
 
 export const LIST_LIMIT = 50
 
@@ -11,6 +11,8 @@ export interface ReviewParams {
   status: ReviewStatus | 'all'
   source: string
   flags: string[]
+  /** caption check: '' = all */
+  validity: Validity | ''
   snr: number | null
   mos: number | null
   q: string
@@ -27,6 +29,7 @@ export function parseReviewParams(sp: URLSearchParams): ReviewParams {
     status: (sp.get('status') ?? 'unchecked') as ReviewStatus | 'all',
     source: sp.get('source') ?? '',
     flags: (sp.get('flags') ?? '').split(',').filter(Boolean),
+    validity: (['valid', 'invalid', 'unknown'].includes(sp.get('validity') ?? '') ? sp.get('validity') : '') as Validity | '',
     snr: numOrNull(sp.get('snr')),
     mos: numOrNull(sp.get('mos')),
     q: sp.get('q') ?? '',
@@ -43,6 +46,7 @@ export function toSegmentQuery(p: ReviewParams): SegmentQuery {
     review_status: p.status === 'all' ? undefined : [p.status],
     text_source: p.source ? [p.source] : undefined,
     flags: p.flags.length ? p.flags : undefined,
+    validity: p.validity ? [p.validity] : undefined,
     min_snr: p.snr ?? undefined,
     min_dnsmos: p.mos ?? undefined,
     q: p.q || undefined,

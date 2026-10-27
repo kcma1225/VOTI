@@ -80,7 +80,7 @@ export const api = {
     patch<T.User>(`/users/${id}`, b),
   // settings
   settings: () => get<T.Settings>('/settings'),
-  putSetting: <K extends 'youtube' | 'pipeline' | 'quality_thresholds' | 'text'>(key: K, value: NonNullable<T.Settings[K]>) =>
+  putSetting: <K extends 'youtube' | 'pipeline' | 'quality_thresholds' | 'text' | 'validation'>(key: K, value: NonNullable<T.Settings[K]>) =>
     put<T.Settings[K]>(`/settings/${key}`, value),
   uploadCookies: (file: File) => {
     const fd = new FormData()
@@ -107,6 +107,9 @@ export const api = {
   dedup: (channel_id: string) => post<T.Job>(`/channels/${channel_id}/dedup`),
   convertChannelText: (id: string) => post<{ queued: number }>(`/channels/${id}/convert-text`),
   alignChannel: (id: string) => post<{ queued: number }>(`/channels/${id}/align`),
+  validateChannel: (id: string, force = false) => post<{ queued: number }>(`/channels/${id}/validate`, { force }),
+  /** admin: media.validate for every media with segments */
+  validateBackfill: (force = false) => post<{ queued: number }>('/validate/backfill', { force }),
   // media
   media: (q: T.MediaQuery) => get<T.MediaList>('/media', q as Query),
   mediaDetail: (id: string) => get<T.MediaDetail>(`/media/${id}`),
@@ -124,6 +127,7 @@ export const api = {
     }),
   convertMediaText: (id: string) => post<{ queued: number }>(`/media/${id}/convert-text`),
   alignMedia: (id: string) => post<{ queued: number }>(`/media/${id}/align`),
+  validateMedia: (id: string, force = false) => post<{ queued: number }>(`/media/${id}/validate`, { force }),
   // segments
   mediaSegments: (id: string) => get<T.Page<T.SegmentSummary>>(`/media/${id}/segments`),
   segments: (q: T.SegmentQuery) => get<T.Page<T.SegmentSummary>>('/segments', q as Query),

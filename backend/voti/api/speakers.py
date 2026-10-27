@@ -127,18 +127,16 @@ def diversity(channel_id: uuid.UUID | None = None, run_id: uuid.UUID | None = No
     per: dict = defaultdict(float)
     q = (select(SpeakerAssignment.speaker_id, Media.channel_id, func.sum(dur))
          .join(Segment, Segment.id == SpeakerAssignment.segment_id).join(Media, Media.id == Segment.media_id)
-         .where(SpeakerAssignment.run_id == rid, Segment.active.is_(True))
+         .where(SpeakerAssignment.run_id == rid, Segment.active.is_(True), Segment.validity != "invalid")
          .group_by(SpeakerAssignment.speaker_id, Media.channel_id))
     if channel_id:
         q = q.where(Media.channel_id == channel_id)
     for sp_id, ch_id, sec in s.execute(q).all():
         per[(sp_id, ch_id)] += float(sec or 0)
-    if channel_id:
-        sec_by_speaker: dict = defaultdict(float)
-        for (sp_id, _ch), sec in per.items():
-            sec_by_speaker[sp_id] += sec
-    else:
-        sec_by_speaker = {sp_id: float(sp.total_sec or 0) for sp_id, sp in speakers.items()}
+    # from the assignments (not Speaker.total_sec): segments marked invalid after clustering no longer count
+    sec_by_speaker: dict = defaultdict(float)
+    for (sp_id, _ch), sec in per.items():
+        sec_by_speaker[sp_id] += sec
     by_sex: dict[str, float] = {"male": 0.0, "female": 0.0, "unknown": 0.0}
     by_age: dict[str, float] = {}
     by_emotion: dict[str, float] = {}
@@ -185,7 +183,8 @@ def get_speaker(speaker_id: uuid.UUID, _: User = Depends(current_user), s: Sessi
     chans = s.execute(select(Media.channel_id, Channel.title, func.sum(dur))
                       .select_from(SpeakerAssignment).join(Segment, Segment.id == SpeakerAssignment.segment_id)
                       .join(Media, Media.id == Segment.media_id).outerjoin(Channel, Channel.id == Media.channel_id)
-                      .where(SpeakerAssignment.speaker_id == sp.id, Segment.active.is_(True))
+                      .where(SpeakerAssignment.speaker_id == sp.id, Segment.active.is_(True),
+                             Segment.validity != "invalid")
                       .group_by(Media.channel_id, Channel.title).order_by(func.sum(dur).desc())).all()
     base = S.SpeakerOut.model_validate(sp).model_dump()
     return S.SpeakerDetail(**base, segments=segment_summaries(s, segs, run_id=sp.run_id, run_known=True),

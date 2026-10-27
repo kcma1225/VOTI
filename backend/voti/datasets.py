@@ -90,6 +90,8 @@ def conditions(f: DatasetFilters) -> dict[str, list]:
     each criterion excluded."""
     g: dict[str, list] = defaultdict(list)
     g["scope"].append(Segment.active.is_(True))
+    # caption does not match the audio (voti.pipeline.validate): never part of a dataset, not a filter
+    g["validity"].append(Segment.validity != "invalid")
     if f.channel_ids:
         g["scope"].append(Media.channel_id.in_(f.channel_ids))
     if f.media_ids:
@@ -215,6 +217,7 @@ def preview(s: Session, raw_filters: dict | None) -> dict:
         if "auto_caption" not in f.text_sources else 0,
         "low_quality": _count(s, groups, {"quality"}) - n_all,
         "speaker_cap": n_all - len(rows),
+        "invalid": _count(s, groups, {"validity"}, Segment.validity == "invalid"),
     }
     return {
         "segment_count": len(rows), "total_sec": round(sum(r.duration for r in rows), 3),
@@ -406,6 +409,8 @@ def readme(name: str, description: str, export_id: uuid.UUID, filters: dict, sta
               "- `speaker` is a *candidate* cluster from automatic speaker clustering, not a confirmed identity "
               "unless `override` is true (named by a reviewer).",
               "- `profile` (age/sex/emotion) are model predictions (Vox-Profile) and may be wrong.",
+              "- Segments whose captions do not match the audio (another spoken language, or text that does not "
+              "align) are never exported.",
               "- Check each source's `media.license` and platform terms before redistributing audio.", "",
               "## By channel", "", "| channel | segments | hours |", "|---|---:|---:|"]
     for c in stats.get("by_channel", []):

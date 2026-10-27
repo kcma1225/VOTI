@@ -1,6 +1,7 @@
 """`media.embed`: ECAPA-TDNN speaker embeddings (speechbrain/spkrec-ecapa-voxceleb) → pgvector.
 
-Only segments with speaker_state single/unknown and >= MIN_SPEECH_SEC of speech are embedded. The input is the
+Only segments with speaker_state single/unknown, not invalid (caption ↔ audio check, voti.pipeline.validate) and
+>= MIN_SPEECH_SEC of speech are embedded. The input is the
 segment's speech frames only (Brouhaha VAD), and for single-speaker segments additionally only the dominant
 diarization speaker's non-overlapping turns (falls back to all speech when that leaves too little audio).
 Vectors are L2-normalised so cosine distance == pgvector `<=>`.
@@ -120,7 +121,8 @@ def run(media_id: uuid.UUID, progress: Callable[[float, str], None] = lambda f, 
         if s.get(Media, media_id) is None:
             raise JobError("not_found", "找不到媒體", retryable=False)
         segs = s.scalars(select(Segment).where(Segment.media_id == media_id, Segment.active.is_(True),
-                                               Segment.speaker_state.in_(("single", "unknown")))
+                                               Segment.speaker_state.in_(("single", "unknown")),
+                                               Segment.validity != "invalid")
                          .order_by(Segment.start_sec)).all()
         if force:
             s.execute(delete(Embedding).where(Embedding.segment_id.in_([g.id for g in segs]),

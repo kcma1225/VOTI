@@ -436,6 +436,7 @@ export function buildDB(): DB {
       pipeline: { voxprofile_backbone: 'whisper-large-v3', diarization_enabled: true, segment_min_sec: 1.0, segment_max_sec: 20.0, edge_pad_sec: 0.1 },
       quality_thresholds: { low_speech_ratio: 0.5, low_snr_db: 10, clipping_ratio: 0.001 },
       text: { convert_simplified: true, opencc_config: 's2twp' },
+      validation: { enabled: true, lid_min_prob: 0.7, lid_min_speech_sec: 1.0, align_min_score: 0.4, align_min_units: 4 },
       cookies: { present: true, updated_at: iso(NOW - 9 * DAY) },
     },
     channels,
@@ -842,9 +843,45 @@ export function genSegments(db: DB, m: MockMedia): T.SegmentDetail[] {
     db.segById.set(seg.id, seg)
     t = end + clamp(r.normal(gapMean, gapMean * 0.5 + 0.5), 0.05, gapMean * 3 + 6)
   }
+  applyValidity(segs, idx)
   m.segment_count = segs.length
   db.segments.set(m.id, segs)
   return segs
+}
+
+/** Caption ↔ audio validation demo states: English interview clips with Chinese captions (language_mismatch),
+ * a caption that does not match its audio (text_mismatch), one manual invalid and one manual valid decision. */
+function applyValidity(segs: T.SegmentDetail[], mediaIdx: number) {
+  const r = rngFor(77_000 + mediaIdx * 131)
+  const th = { lid_min_prob: 0.7, align_min_score: 0.4, align_min_units: 4, lid_min_speech_sec: 1 }
+  segs.forEach((s, i) => {
+    const zh = round(r.range(0.93, 0.999), 3)
+    const lid: [string, number][] = [['zh', zh], ['ko', round((1 - zh) * 0.7, 3)], ['ja', round((1 - zh) * 0.2, 3)]]
+    let v: Pick<T.SegmentDetail, 'validity' | 'invalid_reason' | 'validity_source' | 'lid_lang' | 'lid_prob' | 'align_score'> = {
+      validity: 'valid', invalid_reason: null, validity_source: 'auto', lid_lang: 'zh', lid_prob: zh, align_score: round(r.range(0.6, 0.93), 3),
+    }
+    let top = lid
+    const english = i === 3 || i === 4 || (i >= 9 && i % 13 === 9)
+    if (english) {
+      const en = i === 3 ? 0.92 : round(r.range(0.9, 0.999), 3)
+      top = [['en', en], ['cy', round((1 - en) * 0.6, 3)], ['zh', round((1 - en) * 0.3, 3)]]
+      v = { validity: 'invalid', invalid_reason: 'language_mismatch', validity_source: 'auto', lid_lang: 'en', lid_prob: en, align_score: round(r.range(0.13, 0.33), 3) }
+    } else if (i === 7 || (i > 20 && i % 29 === 7)) {
+      v = { ...v, validity: 'invalid', invalid_reason: 'text_mismatch', align_score: round(r.range(0.12, 0.36), 3) }
+    } else if (i === 11) {
+      v = { ...v, validity: 'invalid', invalid_reason: 'manual', validity_source: 'manual' }
+    } else if (i === 12) {
+      // the check said English, a reviewer disagreed
+      top = [['en', 0.74], ['zh', 0.24], ['ko', 0.01]]
+      v = { validity: 'valid', invalid_reason: null, validity_source: 'manual', lid_lang: 'en', lid_prob: 0.74, align_score: 0.52 }
+    } else if (s.duration < 1) {
+      v = { ...v, validity: 'unknown', lid_lang: null, lid_prob: null }
+      top = []
+    }
+    Object.assign(s, v, {
+      validation: { lid: top.length ? top : null, expected: 'zh', align_units: Math.max(4, s.text.length - 2), thresholds: th, at: iso(NOW - DAY), version: 1 },
+    })
+  })
 }
 
 export function summary(s: T.SegmentDetail): T.SegmentSummary {
@@ -855,6 +892,8 @@ export function summary(s: T.SegmentDetail): T.SegmentSummary {
     speaker_state: s.speaker_state, speech_ratio: s.speech_ratio, snr: s.snr, c50: s.c50, dnsmos_ovrl: s.dnsmos_ovrl,
     dnsmos_p808: s.dnsmos_p808, flags: s.flags, review_status: s.review_status, revision: s.revision,
     profile: s.profile ? { age: s.profile.age, sex: s.profile.sex, emotion_label: topKey(s.profile.emotion) } : null,
+    validity: s.validity, invalid_reason: s.invalid_reason, validity_source: s.validity_source, lid_lang: s.lid_lang, lid_prob: s.lid_prob,
+    align_score: s.align_score,
   }
 }
 export function topKey(d: Record<string, number> | undefined | null) {
@@ -874,7 +913,7 @@ const QUEUE: Record<string, T.QueueName> = {
   'source.resolve': 'scan', 'channel.list': 'scan', 'playlist.list': 'scan', 'media.detail': 'detail', 'media.download': 'download',
   'media.normalize': 'audio', 'media.segment': 'audio', 'media.quality': 'ml', 'media.diarize': 'ml', 'media.embed': 'ml',
   'media.profile': 'ml', 'media.fingerprint': 'ml', 'channel.dedup': 'ml', 'speakers.cluster': 'ml', 'dataset.export': 'export',
-  'media.convert_text': 'audio', 'media.align': 'ml',
+  'media.convert_text': 'audio', 'media.align': 'ml', 'media.validate': 'ml',
 }
 export const PIPE: T.JobKind[] = ['media.download', 'media.normalize', 'media.quality', 'media.diarize', 'media.segment', 'media.embed', 'media.profile', 'media.fingerprint']
 
@@ -924,6 +963,7 @@ const PHASES: Record<string, [string, PhaseMsg][]> = {
   'dataset.export': [['select', () => '篩選音段'], ['audio', (f) => `${Math.round(f * 7348)}/7348`], ['manifest', () => '寫入清單']],
   'media.convert_text': [['convert_text', () => 'OpenCC s2twp']],
   'media.align': [['align', () => '']],
+  'media.validate': [['load_model', () => ''], ['lid', (f) => `${Math.round(f * 60)}/60`]],
 }
 
 /** Advance the simulated queue to wall-clock now. */

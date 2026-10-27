@@ -309,7 +309,7 @@ def test_stats_and_quality(annotator_client, factory, db):
     st = r.json()
     assert st["media"]["ready"] == 1 and st["media"]["failed"] == 1 and st["media"]["listed"] == 2
     assert st["hours"]["speech"] == 0.5 and st["hours"]["reviewed"] == 0.01
-    assert st["segments"] == {"total": 1, "passed": 1, "needs_fix": 0}
+    assert st["segments"] == {"total": 1, "passed": 1, "needs_fix": 0, "invalid": 0}
     assert set(st["queue_depth"]) == {"scan", "detail", "download", "audio", "ml", "export"}
     q = annotator_client.get("/api/quality/summary").json()
     assert q["sample_rates"] == {"48000": 1} and q["codecs"] == {"opus": 1} and q["upsampled_suspect"] == 1

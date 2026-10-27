@@ -44,7 +44,7 @@ def get_session() -> Iterator[Session]:
 
 # Lightweight migrations for databases created before a column/index existed. create_all() never alters an
 # existing table, so every column added to a model after the first deployment is listed here too. Each
-# statement must be idempotent (IF NOT EXISTS) and cheap (no table rewrite: nullable columns without default).
+# statement must be idempotent (IF NOT EXISTS) and cheap (no table rewrite: nullable columns, or constant defaults).
 MIGRATIONS: tuple[str, ...] = (
     # 2026-10-27: the single "fetch" queue was split so channel scans, caption details and downloads run in
     # parallel and one huge channel can't block the rest.
@@ -57,6 +57,16 @@ MIGRATIONS: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS media_discovered ON media (discovered_at) WHERE discovered_at IS NOT NULL",
     "CREATE INDEX IF NOT EXISTS jobs_channel_kind_active ON jobs (channel_id, kind) "
     "WHERE status IN ('queued','running')",
+    # 2026-10-27: caption ↔ audio validation (voti.pipeline.validate). A constant default is metadata-only in
+    # Postgres ≥ 11 (no table rewrite).
+    "ALTER TABLE segments ADD COLUMN IF NOT EXISTS validity VARCHAR(16) NOT NULL DEFAULT 'unknown'",
+    "ALTER TABLE segments ADD COLUMN IF NOT EXISTS invalid_reason VARCHAR(32)",
+    "ALTER TABLE segments ADD COLUMN IF NOT EXISTS validity_source VARCHAR(16)",
+    "ALTER TABLE segments ADD COLUMN IF NOT EXISTS lid_lang VARCHAR(16)",
+    "ALTER TABLE segments ADD COLUMN IF NOT EXISTS lid_prob DOUBLE PRECISION",
+    "ALTER TABLE segments ADD COLUMN IF NOT EXISTS align_score DOUBLE PRECISION",
+    "ALTER TABLE segments ADD COLUMN IF NOT EXISTS validation JSONB",
+    "CREATE INDEX IF NOT EXISTS segments_invalid ON segments (media_id) WHERE validity = 'invalid'",
 )
 
 

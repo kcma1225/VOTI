@@ -1,7 +1,7 @@
 """Job handlers for the audio and ml queues (pipeline after media.download).
 
 Every media step: Media.status="processing", Media.stage=<kind>; on success it chains the next kind in
-voti.queue.PIPELINE via ctx.then (media.segment → media.align → media.embed → media.profile, implemented in pipeline/profile.py,
+voti.queue.PIPELINE via ctx.then (media.segment → media.align → media.validate → media.embed → media.profile, implemented in pipeline/profile.py,
 which chains media.fingerprint). The last step (media.fingerprint) sets Media.status="ready" and enqueues channel.dedup
 (debounced). payload {"chain": false} runs a single step without chaining (used by the API for lazy
 re-embedding after boundary edits); payload {"force": true} on media.embed recomputes all embeddings.
@@ -180,7 +180,43 @@ def h_align(ctx: JobContext) -> dict:
             raise
         log.warning("media.align skipped for %s: %s %s", ctx.media_id, e.code, e.message[:200])
         res = {"skipped": True, "code": e.code, "message": e.message[:500]}
-    _chain(ctx)
+    if chained:
+        _chain(ctx)  # → media.validate
+    else:
+        # text/boundaries changed or a backfill: the caption check depends on the alignment → re-validate
+        payload = {"chain": False, "reason": ctx.payload.get("reason") or "realign"}
+        if ctx.payload.get("segment_ids"):
+            payload["segment_ids"] = list(ctx.payload["segment_ids"])
+        ctx.then("media.validate", payload, media_id=ctx.media_id, channel_id=ctx.channel_id)
+    return res
+
+
+@handler("media.validate")
+def h_validate(ctx: JobContext) -> dict:
+    """Caption ↔ audio check (voti.pipeline.validate). In the chain a missing LID model / OOM never stops the media
+    (step result {"skipped": true, code}); with chain=false Media.status / stage are not touched. A non-chained run
+    that turned segments valid again queues lazy embed/profile for them."""
+    from . import validate
+    chained = ctx.payload.get("chain") is not False
+    if ctx.media_id is None:
+        raise JobError("bad_job", "缺少 media_id", retryable=False)
+    if chained:
+        _begin(ctx)
+    try:
+        res = validate.run(ctx.media_id, _progress(ctx), segment_ids=ctx.payload.get("segment_ids"),
+                           force=bool(ctx.payload.get("force")))
+    except JobError as e:
+        if not chained or e.code not in ("validate_unavailable", "lid_model_unavailable", "out_of_memory") \
+                or ctx.will_retry(e):
+            raise
+        log.warning("media.validate skipped for %s: %s %s", ctx.media_id, e.code, e.message[:200])
+        res = {"skipped": True, "code": e.code, "message": e.message[:500]}
+    if chained:
+        _chain(ctx)  # → media.embed
+    elif res.get("changed_to_valid"):
+        lazy = {"only_missing": True, "chain": False, "reason": "validated"}
+        ctx.then("media.embed", lazy, media_id=ctx.media_id, channel_id=ctx.channel_id)
+        ctx.then("media.profile", lazy, media_id=ctx.media_id, channel_id=ctx.channel_id)
     return res
 
 

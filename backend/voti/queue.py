@@ -71,6 +71,7 @@ KINDS: dict[str, str] = {
     "media.diarize": "ml",            # pyannote → diarization_turns
     "media.segment": "audio",         # cues + VAD + diarization → segments with quality snapshot
     "media.align": "ml",              # MMS_FA CTC forced alignment → per-character times (word_alignments)
+    "media.validate": "ml",           # caption ↔ audio check: VoxLingua107 language ID + alignment confidence
     "media.embed": "ml",              # ECAPA → embeddings
     "media.profile": "ml",            # Vox-Profile (legacy-ml) → voice_profiles
     "media.fingerprint": "ml",        # per-media fingerprint asset; then channel.dedup
@@ -81,17 +82,17 @@ KINDS: dict[str, str] = {
 }
 
 # Pipeline order after download; each step enqueues the next on success (see pipeline.chain).
-PIPELINE = ["media.normalize", "media.quality", "media.diarize", "media.segment", "media.align", "media.embed",
-            "media.profile", "media.fingerprint"]
+PIPELINE = ["media.normalize", "media.quality", "media.diarize", "media.segment", "media.align", "media.validate",
+            "media.embed", "media.profile", "media.fingerprint"]
 
 # media.* kinds that are not pipeline steps: their failure must not change Media.status
 SIDE_KINDS = {"media.convert_text"}
 
 
 def is_side_job(kind: str, payload: dict | None) -> bool:
-    """Side jobs never change Media.status. media.align run outside the pipeline chain (re-alignment after an
-    edit, backfill: payload chain=false) is one too."""
-    return kind in SIDE_KINDS or (kind == "media.align" and (payload or {}).get("chain") is False)
+    """Side jobs never change Media.status. media.align / media.validate run outside the pipeline chain
+    (re-alignment / re-validation after an edit, backfill: payload chain=false) are side jobs too."""
+    return kind in SIDE_KINDS or (kind in ("media.align", "media.validate") and (payload or {}).get("chain") is False)
 
 # Failure codes that mean "not eligible" rather than "broken": media becomes `skipped`.
 SKIP_CODES = {"no_usable_captions", "members_only"}

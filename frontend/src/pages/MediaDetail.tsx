@@ -4,7 +4,7 @@ import { DownloadDialog } from '@/components/domain/media-browser'
 import { Link, useParams } from 'react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { AlertTriangle, AudioWaveform, Check, ChevronDown, ExternalLink, Languages, Loader2, Minus, RotateCw, X, ZoomIn, ZoomOut, Download } from 'lucide-react'
+import { AlertTriangle, AudioWaveform, Check, ChevronDown, ExternalLink, Languages, Loader2, Minus, RotateCw, ShieldCheck, ShieldX, X, ZoomIn, ZoomOut, Download } from 'lucide-react'
 import { api } from '@/api/client'
 import { onErr, qk, useMediaDetail, useTimeline } from '@/api/queries'
 import type { Job, MediaDetail as TMedia, MediaQuality, Track } from '@/api/types'
@@ -169,6 +169,41 @@ function TimelineCard({ id, focus, onSegment }: { id: string; focus?: number; on
   )
 }
 
+/** 「12 句無效（3.4 分鐘）」: click to show only the invalid sentences in the transcript. */
+function ValiditySummary({ m, onlyInvalid, onToggle }: { m: TMedia; onlyInvalid: boolean; onToggle: () => void }) {
+  const n = m.invalid_count ?? m.validity_counts?.invalid ?? 0
+  if (m.validation_job_active)
+    return (
+      <Badge tone="primary">
+        <Loader2 className="size-3 animate-spin" /> {t('validate.validating')}
+      </Badge>
+    )
+  if (n > 0)
+    return (
+      <Tooltip content={t('validate.summaryTip')}>
+        <button
+          type="button"
+          data-shot="invalid-summary"
+          aria-pressed={onlyInvalid}
+          onClick={onToggle}
+          className={cn(
+            'inline-flex h-[22px] items-center gap-1.5 rounded-full px-2 text-xs font-medium transition-colors',
+            onlyInvalid ? 'bg-danger text-white' : 'bg-danger-soft text-danger-fg hover:brightness-95',
+          )}
+        >
+          <ShieldX className="size-3" /> {t('validate.summary', n, m.invalid_sec ?? 0)}
+        </button>
+      </Tooltip>
+    )
+  if (m.validity_counts && m.validity_counts.valid > 0)
+    return (
+      <Badge tone="success">
+        <ShieldCheck className="size-3" /> {t('validate.allValid')}
+      </Badge>
+    )
+  return null
+}
+
 /** Caption tracks with their Simplified → Traditional conversion state. */
 function TrackList({ tracks }: { tracks: Track[] }) {
   if (!tracks.length) return <>—</>
@@ -223,6 +258,15 @@ export default function MediaDetail() {
     },
     onError: onErr,
   })
+  const validate = useMutation({
+    mutationFn: () => api.validateMedia(id),
+    onSuccess: (r) => {
+      toast.success(r.queued ? t('validate.validateQueued') : t('validate.validateNothing'))
+      qc.invalidateQueries({ queryKey: qk.mediaDetail(id) })
+    },
+    onError: onErr,
+  })
+  const [onlyInvalid, setOnlyInvalid] = useState(false)
   const player = useSentencePlayer()
   const focus = useMemo(() => Number(new URLSearchParams(location.search).get('t')) || undefined, [])
 
@@ -278,6 +322,14 @@ export default function MediaDetail() {
                 </Badge>
               </Tooltip>
             )}
+            <ValiditySummary
+              m={m}
+              onlyInvalid={onlyInvalid}
+              onToggle={() => {
+                setOnlyInvalid((v) => !v)
+                requestAnimationFrame(() => document.getElementById('transcript')?.scrollIntoView({ block: 'start', behavior: 'smooth' }))
+              }}
+            />
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
             {canDownload && (
@@ -300,6 +352,11 @@ export default function MediaDetail() {
             {m.text_convertible && (
               <Button onClick={() => convert.mutate()} loading={convert.isPending || m.jobs.some((j) => j.kind === 'media.convert_text' && (j.status === 'queued' || j.status === 'running'))}>
                 <Languages /> {t('process.media.s2tConvert')}
+              </Button>
+            )}
+            {m.segment_count > 0 && (
+              <Button onClick={() => validate.mutate()} loading={validate.isPending || !!m.validation_job_active}>
+                <ShieldCheck /> {m.validation_job_active ? t('validate.validating') : t('validate.revalidate')}
               </Button>
             )}
             {hasPipeline && (
@@ -352,7 +409,9 @@ export default function MediaDetail() {
           {m.status === 'ready' || m.segment_count > 0 ? (
             <>
               <TimelineCard id={m.id} focus={focus} onSegment={player.play} />
-              <TranscriptCard mediaId={m.id} player={player} focusId={player.id} />
+              <div id="transcript" className="scroll-mt-4">
+                <TranscriptCard mediaId={m.id} player={player} focusId={player.id} onlyInvalid={onlyInvalid} onOnlyInvalid={setOnlyInvalid} />
+              </div>
             </>
           ) : (
             <Card>

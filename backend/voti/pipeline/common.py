@@ -25,6 +25,8 @@ DEFAULT_SETTINGS: dict[str, dict] = {
     "pipeline": {"voxprofile_backbone": "whisper-large-v3", "diarization_enabled": True, "segment_min_sec": 1.0,
                  "segment_max_sec": 20.0, "edge_pad_sec": 0.1},
     "quality_thresholds": {"low_speech_ratio": 0.5, "low_snr_db": 10, "clipping_ratio": 0.001},
+    "validation": {"enabled": True, "lid_min_prob": 0.7, "lid_min_speech_sec": 1.0, "align_min_score": 0.4,
+                   "align_min_units": 4},
 }
 
 

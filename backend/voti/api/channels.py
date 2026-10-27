@@ -105,6 +105,17 @@ def align_channel(channel_id: uuid.UUID, body: S.AlignIn | None = None, user: Us
     return S.QueuedOut(queued=len(todo))
 
 
+@router.post("/channels/{channel_id}/validate", response_model=S.QueuedOut)
+def validate_channel(channel_id: uuid.UUID, body: S.ValidateIn | None = None, user: User = Depends(current_user),
+                     s: Session = Depends(get_session)):
+    """Queue media.validate (outside the pipeline chain) for every media of the channel with active segments."""
+    from .jobs import queue_validation
+    get_or_404(s, Channel, channel_id, "頻道")
+    n = queue_validation(s, user, Media.channel_id == channel_id, force=bool(body and body.force))
+    s.commit()
+    return S.QueuedOut(queued=n)
+
+
 @router.post("/channels/{channel_id}/detail", response_model=S.QueuedOut)
 def detail_channel(channel_id: uuid.UUID, body: S.ChannelDetailIn | None = None, user: User = Depends(current_user),
                    s: Session = Depends(get_session)):

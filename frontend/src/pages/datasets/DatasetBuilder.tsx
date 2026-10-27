@@ -89,7 +89,7 @@ function PreviewPanel({ p, loading, error }: { p?: DatasetPreview; loading: bool
       </div>
     )
   const ex = Object.entries(p.excluded).filter(([, v]) => v > 0)
-  const exLabel: Record<string, string> = msgs().output.builder.excluded
+  const exLabel: Record<string, string> = { ...msgs().output.builder.excluded, invalid: t('validate.excludedInvalid') }
   return (
     <div className={cn('transition-opacity', loading && 'opacity-60')}>
       <CardBody className="space-y-5">
@@ -138,6 +138,7 @@ function PreviewPanel({ p, loading, error }: { p?: DatasetPreview; loading: bool
           ) : (
             <p className="text-[13px] text-fg-3">{t('output.builder.noneExcluded')}</p>
           )}
+          {(p.excluded.invalid ?? 0) > 0 && <p className="mt-2 text-[11px] leading-4 text-fg-3 break-cjk">{t('validate.excludedInvalidTip')}</p>}
         </div>
       </CardBody>
     </div>

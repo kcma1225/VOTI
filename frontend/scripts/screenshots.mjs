@@ -76,7 +76,11 @@ async function discover(page) {
         break
       }
     }
+    // caption validation: an English-speech segment with Chinese captions (language mismatch)
+    const inv = (await j('/api/segments?validity=invalid&status=all&limit=40')).items ?? []
+    const invalidSeg = (inv.find((s) => s.invalid_reason === 'language_mismatch') ?? inv[0])?.id
     return {
+      invalidSeg,
       ch: listed[0]?.id, ch2: listed[1]?.id, media: media[0]?.id, failed: failed[0]?.id, speaker: (sp[1] ?? sp[0])?.id, dataset: (ds.items ?? ds)[0]?.id,
       queued: ch.find((c) => c.list_status === 'queued' || c.list_status === 'new')?.id, listing: ch.find((c) => c.list_status === 'listing' && !c.last_listed_at)?.id,
       segment: seg[0]?.id, unaligned,
@@ -125,6 +129,14 @@ function screens(ids, lang) {
     { name: '30-phone-menu', path: '/', phoneOnly: true, act: async (p) => { await p.locator(`header [aria-label="${a.menu}"]`).click() } },
     { name: '31-channel-queued', path: `/channels/${ids.queued}` },
     { name: '32-channel-listing', path: `/channels/${ids.listing}` },
+    // caption validation (invalid segments)
+    { name: '40-validate-media-header', path: `/media/${ids.media}`, act: async (p) => { await p.waitForSelector('[data-invalid]'); await p.evaluate(() => window.scrollTo(0, 0)) } },
+    { name: '41-validate-media-rows', path: `/media/${ids.media}`, act: async (p) => { await p.waitForSelector('[data-invalid]'); await centerOn(p, '[data-invalid]') } },
+    { name: '42-validate-media-only-invalid', path: `/media/${ids.media}`, act: async (p) => { await p.locator('[data-shot="only-invalid"]').first().click(); await p.waitForTimeout(300); await centerOn(p, '[data-shot="only-invalid"]') } },
+    { name: '43-validate-review-detail', path: `/review/${ids.invalidSeg}?status=all` },
+    { name: '44-validate-review-list', path: '/review?status=all&validity=invalid' },
+    { name: '45-validate-dataset-preview', path: '/datasets/new' },
+    { name: '46-validate-settings', path: '/settings/pipeline', act: async (p) => { await centerOn(p, '[data-shot="validation-card"]') } },
     { name: '33-add-video-new-channel', path: '/sources/new', act: async (p) => { await p.fill('input[name="url"]', 'https://youtu.be/dQw4w9WgXcQ'); await p.locator('form button[type="submit"]').click(); await p.waitForTimeout(1600) } },
   ]
 }

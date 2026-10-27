@@ -163,6 +163,7 @@ def channel_summaries(s: Session, channels: Sequence[Channel]) -> list[S.Channel
     from ..scheduler import last_list_attempts, next_refresh_at, refresh_interval
     ids = [c.id for c in channels]
     stats: dict = {}
+    seg_hours: dict = {}
     detail_active: set = set()
     now = utcnow()
     if ids:
@@ -184,6 +185,12 @@ def channel_summaries(s: Session, channels: Sequence[Channel]) -> list[S.Channel
             .where(Media.channel_id.in_(ids)).group_by(Media.channel_id)).all()
         for r in rows:
             stats[r[0]] = r[1:]
+        sd = Segment.end_sec - Segment.start_sec
+        seg_hours = {r[0]: (float(r[1] or 0), float(r[2] or 0)) for r in s.execute(
+            select(Media.channel_id, func.sum(sd).filter(Segment.validity != "invalid"),
+                   func.sum(sd).filter(Segment.validity == "invalid"))
+            .select_from(Segment).join(Media, Media.id == Segment.media_id)
+            .where(Media.channel_id.in_(ids), Segment.active.is_(True)).group_by(Media.channel_id)).all()}
         detail_active = set(s.scalars(select(Job.channel_id).where(Job.channel_id.in_(ids), Job.kind == "media.detail",
                                                                    Job.status.in_(("queued", "running")))
                                       .distinct()))
@@ -195,8 +202,10 @@ def channel_summaries(s: Session, channels: Sequence[Channel]) -> list[S.Channel
         st = stats.get(c.id)
         counts = S.ChannelCounts(**dict(zip(("listed", "detailed", "with_manual_captions", "downloaded", "ready",
                                              "failed", "new"), st[:7]))) if st else S.ChannelCounts()
+        sh = seg_hours.get(c.id, (0.0, 0.0))
         hours = S.ChannelHours(listed=round((st[8] or 0) / 3600, 3), ready=round((st[9] or 0) / 3600, 3),
-                               speech=round((st[10] or 0) / 3600, 3)) if st else S.ChannelHours()
+                               speech=round((st[10] or 0) / 3600, 3), segments=round(sh[0] / 3600, 3),
+                               invalid=round(sh[1] / 3600, 3)) if st else S.ChannelHours()
         job = jobs.get(c.id)
         out.append(S.ChannelSummary(
             id=c.id, platform=c.platform, platform_channel_id=c.platform_channel_id, title=c.title, handle=c.handle,
@@ -218,9 +227,14 @@ def media_summaries(s: Session, media: Sequence[Media]) -> list[S.MediaSummary]:
     ch_ids = {m.channel_id for m in media if m.channel_id}
     channels = dict(s.execute(select(Channel.id, Channel.title).where(Channel.id.in_(ch_ids))).all()) if ch_ids else {}
     quality = {q.media_id: q for q in s.scalars(select(MediaQuality).where(MediaQuality.media_id.in_(ids)))} if ids else {}
-    seg_counts = dict(s.execute(select(Segment.media_id, func.count()).where(Segment.media_id.in_(ids),
-                                                                            Segment.active.is_(True))
-                                .group_by(Segment.media_id)).all()) if ids else {}
+    seg_counts: dict = {}
+    if ids:
+        for mid, n, n_inv, sec_inv in s.execute(
+                select(Segment.media_id, func.count(), func.count().filter(Segment.validity == "invalid"),
+                       func.coalesce(func.sum(Segment.end_sec - Segment.start_sec)
+                                     .filter(Segment.validity == "invalid"), 0.0))
+                .where(Segment.media_id.in_(ids), Segment.active.is_(True)).group_by(Segment.media_id)).all():
+            seg_counts[mid] = (n, n_inv, float(sec_inv or 0.0))
     downloaded = media_downloaded(s, media)
     out = []
     for m in media:
@@ -233,7 +247,8 @@ def media_summaries(s: Session, media: Sequence[Media]) -> list[S.MediaSummary]:
                                         real_bandwidth_hz=q.real_bandwidth_hz, speech_ratio=q.speech_ratio,
                                         sample_rate=q.sample_rate, upsampled_suspect=q.upsampled_suspect)
             if q else None,
-            segment_count=seg_counts.get(m.id, 0)))
+            segment_count=seg_counts.get(m.id, (0,))[0], invalid_count=seg_counts.get(m.id, (0, 0))[1],
+            invalid_sec=round(seg_counts.get(m.id, (0, 0, 0.0))[2], 3)))
     return out
 
 
@@ -306,7 +321,9 @@ def segment_base(g: Segment) -> dict:
                 language=g.language, local_speaker=g.local_speaker, speaker_state=g.speaker_state,
                 speech_ratio=g.speech_ratio, snr=g.snr, c50=g.c50, dnsmos_ovrl=g.dnsmos_ovrl,
                 dnsmos_p808=g.dnsmos_p808, repeated_overlap=g.repeated_overlap or 0.0, flags=list(g.flags or []),
-                review_status=g.review_status, revision=g.revision)
+                review_status=g.review_status, revision=g.revision, validity=g.validity or "unknown",
+                invalid_reason=g.invalid_reason, validity_source=g.validity_source, lid_lang=g.lid_lang,
+                lid_prob=g.lid_prob, align_score=g.align_score)
 
 
 def audit_outs(s: Session, rows: Iterable[AuditLog]) -> list[S.AuditOut]:

@@ -5,13 +5,14 @@ import uuid
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session
 
-from ..auth import current_user
+from ..auth import current_user, require_admin
 from ..db import get_session
 from ..models import (Asset, Channel, ClusterRun, Job, Media, MediaQuality, Segment, Speaker, User, utcnow)
-from ..queue import KINDS, WORKER_KEY_TTL, is_side_job, redis_client, requeue
+from ..pipeline.validate import VERSION as VALIDATION_VERSION
+from ..queue import KINDS, WORKER_KEY_TTL, enqueue, is_side_job, redis_client, requeue
 from . import schemas as S
 from .errors import ApiError
 from .views import DOWNLOADED_STATES, FAILED_STATES, Paging, get_or_404, job_out, job_outs, paging, split_csv
@@ -98,6 +99,35 @@ def _sync_channel(s: Session, job: Job, outcome: str | None = None) -> None:
             sync_channel_list_status(s, ch, job.kind, outcome)
 
 
+# ───────────────────────────── caption validation backfill ─────────────────────────────
+
+def queue_validation(s: Session, user: User, *conds, force: bool = False) -> int:
+    """media.validate {chain: false} for every media (matching conds) with active segments; unless force only
+    media that have a non-manual segment without a current validation (cheap SQL pre-check: never validated or
+    validated for another revision)."""
+    seg_cond = [Segment.media_id == Media.id, Segment.active.is_(True)]
+    if not force:
+        seg_cond += [func.coalesce(Segment.validity_source, "auto") != "manual",
+                     or_(Segment.validation.is_(None),
+                         Segment.validation["revision"].as_integer() != Segment.revision,
+                         Segment.validation["version"].as_integer() != VALIDATION_VERSION)]
+    rows = s.execute(select(Media.id, Media.channel_id).where(*conds, exists().where(*seg_cond))).all()
+    for mid, ch in rows:
+        enqueue(s, "media.validate", media_id=mid, channel_id=ch, created_by=user.id,
+                payload={"chain": False, "force": force, "reason": "backfill"})
+    return len(rows)
+
+
+@router.post("/validate/backfill", response_model=S.QueuedOut)
+def validate_backfill(body: S.ValidateIn | None = None, admin: User = Depends(require_admin),
+                      s: Session = Depends(get_session)):
+    """Admin: check the captions of every media with segments (new installs / after a threshold change use
+    force=true). Manual decisions are always kept."""
+    n = queue_validation(s, admin, force=bool(body and body.force))
+    s.commit()
+    return S.QueuedOut(queued=n)
+
+
 # ───────────────────────────── stats ─────────────────────────────
 
 def _workers(s: Session) -> list[S.WorkerOut]:
@@ -143,10 +173,13 @@ def overview(_: User = Depends(current_user), s: Session = Depends(get_session))
                          func.coalesce(func.sum(dur).filter(Media.status.in_(DOWNLOADED_STATES)), 0.0))).one()
     speech = s.scalar(select(func.coalesce(func.sum(MediaQuality.speech_sec), 0.0))) or 0.0
     sd = Segment.end_sec - Segment.start_sec
-    g = s.execute(select(func.count(), func.count().filter(Segment.review_status == "passed"),
-                         func.count().filter(Segment.review_status == "needs_fix"),
-                         func.coalesce(func.sum(sd), 0.0),
-                         func.coalesce(func.sum(sd).filter(Segment.review_status == "passed"), 0.0))
+    usable = Segment.validity != "invalid"  # caption does not match the audio: never counted (pipeline.validate)
+    inv = Segment.validity == "invalid"
+    g = s.execute(select(func.count().filter(usable), func.count().filter(usable, Segment.review_status == "passed"),
+                         func.count().filter(usable, Segment.review_status == "needs_fix"),
+                         func.coalesce(func.sum(sd).filter(usable), 0.0),
+                         func.coalesce(func.sum(sd).filter(usable, Segment.review_status == "passed"), 0.0),
+                         func.count().filter(inv), func.coalesce(func.sum(sd).filter(inv), 0.0))
                   .where(Segment.active.is_(True))).one()
     run = s.scalar(select(ClusterRun.id).where(ClusterRun.is_current.is_(True)).order_by(ClusterRun.created_at.desc())
                    .limit(1))
@@ -161,8 +194,8 @@ def overview(_: User = Depends(current_user), s: Session = Depends(get_session))
         channels=s.scalar(select(func.count()).select_from(Channel)) or 0,
         media={"listed": m[0], "detailed": m[1], "downloaded": m[2], "ready": m[3], "failed": m[4]},
         hours={"listed": round(m[5] / 3600, 3), "downloaded": round(m[6] / 3600, 3), "speech": round(speech / 3600, 3),
-               "segments": round(g[3] / 3600, 3), "reviewed": round(g[4] / 3600, 3)},
-        segments={"total": g[0], "passed": g[1], "needs_fix": g[2]},
+               "segments": round(g[3] / 3600, 3), "reviewed": round(g[4] / 3600, 3), "invalid": round(g[6] / 3600, 3)},
+        segments={"total": g[0], "passed": g[1], "needs_fix": g[2], "invalid": g[5]},
         speakers={"candidates": sp[0], "verified": sp[1]},
         storage_bytes=int(s.scalar(select(func.coalesce(func.sum(Asset.bytes), 0))) or 0),
         workers=_workers(s), queue_depth=depth)

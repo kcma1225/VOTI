@@ -4,7 +4,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type Keyb
 import { Link, useNavigate } from 'react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { ArrowUpRight, AudioWaveform, Check, ChevronDown, CircleSlash, Loader2, MoreHorizontal, Pause, Pencil, Play, TriangleAlert, Wand2 } from 'lucide-react'
+import { ArrowUpRight, AudioWaveform, Check, ChevronDown, CircleSlash, Loader2, MoreHorizontal, Pause, Pencil, Play, ShieldX, TriangleAlert, Undo2, Wand2 } from 'lucide-react'
 import { api } from '@/api/client'
 import { onErr, qk, useMediaSegments, useMediaWords, useSegmentPatch } from '@/api/queries'
 import type { MediaWordsResponse, ReviewStatus, SegmentSummary } from '@/api/types'
@@ -21,6 +21,7 @@ import { EmptyState, ListSkeleton } from '@/components/ui/states'
 import { ReviewBadge } from '@/components/domain/status'
 import { speakerName } from '@/components/domain/speakers'
 import { KaraokeText, toUnits, useClock, type Unit } from '@/components/domain/karaoke'
+import { ValidityBadge, useValidityActions } from '@/components/domain/validity'
 
 /** rows rendered at first; the rest on demand (long podcasts have 1000+ sentences) */
 const STEP = 120
@@ -124,6 +125,8 @@ const Row = forwardRef<
   const [draft, setDraft] = useState(s.text)
   const rowRef = useRef<HTMLDivElement>(null)
   useImperativeHandle(ref, () => ({ focus: () => rowRef.current?.focus() }), [])
+  const validity = useValidityActions(s)
+  const invalid = s.validity === 'invalid'
   const active = player.id === s.id && player.status !== 'idle'
   const playing = active && (player.status === 'playing' || player.status === 'loading')
 
@@ -163,6 +166,7 @@ const Row = forwardRef<
       ref={rowRef}
       id={`seg-${s.id}`}
       data-seg-row
+      data-invalid={invalid || undefined}
       tabIndex={0}
       aria-label={`${fmtTimestamp(s.start_sec)} ${s.text}`}
       aria-keyshortcuts="Space 1 2 3 E"
@@ -171,7 +175,7 @@ const Row = forwardRef<
       className={cn(
         'group relative flex min-w-0 cursor-pointer gap-3 px-3 py-2.5 outline-none transition-colors sm:px-5',
         'focus-visible:bg-surface-2/70 focus-visible:shadow-[inset_3px_0_0_var(--ring)]',
-        active ? 'bg-primary-soft/40 shadow-[inset_3px_0_0_var(--primary)]' : 'hover:bg-surface-2/60',
+        active ? 'bg-primary-soft/40 shadow-[inset_3px_0_0_var(--primary)]' : invalid ? 'bg-surface-2/40 shadow-[inset_3px_0_0_var(--danger)] hover:bg-surface-2/70' : 'hover:bg-surface-2/60',
         editing && 'cursor-default',
       )}
     >
@@ -223,9 +227,12 @@ const Row = forwardRef<
             </div>
           </div>
         ) : (
-          <SentenceText s={s} units={units} active={active} player={player} />
+          <div className={cn(invalid && !active && 'text-fg-3')}>
+            <SentenceText s={s} units={units} active={active} player={player} />
+          </div>
         )}
         <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-fg-3">
+          <ValidityBadge s={s} className="text-[11px]" />
           {who && <span className="max-w-40 truncate">{who}</span>}
           <span className="tabular">{fmtSec(s.duration)}</span>
           {s.corrected_text && <Tag className="border-success/30 text-success-fg">{textSource.human_revision}</Tag>}
@@ -262,6 +269,27 @@ const Row = forwardRef<
             <Pencil />
           </button>
         </Tooltip>
+        <Tooltip content={validity.manual ? `${validity.toggleLabel} · ${t('validate.manual')}` : validity.toggleLabel}>
+          <button
+            type="button"
+            tabIndex={-1}
+            aria-label={validity.toggleLabel}
+            aria-pressed={invalid}
+            onClick={validity.toggle}
+            className={cn('grid size-8 place-items-center rounded-md [&_svg]:size-4', invalid ? 'bg-danger-soft text-danger-fg ring-1 ring-danger/40' : 'text-fg-3 hover:bg-surface-2 hover:text-fg')}
+          >
+            <ShieldX />
+          </button>
+        </Tooltip>
+        {validity.manual ? (
+          <Tooltip content={t('validate.useAuto')}>
+            <button type="button" tabIndex={-1} aria-label={t('validate.useAuto')} onClick={validity.auto} className="grid size-8 place-items-center rounded-md text-fg-3 hover:bg-surface-2 hover:text-fg [&_svg]:size-4">
+              <Undo2 />
+            </button>
+          </Tooltip>
+        ) : (
+          <span aria-hidden className="size-8" />
+        )}
         <Tooltip content={t('process.media.openInReview')}>
           <Link to={reviewHref} tabIndex={-1} aria-label={t('process.media.openInReview')} className="grid size-8 place-items-center rounded-md text-fg-3 hover:bg-surface-2 hover:text-fg [&_svg]:size-4">
             <ArrowUpRight />
@@ -284,6 +312,14 @@ const Row = forwardRef<
               </MenuItem>
             ))}
             <MenuSeparator />
+            <MenuItem icon={<validity.ToggleIcon />} onSelect={validity.toggle}>
+              {validity.toggleLabel}
+            </MenuItem>
+            {validity.manual && (
+              <MenuItem icon={<Undo2 />} onSelect={validity.auto}>
+                {t('validate.useAuto')}
+              </MenuItem>
+            )}
             <MenuItem icon={<Pencil />} onSelect={startEdit}>
               {t('process.media.editText')}
             </MenuItem>
@@ -300,12 +336,27 @@ const Row = forwardRef<
   )
 })
 
-export function TranscriptCard({ mediaId, player, focusId }: { mediaId: string; player: Player; focusId?: string | null }) {
+export function TranscriptCard({
+  mediaId,
+  player,
+  focusId,
+  onlyInvalid = false,
+  onOnlyInvalid,
+}: {
+  mediaId: string
+  player: Player
+  focusId?: string | null
+  /** show only segments whose caption does not match the audio */
+  onlyInvalid?: boolean
+  onOnlyInvalid?: (v: boolean) => void
+}) {
   const t = useT()
   const [shown, setShown] = useState(STEP)
   const segs = useMediaSegments(mediaId)
   const words = useMediaWords(mediaId, !!segs.data?.total)
-  const all = segs.data?.items ?? []
+  const items = segs.data?.items ?? []
+  const invalidCount = items.filter((x) => x.validity === 'invalid').length
+  const all = onlyInvalid ? items.filter((x) => x.validity === 'invalid') : items
   // keep a sentence played from the timeline renderable
   const focusIdx = focusId ? all.findIndex((x) => x.id === focusId) : -1
   const limit = Math.max(shown, focusIdx + 20)
@@ -336,12 +387,30 @@ export function TranscriptCard({ mediaId, player, focusId }: { mediaId: string; 
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 pt-2 text-xs text-fg-3 sm:px-5">
           <span className="tabular">{t('process.media.segmentCount', segs.data.total)}</span>
           <AlignStatus mediaId={mediaId} words={words.data} />
+          {(invalidCount > 0 || onlyInvalid) && onOnlyInvalid && (
+            <button
+              type="button"
+              aria-pressed={onlyInvalid}
+              data-shot="only-invalid"
+              onClick={() => onOnlyInvalid(!onlyInvalid)}
+              className={cn(
+                'inline-flex h-8 items-center gap-1.5 rounded-full border px-2.5 text-xs font-medium transition-colors sm:h-7',
+                onlyInvalid ? 'border-danger/40 bg-danger-soft text-danger-fg' : 'border-border-strong text-fg-2 hover:bg-surface-2',
+              )}
+            >
+              <ShieldX className="size-3.5" />
+              {t('validate.onlyInvalid')}
+              <span className="tabular opacity-80">{invalidCount}</span>
+            </button>
+          )}
           <span className="ml-auto hidden lg:inline">{t('process.media.rowKeys')}</span>
         </div>
       )}
       <div className="mt-3 border-t border-border">
         {!segs.data ? (
           <ListSkeleton rows={6} />
+        ) : !rows.length && onlyInvalid ? (
+          <EmptyState compact icon={<ShieldX />} title={t('validate.noInvalid')} />
         ) : !rows.length ? (
           <EmptyState compact icon={<AudioWaveform />} title={t('process.media.noSegments')} description={t('process.media.noSegmentsDesc')} />
         ) : (

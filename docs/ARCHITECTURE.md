@@ -26,7 +26,10 @@ with the original `Host` and `X-Forwarded-Proto: https`.
 statements in `voti.db.MIGRATIONS` (`ALTER TABLE … ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`) under an
 advisory lock. Every column added to an existing table must be listed there. Current list: `jobs.run_after`,
 index `jobs_running_heartbeat`, `media.discovered_at` (+ partial index `media_discovered`), partial index
-`jobs_channel_kind_active` on `jobs (channel_id, kind) WHERE status IN ('queued','running')`. New tables
+`jobs_channel_kind_active` on `jobs (channel_id, kind) WHERE status IN ('queued','running')`, the caption-validation
+columns of `segments` (`validity` NOT NULL DEFAULT 'unknown' — metadata-only in Postgres ≥ 11, `invalid_reason`,
+`validity_source`, `lid_lang`, `lid_prob`, `align_score`, `validation` JSONB) + partial index `segments_invalid`
+on `segments (media_id) WHERE validity = 'invalid'`. New tables
 (e.g. `word_alignments`) come from `create_all` and need no migration.
 
 ## Code layout
@@ -46,6 +49,7 @@ backend/voti/
   pipeline/legacy_client.py                          ← HTTP client for legacy-ml (brouhaha, voxprofile)
   pipeline/quality.py diarize.py segment.py embed.py profile.py fingerprint.py cluster.py
   pipeline/align.py                                  ← media.align: MMS_FA forced alignment → word_alignments
+  pipeline/validate.py                               ← media.validate: caption ↔ audio check (language ID + alignment)
   pipeline/gpu.py                                    ← CUDA OOM policy (GPU retry → CPU → retryable error)
   pipeline/handlers.py                               ← job handlers for audio/ml queues
   textconv.py                                        ← Simplified → Traditional (OpenCC) + media.convert_text handler
@@ -93,6 +97,7 @@ shorter than 1 s: result null).
 | `youtube` | `{"rate_limit_kbps": 0, "sleep_between_downloads_sec": 5, "sleep_between_requests_sec": 2, "max_concurrent_downloads": 2, "cookies_enabled": false, "auto_refresh_hours": 24}` — `auto_refresh_hours`: re-list every channel this often to find new videos (0 = off; see "Channel listing & scheduled refresh") |
 | `pipeline` | `{"voxprofile_backbone": "whisper-large-v3", "diarization_enabled": true, "segment_min_sec": 1.0, "segment_max_sec": 20.0, "edge_pad_sec": 0.1}` |
 | `quality_thresholds` | `{"low_speech_ratio": 0.5, "low_snr_db": 10, "clipping_ratio": 0.001}` (used to set segment flags) |
+| `validation` | `{"enabled": true, "lid_min_prob": 0.7, "lid_min_speech_sec": 1.0, "align_min_score": 0.4, "align_min_units": 4}` — caption ↔ audio validation (see "Caption validation"). `enabled: false`: `media.validate` does nothing (existing results stay). |
 | `text` | `{"convert_simplified": true, "opencc_config": "s2twp"}` — convert Simplified-Chinese captions to Traditional (Taiwan) on ingestion and allow `convert-text` jobs. `opencc_config`: `s2twp` (default: Taiwan standard + Taiwanese phrases, 视频→影片, 软件→軟體), `s2tw`, `s2t`. See "Caption text conversion". |
 
 ## Caption track choice (`voti.sources.youtube.choose_tracks`)
@@ -132,7 +137,7 @@ A listing that is not the channel's first sets `Media.discovered_at` on the vide
 
 ## Character alignment (`media.align`, `voti/pipeline/align.py`)
 
-Pipeline: `normalize → quality → diarize → segment → align → embed → profile → fingerprint` (ml queue).
+Pipeline: `normalize → quality → diarize → segment → align → validate → embed → profile → fingerprint` (ml queue).
 Per active segment, text = `corrected_text` if set else `original_text`, window `[start − 0.2 s, end + 0.2 s]`,
 torchaudio `MMS_FA` (with star token) CTC forced alignment; weights downloaded once to
 `MODEL_CACHE/mms_fa/mms_fa_ctc_alignment_mling_uroman.pt` (1.26 GB). Units: one per Han character (toneless
@@ -158,6 +163,60 @@ cache, retry once on the GPU, then run the rest of the job on the CPU; if the CP
 fails with retryable `out_of_memory` (automatic retry 30 s / 2 min / 10 min). DNSMOS (onnxruntime) falls back to
 CPU on any GPU error for the worker's lifetime; Brouhaha / Vox-Profile run in legacy-ml. The CUDA cache is emptied
 after every embed / diarize / align job (models stay loaded).
+
+## Caption validation (`media.validate`, `voti/pipeline/validate.py`)
+
+Captions are sometimes not a transcript of the audio: a Mandarin news video inserts English interview clips with
+Chinese subtitles, a lecture is subtitled in translation, captions are offset/unrelated. Such segments get
+`validity = "invalid"`. They stay playable and reviewable but are excluded **everywhere hours or data are counted**:
+dataset preview/export (always; preview `excluded.invalid`), `GET /stats/overview` hours/segment counts, channel
+`hours.segments`, media `invalid_count`/`invalid_sec`, speaker embedding/profiling (`media.embed`/`media.profile`
+skip them), clustering (`speakers.cluster`), speaker diversity hours and speaker channel totals.
+
+Signals per active segment (ml queue, after `media.align`):
+- **Spoken language** — SpeechBrain `speechbrain/lang-id-voxlingua107-ecapa` (VoxLingua107, 107 classes, Apache-2.0,
+  ~82 MB in `MODEL_CACHE/speechbrain/lang-id-voxlingua107-ecapa`, downloaded on first use; works offline after) on the
+  segment's speech frames (Brouhaha VAD ≥ 0.5; the whole span when no frame data), ≤ 20 s, batched on the GPU.
+  Skipped when the speech is shorter than `lid_min_speech_sec`. Top-3 `[code, prob]` stored.
+- **Alignment confidence** — mean MMS_FA probability of the scored units (Han characters / Latin words; star and
+  untimed units excluded) of the segment's current `word_alignments` row (`align_score`). Only for alignable
+  captions (zh*, cmn, en); null for nan*/hak* (not aligned) and other languages.
+
+Decision (`validation` setting):
+1. no text (`text_source = none` or blank) → `unknown` (never invalid by this rule);
+2. caption family (zh*/cmn → `zh`, en → `en`, ja → `ja`, he → `iw`, …; no language + Han text → `zh`): LID top ≠
+   family with prob ≥ `lid_min_prob` → `invalid`, `language_mismatch`;
+   nan*/hak*/yue (no VoxLingua107 class — Taiwanese is often heard as zh/vi/th/ko): only a confident top in
+   {en, ja, ko, fr, de, es, it, pt, ru, nl, pl, uk, tr, ar, hi, sv, id} → `language_mismatch`;
+3. else (not nan/hak/yue) `align_score` < `align_min_score` with ≥ `align_min_units` scored units → `invalid`,
+   `text_mismatch`;
+4. else `valid` when LID or the alignment score was available, otherwise `unknown`.
+
+Calibration (2026-10-27, 1141 real segments of the 10 ready videos, 6 channels; mean MMS_FA unit probability):
+Mandarin speech with its own caption (LID zh ≥ 0.7, n = 882): p1 0.458, p5 0.665, median 0.847; the same audio
+aligned against another video's caption of similar length: median 0.289, p99 0.387, max 0.458; English speech
+with Chinese (translated) captions (n = 243): median 0.198, p99 0.346, max 0.385. Threshold 0.4 → 7/882 (0.8 %)
+Mandarin segments flagged (2–3 s segments whose caption carries ~13 characters/s: caption timing, not speech),
+868/875 swapped captions caught (99.2 %). LID: English interview clips 0.92–1.0 `en`; Mandarin 0.97–1.0 `zh`
+(short / music-backed Mandarin sometimes zh 0.51 + ko 0.48 → below 0.7, never flagged by LID). Result: DW Chinese
+(Mandarin narration + English interviews) 29 valid / 29 language_mismatch / 2 text_mismatch (mixed segments);
+硅谷101 conference talk (English lecture, Chinese subtitles) 4 valid (host intro) / 214 language_mismatch /
+9 text_mismatch; four Mandarin-only channels 847 valid / 7 text_mismatch. English-caption thresholds are untested
+(no English-caption media yet).
+
+Storage (`segments`): `validity` valid|invalid|unknown (default unknown), `invalid_reason`
+language_mismatch|text_mismatch|manual|null, `validity_source` auto|manual|null, `lid_lang`, `lid_prob`,
+`align_score`, `validation` JSONB `{version, revision, text_hash, alignment_at, expected, lid: [[code, prob]×3]|null,
+lid_model, align_units, align_low_fraction, thresholds, at, note?}`. A result is current while version, revision,
+text hash and the alignment it used match; the job processes segments without a current result (payload
+`{segment_ids}` also re-checks those; `{force: true}` re-checks all). **Manual decisions (`validity_source =
+manual`) are never overwritten** by the job.
+
+Jobs: `media.validate` (ml) in the pipeline after `media.align`; a missing model / OOM / disabled setting never
+stops the chain (step result `{skipped: true, code}`). A non-chained `media.align` (edit re-alignment, backfill)
+chains `media.validate {chain: false, segment_ids}`; a non-chained validate that turned segments valid again
+enqueues lazy `media.embed`/`media.profile` (`chain: false`). `media.validate {chain: false}` never touches
+`Media.status`. GPU: same OOM policy as embed/align; CUDA cache emptied after the job.
 
 ## Caption text conversion (Simplified → Traditional, `voti/textconv.py`)
 
@@ -205,7 +264,9 @@ Timestamps ISO-8601 UTC strings. IDs are UUID strings.
 `UserRef = {id, display_name}` (used wherever a row points at a user)
 
 ### Settings (admin)
-- `GET /settings` → `{youtube: {...}, pipeline: {...}, quality_thresholds: {...}, text: {...}, cookies: {present: bool, updated_at}}`
+- `GET /settings` → `{youtube: {...}, pipeline: {...}, quality_thresholds: {...}, text: {...}, validation: {...}, cookies: {present: bool, updated_at}}`
+  (`PUT /settings/validation`: `lid_min_prob`, `align_min_score` ∈ [0, 1], `lid_min_speech_sec` ∈ [0, 10],
+  `align_min_units` ∈ [1, 100])
 - `PUT /settings/{key}` body = value (partial ok, merged over the current value; unknown fields → 422) → updated value
 - `PUT /settings/cookies` multipart `file` (Netscape cookies.txt) → `{present: true, updated_at}`; `DELETE /settings/cookies`
 
@@ -220,6 +281,9 @@ Timestamps ISO-8601 UTC strings. IDs are UUID strings.
 - `POST /channels/{id}/refresh` → `Job` (re-list; returns the active listing job when one is queued/running)
 - `POST /channels/{id}/align` `{force?: false}` → `{queued: n}`: `media.align {chain: false}` for every media of the
   channel with active segments lacking a valid alignment (all of them with `force`)
+- `POST /channels/{id}/validate` `{force?: false}` → `{queued: n}`: `media.validate {chain: false}` for every media of
+  the channel with active segments (without a current validation unless `force`)
+- `POST /validate/backfill` (admin) `{force?: false}` → `{queued: n}`: the same for every media with active segments
 - `POST /channels/{id}/detail` `{media_ids?: [...]}` → `{queued: n}` (fetch full metadata for listed media; all un-detailed when omitted)
 - `POST /channels/{id}/convert-text` (any logged-in user) → `{queued: n}`: one `media.convert_text` job for every media
   of the channel that has a convertible caption track (Simplified, or Chinese never examined); 409
@@ -233,7 +297,8 @@ Timestamps ISO-8601 UTC strings. IDs are UUID strings.
 
 `ChannelSummary = {id, platform, title, handle, url, thumbnail_url, subscriber_count, video_count,
 list_status: new|queued|listing|listed|failed, last_listed_at,
-counts: {listed, detailed, with_manual_captions, downloaded, ready, failed, new}, hours: {listed, ready, speech},
+counts: {listed, detailed, with_manual_captions, downloaded, ready, failed, new}, hours: {listed, ready, speech,
+segments (active segments that are not invalid), invalid (invalid segments)},
 listing_job: {id, kind: "channel.list"|"source.resolve", status: queued|running, progress, phase, message, run_after}|null,
 detail_progress: {detailed, total, failed, active: bool}, next_refresh_at: ISO|null}`
 (`counts.listed` = all videos of the channel; `counts.new` = `is_new` videos; `detail_progress`: caption info
@@ -272,6 +337,7 @@ media_with_quality}, kind_counts: {video: n, short: n, live?: n, ...}, playlist_
   status: {aligned|stale|pending|skipped|failed|none: n}, job_active: bool}` — character timing for the media page
   player (only alignments valid for the segment's current text/revision)
 - `POST /media/{id}/align` `{force?: false}` → `{queued: 0|1}` (0 when the media has no segments)
+- `POST /media/{id}/validate` `{force?: false}` → `{queued: 0|1}` (`media.validate {chain: false}`; 0 without segments)
 - `GET /media/{id}/quality` → `MediaQuality` (all columns) + `details` (passed through as stored; the pipeline stores
   `details.spectrum: [{hz, db}]`, the long-term average spectrum of the original audio, when available)
 
@@ -279,11 +345,12 @@ media_with_quality}, kind_counts: {video: n, short: n, live?: n, ...}, playlist_
  license, has_manual_captions, has_auto_captions, manual_caption_langs, auto_caption_langs, status, stage, failure_code,
  channel: {id, title}, quality?: {snr_mean, dnsmos_ovrl, real_bandwidth_hz, speech_ratio, sample_rate, upsampled_suspect},
  segment_count, discovered_at (found by a re-listing)|null, is_new (discovered ≤ 7 days ago and still listed/detailed),
- downloaded: bool}`
+ downloaded: bool, invalid_count (active segments with validity invalid), invalid_sec}`
 `MediaDetail = MediaSummary + {description, tags, categories, chapters, language, like_count, comment_count, availability,
  age_limit, metadata, failure_message, jobs: [Job], tracks: [Track], quality: MediaQuality|null,
  text_converted: bool (some track converted Simplified → Traditional), text_convertible: bool (convert-text would
- still change something), text_conversion: metadata.text_conversion|null}`
+ still change something), text_conversion: metadata.text_conversion|null, validity_counts: {valid, invalid, unknown},
+ validation_job_active: bool (a media.validate job is queued/running)}`
 `Track = {id, language, kind, format, s2t_converted: bool, script: simplified|traditional|neutral|mixed|unknown|not_chinese|null
  (null = never examined), cues_converted: n|null}`
 
@@ -291,7 +358,8 @@ media_with_quality}, kind_counts: {video: n, short: n, live?: n, ...}, playlist_
 - `GET /segments` — filters: `media_id, channel_id, speaker_id, review_status (comma; the review list sends
    unchecked), text_source (comma), q (original or corrected text), min_snr, min_dnsmos, min_speech_ratio, min_c50,
    min_duration, max_duration, language (comma, prefix match: zh → zh-TW), flags (comma, any-of), exclude_flags,
-   has_profile, sort, limit, offset`
+   has_profile, validity (comma: valid|invalid|unknown; default all — invalid segments are listed with their badge),
+   sort, limit, offset`
    (sort: `start` = `media` (default: media newest-published first, then time), `snr`, `-snr`, `dnsmos`, `-dnsmos`,
    `duration`, `-duration`, `speech_ratio`, `-speech_ratio`, `created_at`, `-created_at`, `-updated_at`)
    → `{items: [SegmentSummary], total}` (items carry `media_title`, `channel_title`, `duration`)
@@ -300,7 +368,12 @@ media_with_quality}, kind_counts: {video: n, short: n, live?: n, ...}, playlist_
    placed in the ordering (also after it stopped matching, e.g. just marked passed in an `unchecked` list), so the
    reviewer's next/prev keep working; `total` counts only matching segments
 - `GET /segments/{id}` → `SegmentDetail`
-- `PATCH /segments/{id}` `{corrected_text?, review_status?, review_note?, speaker_state?, start_sec?, end_sec?}` → `SegmentDetail`
+- `PATCH /segments/{id}` `{corrected_text?, review_status?, review_note?, speaker_state?, start_sec?, end_sec?,
+  validity?: "valid"|"invalid"|"auto"}` → `SegmentDetail`. `validity` valid/invalid is a human decision
+  (`validity_source = manual`, `invalid_reason = manual` when invalid; audit-logged as `segment.review`; never
+  overwritten by the automatic check); `auto` drops the manual decision and re-queues `media.validate` for the
+  segment. Turning a segment valid enqueues lazy `media.embed`/`media.profile`. A text or boundary change re-aligns
+  and then re-validates the segment (manual decisions kept).
   (boundary change bumps revision, re-enqueues embed/profile for that media lazily; a text or boundary change
   marks the alignment pending and enqueues `media.align` for the segment. Inline review on the media page:
   `{review_status: "passed"|"needs_fix", corrected_text?}`; `corrected_text: null` restores the caption text)
@@ -309,11 +382,14 @@ media_with_quality}, kind_counts: {video: n, short: n, live?: n, ...}, playlist_
 
 `SegmentSummary = {id, media_id, media_title, channel_title, start_sec, end_sec, duration, text (corrected or original),
  original_text, corrected_text, text_source, local_speaker, speaker: {id, label, display_name}|null, speaker_state,
- speech_ratio, snr, c50, dnsmos_ovrl, dnsmos_p808, flags, review_status, revision, profile?: {age, sex, emotion_label}}`
+ speech_ratio, snr, c50, dnsmos_ovrl, dnsmos_p808, flags, review_status, revision, profile?: {age, sex, emotion_label},
+ validity: valid|invalid|unknown, invalid_reason: language_mismatch|text_mismatch|manual|null,
+ validity_source: auto|manual|null, lid_lang (VoxLingua107 code, e.g. en)|null, lid_prob|null, align_score|null}`
 `SegmentDetail = SegmentSummary + {track_id, cue_ids, dnsmos_sig, dnsmos_bak, clipping_ratio, lufs, repeated_overlap,
  review_note, reviewed_by: UserRef|null, reviewed_at, profile: VoiceProfile|null, history: [AuditLog],
  words: [{t, s: start|null, e: end|null}]|null (character timing of `text`; null unless aligned and current),
- alignment: {status: aligned|skipped|failed|pending|stale|none, reason|null, model_id|null, updated_at|null}}`
+ alignment: {status: aligned|skipped|failed|pending|stale|none, reason|null, model_id|null, updated_at|null},
+ validation: segments.validation JSONB|null (lid top-3, expected language, thresholds, …)}`
 `AuditLog = {id, at, user: UserRef|null, action, entity_type, entity_id, before, after}` (newest first)
 
 ### Audio
@@ -348,7 +424,9 @@ media_with_quality}, kind_counts: {video: n, short: n, live?: n, ...}, playlist_
 ### Datasets & export
 - `GET /datasets`, `POST /datasets` `{name, description, filters}`, `GET/PATCH/DELETE /datasets/{id}`
 - `POST /datasets/preview` `{filters}` → `{segment_count, total_sec, speakers: n, channels: n, by_channel: [...],
-   by_sex: {...}, excluded: {repeated: n, auto_caption: n, low_quality: n}}`
+   by_sex: {...}, excluded: {repeated: n, auto_caption: n, low_quality: n, speaker_cap: n, invalid: n}}`
+   (invalid segments are always excluded — not a filter; `excluded.invalid` = segments matching every other
+   criterion but invalid)
 - `POST /datasets/{id}/export` `{format: "jsonl"|"csv", include_audio: true}` → `DatasetExport`
 - `GET /datasets/{id}/exports` → `{items: [DatasetExport], total}`; `GET /exports/{id}` → `DatasetExport`;
   `GET /exports/{id}/download/{manifest.jsonl|manifest.csv|README.md|dataset.tar}`
@@ -384,9 +462,10 @@ quality: {snr, c50, dnsmos_*, speech_ratio, bandwidth_hz, sample_rate}, profile:
 - `GET /jobs?status=&kind=&media_id=&limit=` → `{items: [Job], total, counts: {queued, running, failed, ...}}`
 - `POST /jobs/{id}/retry`, `POST /jobs/{id}/cancel`
 - `GET /stats/overview` → `{channels, media: {listed, detailed, downloaded, ready, failed}, hours: {listed, downloaded,
-   speech, segments, reviewed}, segments: {total, passed, needs_fix}, speakers: {candidates, verified}, storage_bytes,
+   speech, segments, reviewed, invalid}, segments: {total, passed, needs_fix, invalid}, speakers: {candidates, verified}, storage_bytes,
    workers: [{name, queues, alive, last_seen_at, current_job: {id, kind, media_title}|null}],
-   queue_depth: {fetch, audio, ml, export}}` (workers: Redis `voti:worker:<name>` announcements, plus workers that
+   queue_depth: {fetch, audio, ml, export}}` (`hours.segments`/`reviewed` and `segments.total`/`passed`/`needs_fix`
+   exclude invalid segments; `hours.speech` is media-level VAD speech; workers: Redis `voti:worker:<name>` announcements, plus workers that
    still own running jobs but stopped announcing → `alive: false`, `last_seen_at` = job heartbeat)
 - `GET /healthz` → `{ok: true}` (no auth)
 
@@ -438,7 +517,7 @@ Media / entity state follows the job: a requeued `media.download` puts the media
 (`skipped` for `no_usable_captions`), `playlist.list` `listing` → `failed`, a dataset export
 `queued` while waiting and `failed` at the end. `Channel.list_status` follows `channel.list` / `source.resolve`
 (requeued/recovered → `queued`, terminal → `failed`, cancelled → `listed`/`new`; see "Channel listing").
-`media.convert_text` and `media.align` with `chain: false` never change `Media.status`.
+`media.convert_text`, `media.align` and `media.validate` with `chain: false` never change `Media.status`.
 
 Idempotency: every handler can re-run after a partial run — rows are replaced in one transaction (cues per track,
 speech regions, diarization turns, repeated regions, playlist items), upserted (segments by uuid5 id, voice profiles,

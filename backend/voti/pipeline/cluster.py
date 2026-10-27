@@ -165,7 +165,7 @@ def refresh_speaker_profiles(run_id: uuid.UUID) -> int:
                          .join(Segment, Segment.id == SpeakerAssignment.segment_id)
                          .join(VoiceProfile, (VoiceProfile.segment_id == Segment.id)
                                & (VoiceProfile.revision == Segment.revision))
-                         .where(SpeakerAssignment.run_id == run_id)).all()
+                         .where(SpeakerAssignment.run_id == run_id, Segment.validity != "invalid")).all()
         per_seg: dict[tuple, VoiceProfile] = {}
         for spk, a, b, vp in rows:
             k = (spk, vp.segment_id)
@@ -208,7 +208,7 @@ def run(payload: dict, created_by: uuid.UUID | None = None,
              .join(Embedding, (Embedding.segment_id == Segment.id) & (Embedding.revision == Segment.revision)
                    & (Embedding.model_id == MODEL_ID))
              .join(Media, Media.id == Segment.media_id)
-             .where(Segment.active.is_(True)))
+             .where(Segment.active.is_(True), Segment.validity != "invalid"))
         if channel_ids:
             q = q.where(Media.channel_id.in_(channel_ids))
         rows = s.execute(q).all()
@@ -216,7 +216,7 @@ def run(payload: dict, created_by: uuid.UUID | None = None,
         # override segments without an embedding still get assigned to their named speaker
         oq = (select(Segment.id, Segment.media_id, Segment.start_sec, Segment.end_sec, Media.channel_id)
               .join(Media, Media.id == Segment.media_id)
-              .where(Segment.id.in_(list(overrides)), Segment.active.is_(True)))
+              .where(Segment.id.in_(list(overrides)), Segment.active.is_(True), Segment.validity != "invalid"))
         if channel_ids:
             oq = oq.where(Media.channel_id.in_(channel_ids))
         override_rows = s.execute(oq).all() if overrides else []

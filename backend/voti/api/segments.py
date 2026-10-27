@@ -36,6 +36,9 @@ SEGMENT_SORTS = {
 }
 
 
+VALIDITIES = ("valid", "invalid", "unknown")
+
+
 def jsonb_has_any(col, values: list[str]):  # noqa: ANN001, ANN201
     return col.op("?|")(cast(values, ARRAY(Text)))
 
@@ -57,7 +60,9 @@ def segment_filter(media_id: uuid.UUID | None = None, channel_id: uuid.UUID | No
                    language: str | None = Query(None, description="comma list of segment languages (prefix match)"),
                    flags: str | None = Query(None, description="comma list, any-of"),
                    exclude_flags: str | None = Query(None, description="comma list"),
-                   has_profile: bool | None = None, sort: str = "start") -> SegmentFilter:
+                   has_profile: bool | None = None,
+                   validity: str | None = Query(None, description="comma list: valid,invalid,unknown"),
+                   sort: str = "start") -> SegmentFilter:
     """The filter shared by GET /segments and GET /segments/{id}/neighbors."""
     if sort not in SEGMENT_SORTS:
         raise ApiError(422, "invalid_sort", f"sort 必須是 {', '.join(SEGMENT_SORTS)} 之一")
@@ -95,6 +100,12 @@ def segment_filter(media_id: uuid.UUID | None = None, channel_id: uuid.UUID | No
         c.append(_duration >= min_duration)
     if max_duration is not None:
         c.append(_duration <= max_duration)
+    if validity:
+        wanted = split_csv(validity)
+        bad = [v for v in wanted if v not in VALIDITIES]
+        if bad:
+            raise ApiError(422, "invalid_validity", f"validity 必須是 {', '.join(VALIDITIES)} 之一")
+        c.append(Segment.validity.in_(wanted))
     if language:
         c.append(or_(*[or_(Segment.language == lang, Segment.language.ilike(f"{lang}-%"))
                        for lang in split_csv(language)]))
@@ -143,7 +154,8 @@ def segment_detail(s: Session, g: Segment) -> S.SegmentDetail:
                            dnsmos_bak=g.dnsmos_bak, clipping_ratio=g.clipping_ratio, lufs=g.lufs,
                            review_note=g.review_note or "", reviewed_by=user_ref(s, g.reviewed_by), reviewed_at=g.reviewed_at,
                            profile=S.VoiceProfileOut.model_validate(vp) if vp else None,
-                           history=audit_outs(s, history), words=words, alignment=alignment)
+                           history=audit_outs(s, history), words=words, alignment=alignment,
+                           validation=g.validation)
 
 
 def segment_words(s: Session, g: Segment) -> tuple[list[S.WordOut] | None, S.AlignmentInfo]:
@@ -165,7 +177,34 @@ def get_segment(segment_id: uuid.UUID, _: User = Depends(current_user), s: Sessi
     return segment_detail(s, get_or_404(s, Segment, segment_id, "音段"))
 
 
-EDITABLE = ("corrected_text", "review_status", "review_note", "speaker_state", "start_sec", "end_sec")
+EDITABLE = ("corrected_text", "review_status", "review_note", "speaker_state", "start_sec", "end_sec", "validity")
+
+
+def _apply_validity(s: Session, g: Segment, value: str, user: User) -> tuple[dict, dict] | None:
+    """Human validity decision (valid | invalid) or back to the automatic check (auto). → (before, after) or
+    None when nothing changes. Never touched by media.validate afterwards while manual."""
+    before = {"validity": g.validity, "invalid_reason": g.invalid_reason, "validity_source": g.validity_source}
+    if value == "auto":
+        if g.validity_source != "manual":
+            return None
+        # back to the automatic check: forget the manual decision and re-check this segment
+        g.validity_source, g.validation = None, None
+        g.validity, g.invalid_reason = "unknown", None
+        enqueue(s, "media.validate", media_id=g.media_id, created_by=user.id,
+                payload={"chain": False, "segment_ids": [str(g.id)], "reason": "manual_reset"})
+    else:
+        if g.validity_source == "manual" and g.validity == value:
+            return None
+        was_invalid = g.validity == "invalid"
+        g.validity, g.validity_source = value, "manual"
+        g.invalid_reason = "manual" if value == "invalid" else None
+        if was_invalid and value == "valid":
+            # invalid segments were never embedded / profiled
+            lazy = {"only_missing": True, "chain": False, "reason": "marked_valid"}
+            enqueue(s, "media.embed", media_id=g.media_id, payload=lazy, created_by=user.id)
+            enqueue(s, "media.profile", media_id=g.media_id, payload=lazy, created_by=user.id)
+    after = {"validity": g.validity, "invalid_reason": g.invalid_reason, "validity_source": g.validity_source}
+    return before, after
 
 
 @router.patch("/{segment_id}", response_model=S.SegmentDetail)
@@ -183,9 +222,11 @@ def patch_segment(segment_id: uuid.UUID, body: S.SegmentPatchIn, user: User = De
         raise ApiError(422, "invalid_speaker_state", "speaker_state 不可為空")
     if changes.get("review_note") is None:
         changes.pop("review_note", None)
+    validity = changes.pop("validity", None)
+    vchange = _apply_validity(s, g, validity, user) if validity is not None else None
     before = {k: getattr(g, k) for k in changes}
     changes = {k: v for k, v in changes.items() if before[k] != v}
-    if not changes:
+    if not changes and vchange is None:
         return segment_detail(s, g)
     before = {k: before[k] for k in changes}
 
@@ -203,6 +244,9 @@ def patch_segment(segment_id: uuid.UUID, body: S.SegmentPatchIn, user: User = De
     for k, v in changes.items():
         setattr(g, k, v)
     after = dict(changes)
+    if vchange is not None:
+        before.update(vchange[0])
+        after.update(vchange[1])
     if boundary:
         g.revision = (g.revision or 1) + 1
         if "boundary_adjusted" not in (g.flags or []):

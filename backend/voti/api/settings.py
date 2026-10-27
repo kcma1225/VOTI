@@ -25,6 +25,7 @@ SETTING_MODELS: dict[str, type[BaseModel]] = {
     "pipeline": S.PipelineSettings,
     "quality_thresholds": S.QualityThresholds,
     "text": S.TextSettings,
+    "validation": S.ValidationSettings,
 }
 
 
@@ -52,7 +53,7 @@ def cookies_status() -> S.CookiesStatus:
 def read_settings(_: User = Depends(require_admin), s: Session = Depends(get_session)):
     return S.SettingsOut(youtube=get_setting(s, "youtube"), pipeline=get_setting(s, "pipeline"),
                          quality_thresholds=get_setting(s, "quality_thresholds"), text=get_setting(s, "text"),
-                         cookies=cookies_status())
+                         validation=get_setting(s, "validation"), cookies=cookies_status())
 
 
 def _looks_like_cookies(data: bytes) -> bool:

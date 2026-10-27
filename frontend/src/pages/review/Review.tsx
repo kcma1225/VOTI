@@ -20,6 +20,7 @@ import {
   TriangleAlert,
   UserRound,
   Wand2,
+  ShieldX,
 } from 'lucide-react'
 import { api } from '@/api/client'
 import { onErr, qk, useNeighbors, useSegment, useSegmentPatch, useSegments, useSimilar, useTimeline } from '@/api/queries'
@@ -36,6 +37,7 @@ import { Input, Select, Switch, Textarea } from '@/components/ui/form'
 import { Dialog, Tooltip } from '@/components/ui/overlay'
 import { ErrorState } from '@/components/ui/states'
 import { ReviewBadge } from '@/components/domain/status'
+import { ValidityBadge, ValidityControls, invalidText, lidLangName } from '@/components/domain/validity'
 import { ProfileTraits, speakerName } from '@/components/domain/speakers'
 import { LaneLabels, Lanes, lanesHeight, type LaneKey } from '@/components/domain/lanes'
 import { useSize } from '@/components/charts/charts'
@@ -236,6 +238,30 @@ function SpokenLine({ s, time, onSeek }: { s: SegmentDetail; time: number | null
 }
 
 /* ───────────── main ───────────── */
+/** Caption ↔ audio check: spoken language (top-3), alignment confidence, manual override. */
+function CaptionCheck({ s }: { s: SegmentDetail }) {
+  const t = useT()
+  const lid = s.validation?.lid ?? (s.lid_lang ? ([[s.lid_lang, s.lid_prob ?? 0]] as [string, number][]) : null)
+  return (
+    <div className="space-y-2 border-t border-border pt-3 text-[13px]">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-medium">{t('validate.tip.title')}</span>
+        <Badge tone={s.validity === 'invalid' ? 'danger' : s.validity === 'valid' ? 'success' : 'neutral'} dot>
+          {t(`validate.validity.${s.validity ?? 'unknown'}`)}
+        </Badge>
+        {s.validity_source === 'manual' && <Tag>{t('validate.manual')}</Tag>}
+      </div>
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
+        <dt className="text-fg-3">{t('validate.tip.lid')}</dt>
+        <dd className="min-w-0 break-cjk tabular">{lid?.length ? lid.map(([c, p]) => `${lidLangName(c)} ${Math.round(p * 100)}%`).join(' · ') : '—'}</dd>
+        <dt className="text-fg-3">{t('validate.tip.align')}</dt>
+        <dd className="tabular">{s.align_score != null ? s.align_score.toFixed(2) : '—'}</dd>
+      </dl>
+      {s.validity !== 'invalid' && <ValidityControls s={s} />}
+    </div>
+  )
+}
+
 export default function Review() {
   const t = useT()
   useTitle(t('process.review.title'))
@@ -467,8 +493,26 @@ export default function Review() {
                   <Skeleton className="h-9 w-2/3" />
                 )}
               </div>
-              {s && <ReviewBadge status={s.review_status} />}
+              {s && (
+                <div className="flex flex-wrap items-center gap-2">
+                  {s.validity !== 'invalid' && <ValidityBadge s={s} />}
+                  <ReviewBadge status={s.review_status} />
+                </div>
+              )}
             </div>
+            {s?.validity === 'invalid' && (
+              <div role="status" data-shot="invalid-banner" className="mx-4 mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-danger/25 bg-danger-soft/60 px-3 py-2 sm:mx-5">
+                <ShieldX className="size-4 shrink-0 text-danger" />
+                <div className="min-w-0 flex-1 text-[13px]">
+                  <div className="font-medium text-danger-fg break-cjk">
+                    {invalidText(s)}
+                    {s.validity_source === 'manual' && s.invalid_reason !== 'manual' && <span className="ml-1.5 font-normal opacity-80">· {t('validate.manual')}</span>}
+                  </div>
+                  <div className="text-xs text-fg-2 break-cjk">{t('validate.tip.excluded')}</div>
+                </div>
+                <ValidityControls s={s} />
+              </div>
+            )}
 
             {/* the sentence, highlighted character by character while it plays */}
             <div className="px-4 pt-4 sm:px-5">
@@ -645,6 +689,7 @@ export default function Review() {
                   ))}
                 </div>
               )}
+              {s && <CaptionCheck s={s} />}
             </CardBody>
           </Card>
           <div className="grid items-start gap-4 md:grid-cols-2 xl:grid-cols-1">

@@ -324,6 +324,10 @@ class Segment(Base):
     flags (list[str]): low_speech, low_snr, clipped, repeated, overlap, boundary_adjusted, too_short, too_long,
                        s2t_converted (original_text converted Simplified → Traditional, voti.textconv), …
     original_text is never edited by humans; the only automatic rewrite is that s2t conversion.
+    validity: valid | invalid | unknown — does the caption text belong to the audio (voti.pipeline.validate)?
+    invalid segments stay playable but are excluded from datasets, hour totals and speaker statistics.
+    invalid_reason: language_mismatch | text_mismatch | manual; validity_source: auto | manual (manual decisions
+    are never overwritten by the automatic validation).
     """
     __tablename__ = "segments"
     __table_args__ = (Index("segments_media_start", "media_id", "start_sec"),
@@ -358,6 +362,14 @@ class Segment(Base):
     reviewed_at: Mapped[datetime | None] = mapped_column(nullable=True)
     revision: Mapped[int] = mapped_column(Integer, default=1)  # bumps when boundaries change
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # caption ↔ audio validation (voti.pipeline.validate; columns added by voti.db.MIGRATIONS)
+    validity: Mapped[str] = mapped_column(String(16), default="unknown", server_default="unknown")
+    invalid_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    validity_source: Mapped[str | None] = mapped_column(String(16), nullable=True)   # auto | manual
+    lid_lang: Mapped[str | None] = mapped_column(String(16), nullable=True)          # VoxLingua107 top language
+    lid_prob: Mapped[float | None] = mapped_column(Float, nullable=True)
+    align_score: Mapped[float | None] = mapped_column(Float, nullable=True)          # mean MMS_FA unit probability
+    validation: Mapped[dict | None] = mapped_column(JSONB, nullable=True)            # top-3 LID, thresholds, stamps
     created_at: Mapped[datetime] = created()
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 
