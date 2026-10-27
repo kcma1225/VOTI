@@ -297,8 +297,13 @@ export function DownloadDialog({
         return
       }
       toast.success(t('collect.media.dl.toast', r.queued), { description: r.skipped ? t('collect.media.dl.toastSkipped', r.skipped) : t('collect.media.dl.toastHint') })
+      // refresh every view of the affected videos so progress shows without a page reload
       qc.invalidateQueries({ queryKey: ['media'] })
+      qc.invalidateQueries({ queryKey: ['mediaDetail'] })
+      qc.invalidateQueries({ queryKey: ['channel'] })
+      qc.invalidateQueries({ queryKey: ['channels'] })
       qc.invalidateQueries({ queryKey: ['jobs'] })
+      qc.invalidateQueries({ queryKey: ['stats'] })
       onOpenChange(false)
       onDone()
     },

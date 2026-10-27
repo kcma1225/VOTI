@@ -17,9 +17,9 @@ export function toUnits(words: WordUnit[] | MediaWords[string] | null | undefine
   const units: Unit[] = words.map((w) => (Array.isArray(w) ? { t: w[0], s: w[1], e: w[2] } : w))
   const timed = units.filter((u) => u.s != null)
   if (!timed.length) return null
-  // tolerate segment-relative timings: shift when every time lies before the segment start
-  if (start != null && end != null && start > 1 && timed.every((u) => (u.e ?? u.s!) <= end - start + 0.5) && timed[0].s! < start - 0.5)
-    return units.map((u) => ({ t: u.t, s: u.s == null ? null : u.s + start, e: u.e == null ? null : u.e + start }))
+  // the API always returns absolute media seconds (no guessing a relative time base)
+  void start
+  void end
   return units
 }
 

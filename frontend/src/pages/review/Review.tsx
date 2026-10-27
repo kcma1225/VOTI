@@ -276,10 +276,14 @@ export default function Review() {
     if (!s) return
     setDraft(s.corrected_text ?? s.original_text)
     setNote(s.review_note)
-    setRegion([PAD, PAD + (s.end_sec - s.start_sec)])
+    const l = Math.min(PAD, s.start_sec)
+    setRegion([l, l + (s.end_sec - s.start_sec)])
   }, [s?.id, s?.revision]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const clipStart = s ? s.start_sec - PAD : 0
+  // The clip starts PAD seconds before the segment, except near the media start where the server clamps at 0 s —
+  // so all clip-relative times use the real clip start (X-Clip-Start), falling back to the same clamp.
+  const clipStart = s ? (audio.clipStart ?? Math.max(0, s.start_sec - PAD)) : 0
+  const lead = s ? s.start_sec - clipStart : PAD
   const absRegion: [number, number] = [clipStart + region[0], clipStart + region[1]]
   const boundaryDirty = !!s && (Math.abs(absRegion[0] - s.start_sec) > 0.004 || Math.abs(absRegion[1] - s.end_sec) > 0.004)
   const textDirty = !!s && draft !== (s.corrected_text ?? s.original_text)
@@ -563,7 +567,7 @@ export default function Review() {
                 </Button>
               </div>
               {boundaryDirty && (
-                <Button size="sm" variant="ghost" onClick={() => s && setRegion([PAD, PAD + s.end_sec - s.start_sec])}>
+                <Button size="sm" variant="ghost" onClick={() => s && setRegion([lead, lead + s.end_sec - s.start_sec])}>
                   {t('process.review.resetBoundary')}
                 </Button>
               )}

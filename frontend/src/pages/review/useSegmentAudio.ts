@@ -11,6 +11,8 @@ export function useSegmentAudio(segmentId: string | undefined, revision: number 
   const [error, setError] = useState<string | null>(null)
   const [playing, setPlaying] = useState(false)
   const [time, setTime] = useState(0) // seconds within the padded clip
+  /** absolute media time of the clip's first sample (server clamps the padding at 0 s and at the media end) */
+  const [clipStart, setClipStart] = useState<number | null>(null)
   const audio = useRef<HTMLAudioElement | null>(null)
   const stopAt = useRef<number | null>(null)
   const raf = useRef(0)
@@ -24,10 +26,13 @@ export function useSegmentAudio(segmentId: string | undefined, revision: number 
     setError(null)
     setPlaying(false)
     setTime(0)
+    setClipStart(null)
     ;(async () => {
       try {
         const res = await fetch(audioUrl.segment(segmentId, PAD, revision), { credentials: 'same-origin' })
         if (!res.ok) throw new Error(t('process.audio.loadFailedStatus', res.status))
+        const cs = Number.parseFloat(res.headers.get('X-Clip-Start') ?? '')
+        if (alive && Number.isFinite(cs)) setClipStart(cs)
         const buf = await res.arrayBuffer()
         if (!alive) return
         url = URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }))
@@ -138,5 +143,5 @@ export function useSegmentAudio(segmentId: string | undefined, revision: number 
     if (audio.current) audio.current.playbackRate = r
   }, [])
 
-  return { peaks, duration, error, playing, time, play, pause, seek, setRate, ready: !!audio.current && !!peaks }
+  return { peaks, duration, error, playing, time, clipStart, play, pause, seek, setRate, ready: !!audio.current && !!peaks }
 }
