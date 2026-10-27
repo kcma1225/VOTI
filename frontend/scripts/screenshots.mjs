@@ -5,6 +5,7 @@
  *   npm run shots                                      # screenshots + overflow check
  *   npm run check:overflow                             # overflow check only (no files written)
  *
+ * Live site: BASE_URL=http://127.0.0.1:8080 VOTI_USER=admin VOTI_PASS=… npm run shots (logs in via the API).
  * Env: BASE_URL (default http://127.0.0.1:4173), OUT (default ../screenshots), ONLY=regex on screen name,
  *      VIEWPORTS=comma list of names, THEMES=light,dark, CHROMIUM=/path/to/chrome
  */
@@ -36,16 +37,25 @@ function findChromium() {
   return existsSync(p) ? p : undefined
 }
 
+const USER = process.env.VOTI_USER
+const PASS = process.env.VOTI_PASS
+
+async function login(ctx) {
+  if (!USER) return
+  const r = await ctx.request.post(`${BASE}/api/auth/login`, { data: { username: USER, password: PASS }, headers: { Origin: BASE } })
+  if (!r.ok()) throw new Error(`login failed: ${r.status()}`)
+}
+
 async function discover(page) {
   await page.goto(`${BASE}/`, { waitUntil: 'networkidle' })
   return page.evaluate(async () => {
     const j = (u) => fetch(u).then((r) => r.json())
     const ch = (await j('/api/channels')).items
-    const media = (await j(`/api/media?channel_id=${ch[0].id}&status=ready&limit=5`)).items
-    const failed = (await j('/api/media?status=failed&limit=1')).items
-    const sp = (await j('/api/speakers?limit=3')).items
+    const media = (await j(`/api/media?channel_id=${ch[0]?.id}&status=ready&limit=5`)).items ?? []
+    const failed = (await j('/api/media?status=failed,blocked&limit=1')).items ?? []
+    const sp = (await j('/api/speakers?limit=3')).items ?? []
     const ds = await j('/api/datasets')
-    return { ch: ch[0].id, ch2: ch[1].id, media: media[0].id, failed: failed[0]?.id, speaker: sp[1].id, dataset: (ds.items ?? ds)[0].id }
+    return { ch: ch[0]?.id, ch2: ch[1]?.id, media: media[0]?.id, failed: failed[0]?.id, speaker: (sp[1] ?? sp[0])?.id, dataset: (ds.items ?? ds)[0]?.id }
   })
 }
 
@@ -89,16 +99,21 @@ if (!CHECK_ONLY) mkdirSync(OUT, { recursive: true })
 const failures = []
 let count = 0
 try {
-  const probe = await browser.newPage()
+  const probeCtx = await browser.newContext()
+  await login(probeCtx)
+  const probe = await probeCtx.newPage()
   const ids = await discover(probe)
-  await probe.close()
+  await probeCtx.close()
   for (const theme of themes) {
     for (const [vpName, vp] of viewports) {
       const ctx = await browser.newContext({ locale: 'zh-TW', timezoneId: 'Asia/Taipei', viewport: vp, deviceScaleFactor: vpName === 'phone' ? 2 : 1, colorScheme: theme, reducedMotion: 'reduce', hasTouch: vpName === 'phone', isMobile: vpName === 'phone' })
       await ctx.addInitScript((t) => { try { localStorage.setItem('voti-theme', t); localStorage.removeItem('voti-mock-logged-out') } catch {} }, theme)
+      await login(ctx)
       const page = await ctx.newPage()
       for (const s of screens(ids)) {
         if (ONLY && !ONLY.test(s.name)) continue
+        if (s.path.includes('undefined')) continue // no data of that kind on this site
+        if (USER && s.name === '01-login') continue // already logged in
         if (s.phoneOnly && vpName !== 'phone') continue
         await page.goto(`${BASE}${s.path}`, { waitUntil: 'networkidle' })
         // job-completion toasts are timing dependent; keep them only on the overview shot

@@ -1,5 +1,9 @@
-.venv
+.venv*
 data
+models
+screenshots
+frontend/node_modules
+frontend/dist*
 .env
 .env.*
 !.env.example
@@ -7,5 +11,3 @@ data
 **/*.pyc
 .pytest_cache
 .DS_Store
-*.mp4
-*.wav
