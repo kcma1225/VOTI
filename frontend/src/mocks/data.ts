@@ -1,5 +1,6 @@
 /* Deterministic fake corpus for VOTI_MOCK. Everything is synthetic. */
 import type * as T from '@/api/types'
+import { genOcr, type MockOcr } from './ocr'
 
 // ───────────── seeded randomness ─────────────
 function mulberry32(a: number) {
@@ -309,6 +310,10 @@ export interface DB {
   aligned: Set<string>
   /** per channel: the newest ready media — carries the Simplified→Traditional demo state */
   demo: Set<string>
+  /** media whose text comes from burned-in subtitles (hard-subtitle OCR) */
+  ocrMedia: Set<string>
+  /** OCR results by media id */
+  ocr: Map<string, MockOcr>
 }
 
 const AGE_GROUP = (a: number) => (a < 20 ? '<20' : a < 30 ? '20-29' : a < 40 ? '30-39' : a < 50 ? '40-49' : a < 60 ? '50-59' : '60+')
@@ -437,6 +442,7 @@ export function buildDB(): DB {
       quality_thresholds: { low_speech_ratio: 0.5, low_snr_db: 10, clipping_ratio: 0.001 },
       text: { convert_simplified: true, opencc_config: 's2twp' },
       validation: { enabled: true, lid_min_prob: 0.7, lid_min_speech_sec: 1.0, align_min_score: 0.4, align_min_units: 4 },
+      ocr: { enabled: true, auto_when_no_captions: true, fps: 5, discovery_step_sec: 2, max_discovery_frames: 900, model: 'server', cpu_model: 'mobile', keep_crops: true, min_event_conf: 0.85 },
       cookies: { present: true, updated_at: iso(NOW - 9 * DAY) },
     },
     channels,
@@ -456,6 +462,8 @@ export function buildDB(): DB {
     me: null,
     aligned: new Set(),
     demo: new Set(),
+    ocrMedia: new Set(),
+    ocr: new Map(),
   }
 
   CHANNEL_DEFS.forEach((def, ci) => {
@@ -640,6 +648,12 @@ export function buildDB(): DB {
   })
 
   media.forEach((m) => db.mediaById.set(m.id, m))
+  // hard-subtitle OCR demo: a video without CC whose burned-in subtitles were OCRed (third channel, oldest ready video)
+  const ocrDemo = media.filter((m) => m.channel_idx === 2 && m.status === 'ready' && m.kind === 'video' && !m.title.includes('Shorts') && (m.duration_sec ?? 0) > 300).at(-1)
+  if (ocrDemo) {
+    Object.assign(ocrDemo, { has_manual_captions: false, has_auto_captions: false, manual_caption_langs: [], auto_caption_langs: [] })
+    db.ocrMedia.add(ocrDemo.id)
+  }
   // eager segment generation for all ready media (keeps speaker / diversity totals consistent)
   for (const m of media) if (m.status === 'ready') genSegments(db, m)
   // speaker totals
@@ -769,6 +783,7 @@ export function genSegments(db: DB, m: MockMedia): T.SegmentDetail[] {
   // long media: spread the capped number of segments over the whole duration
   const gapMean = Math.max(0.8, (dur - maxSegs * 5.2) / maxSegs)
   const manual = !!m.has_manual_captions
+  const ocr = db.ocrMedia.has(m.id)
   while (t < dur - 1.5 && segs.length < maxSegs) {
     const len = clamp(r.normal(5.2, 2.6), 0.8, 19.5)
     const start = t
@@ -807,7 +822,7 @@ export function genSegments(db: DB, m: MockMedia): T.SegmentDetail[] {
       text: corrected ?? original,
       original_text: original,
       corrected_text: corrected,
-      text_source: corrected ? 'human_revision' : manual ? 'manual_caption' : 'auto_caption',
+      text_source: ocr ? 'ocr_caption' : corrected ? 'human_revision' : manual ? 'manual_caption' : 'auto_caption',
       local_speaker: sid ? localMap.get(sid)! : null,
       speaker: sp && state !== 'multiple' && state !== 'overlap' ? { id: sp.id, label: sp.label, display_name: sp.display_name } : null,
       speaker_state: state,
@@ -865,6 +880,14 @@ export function genSegments(db: DB, m: MockMedia): T.SegmentDetail[] {
     t = end + clamp(r.normal(gapMean, gapMean * 0.5 + 0.5), 0.05, gapMean * 3 + 6)
   }
   applyValidity(segs, idx)
+  if (ocr) {
+    // OCR text needs a usable alignment score: without one the segment stays unknown (validation.note ocr_unverified)
+    segs.forEach((s, i) => {
+      if (i % 11 === 5 && s.validity === 'valid' && s.validity_source === 'auto')
+        Object.assign(s, { validity: 'unknown', align_score: null, validation: { ...s.validation, note: 'ocr_unverified' } })
+    })
+    db.ocr.set(m.id, genOcr(m, segs, idx))
+  }
   m.segment_count = segs.length
   db.segments.set(m.id, segs)
   return segs
@@ -928,13 +951,13 @@ export function topKey(d: Record<string, number> | undefined | null) {
 const STEP_DUR: Record<string, number> = {
   'media.download': 26_000, 'media.normalize': 9_000, 'media.quality': 30_000, 'media.diarize': 22_000,
   'media.segment': 6_000, 'media.embed': 14_000, 'media.profile': 25_000, 'media.fingerprint': 8_000,
-  'channel.list': 20_000, 'media.detail': 4_000, 'speakers.cluster': 12_000, 'dataset.export': 9_000, 'channel.dedup': 15_000,
+  'media.ocr': 14_000, 'channel.list': 20_000, 'media.detail': 4_000, 'speakers.cluster': 12_000, 'dataset.export': 9_000, 'channel.dedup': 15_000,
 }
 const QUEUE: Record<string, T.QueueName> = {
   'source.resolve': 'scan', 'channel.list': 'scan', 'playlist.list': 'scan', 'media.detail': 'detail', 'media.download': 'download',
   'media.normalize': 'audio', 'media.segment': 'audio', 'media.quality': 'ml', 'media.diarize': 'ml', 'media.embed': 'ml',
   'media.profile': 'ml', 'media.fingerprint': 'ml', 'channel.dedup': 'ml', 'speakers.cluster': 'ml', 'dataset.export': 'export',
-  'media.convert_text': 'audio', 'media.align': 'ml', 'media.validate': 'ml',
+  'media.convert_text': 'audio', 'media.align': 'ml', 'media.validate': 'ml', 'media.ocr': 'ml',
 }
 export const PIPE: T.JobKind[] = ['media.download', 'media.normalize', 'media.quality', 'media.diarize', 'media.segment', 'media.embed', 'media.profile', 'media.fingerprint']
 
@@ -985,6 +1008,7 @@ const PHASES: Record<string, [string, PhaseMsg][]> = {
   'media.convert_text': [['convert_text', () => 'OpenCC s2twp']],
   'media.align': [['align', () => '']],
   'media.validate': [['load_model', () => ''], ['lid', (f) => `${Math.round(f * 60)}/60`]],
+  'media.ocr': [['load_model', () => 'PP-OCRv5 server'], ['discover', (f) => `${Math.round(f * 300)}/300`], ['track', (f) => `${Math.round(f * 100)}%`], ['crops', () => '']],
 }
 
 /** Advance the simulated queue to wall-clock now. */
@@ -1068,6 +1092,13 @@ export function tick(db: DB) {
 function onComplete(db: DB, j: T.Job) {
   const m = j.media_id ? db.mediaById.get(j.media_id) : null
   if (m && j.kind === 'media.align') db.aligned.add(m.id)
+  if (m && j.kind === 'media.ocr') {
+    // a re-run re-segments afterwards; the mock just restores the media and finishes the result
+    m.status = db.segments.get(m.id)?.length ? 'ready' : m.status === 'processing' ? 'ready' : m.status
+    m.stage = null
+    const o = db.ocr.get(m.id)
+    if (o) o.summary = { ...o.summary, status: o.events.length ? 'done' : 'no_subtitles', at: iso(Date.now()), requested: 'rerun' }
+  }
   if (m && j.kind.startsWith('media.') && PIPE.includes(j.kind)) {
     const i = PIPE.indexOf(j.kind)
     if (i >= 0 && i < PIPE.length - 1) {
@@ -1110,6 +1141,11 @@ function onComplete(db: DB, j: T.Job) {
 
 function buildJobs(db: DB, r: ReturnType<typeof rngFor>) {
   const now = NOW
+  // the OCR demo video's OCR job (between diarize and segment)
+  for (const id of db.ocrMedia) {
+    const t = now - 3 * DAY + 3600_000
+    newJob(db, 'media.ocr', { media_id: id, status: 'completed', progress: 1, phase: 'done', created_at: iso(t - 30 * 60_000), started_at: iso(t - 26 * 60_000), finished_at: iso(t), payload: { ocr_auto: true } }, 4242)
+  }
   // historic completed/failed jobs (oldest first so unshift keeps newest on top)
   const ready = db.media.filter((m) => m.status === 'ready').slice(0, 36)
   ready.forEach((m, k) => {

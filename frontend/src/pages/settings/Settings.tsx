@@ -2,10 +2,10 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import { Navigate, useParams } from 'react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Cookie, FileUp, KeyRound, Languages as LanguagesIcon, Pencil, Plus, RefreshCw, ShieldCheck, Trash2, UserRound, Users, Workflow, Youtube } from 'lucide-react'
+import { Cookie, FileUp, KeyRound, Languages as LanguagesIcon, Pencil, Plus, RefreshCw, ScanText, ShieldCheck, Trash2, UserRound, Users, Workflow, Youtube } from 'lucide-react'
 import { api } from '@/api/client'
 import { errMsg, onErr, qk, useMe, useSettings, useUsers } from '@/api/queries'
-import type { OpenccConfig, PipelineSettings, QualityThresholds, Role, TextSettings, User, ValidationSettings, YoutubeSettings } from '@/api/types'
+import type { OcrModel, OcrSettings, OpenccConfig, PipelineSettings, QualityThresholds, Role, TextSettings, User, ValidationSettings, YoutubeSettings } from '@/api/types'
 import { fmtDateTime, fmtRelative } from '@/lib/format'
 import { Page, PageHeader } from '@/components/layout/page'
 import { Button } from '@/components/ui/button'
@@ -435,6 +435,88 @@ function ValidationCard({ current }: { current: ValidationSettings }) {
   )
 }
 
+/* ───────────── hard-subtitle OCR ───────────── */
+const OCR_DEFAULT: OcrSettings = {
+  enabled: true, auto_when_no_captions: true, fps: 5, discovery_step_sec: 2, max_discovery_frames: 900,
+  model: 'server', cpu_model: 'mobile', keep_crops: true, min_event_conf: 0.85,
+}
+const clampN = (x: number, lo: number, hi: number) => (Number.isNaN(x) ? lo : Math.min(hi, Math.max(lo, x)))
+/** the API's ranges (OcrSettings in backend/voti/api/schemas.py); values are typed freely and clamped on save */
+const normOcr = (v: OcrSettings): OcrSettings => ({
+  ...v,
+  fps: clampN(v.fps, 1, 15),
+  discovery_step_sec: clampN(v.discovery_step_sec, 0.5, 10),
+  max_discovery_frames: Math.round(clampN(v.max_discovery_frames, 50, 5000)),
+  min_event_conf: clampN(v.min_event_conf, 0, 1),
+})
+function OcrSettingsCard({ current }: { current: OcrSettings }) {
+  const t = useT()
+  const qc = useQueryClient()
+  const [v, setV] = useState<OcrSettings>(current)
+  useEffect(() => setV(current), [current])
+  const save = useMutation({
+    mutationFn: () => api.putSetting('ocr', normOcr(v)),
+    onSuccess: () => (qc.invalidateQueries({ queryKey: qk.settings }), toast.success(tr('ocr.settings.saved'))),
+    onError: onErr,
+  })
+  const off = !v.enabled && 'pointer-events-none opacity-50'
+  const models = [
+    { value: 'server' as OcrModel, label: t('ocr.settings.server') },
+    { value: 'mobile' as OcrModel, label: t('ocr.settings.mobile') },
+  ]
+  return (
+    <Card data-shot="ocr-settings-card">
+      <CardHeader title={t('ocr.settings.title')} description={t('ocr.settings.desc')} icon={<ScanText />} />
+      <CardBody className="divide-y divide-border">
+        <Row label={t('ocr.settings.enabled')} hint={t('ocr.settings.enabledHint')}>
+          <Switch checked={v.enabled} onCheckedChange={(x) => setV({ ...v, enabled: x })} aria-label={t('ocr.settings.enabled')} />
+        </Row>
+        <Row label={t('ocr.settings.auto')} hint={t('ocr.settings.autoHint')}>
+          <div className={cn(off)}>
+            <Switch checked={v.auto_when_no_captions} onCheckedChange={(x) => setV({ ...v, auto_when_no_captions: x })} aria-label={t('ocr.settings.auto')} />
+          </div>
+        </Row>
+        <Row label={t('ocr.settings.fps')} hint={t('ocr.settings.fpsHint')}>
+          <div className={cn(off)}>
+            <NumberInput value={v.fps} onChange={(x) => setV({ ...v, fps: x ?? 0 })} step={1} min={1} max={15} suffix="fps" />
+          </div>
+        </Row>
+        <Row label={t('ocr.settings.discovery')} hint={t('ocr.settings.discoveryHint')}>
+          <div className={cn(off)}>
+            <NumberInput value={v.discovery_step_sec} onChange={(x) => setV({ ...v, discovery_step_sec: x ?? 0 })} step={0.5} min={0.5} max={10} suffix={t('ocr.settings.sec')} />
+          </div>
+        </Row>
+        <Row label={t('ocr.settings.maxDiscovery')} hint={t('ocr.settings.maxDiscoveryHint')}>
+          <div className={cn(off)}>
+            <NumberInput value={v.max_discovery_frames} onChange={(x) => setV({ ...v, max_discovery_frames: x ?? 0 })} step={50} min={50} max={5000} suffix={t('ocr.settings.frames')} />
+          </div>
+        </Row>
+        <Row label={t('ocr.settings.model')} hint={t('ocr.settings.modelHint')}>
+          <div className={cn(off)}>
+            <Segmented value={v.model} onChange={(x) => setV({ ...v, model: x })} options={models} aria-label={t('ocr.settings.model')} />
+          </div>
+        </Row>
+        <Row label={t('ocr.settings.cpuModel')} hint={t('ocr.settings.cpuModelHint')}>
+          <div className={cn(off)}>
+            <Segmented value={v.cpu_model} onChange={(x) => setV({ ...v, cpu_model: x })} options={models} aria-label={t('ocr.settings.cpuModel')} />
+          </div>
+        </Row>
+        <Row label={t('ocr.settings.keepCrops')} hint={t('ocr.settings.keepCropsHint')}>
+          <div className={cn(off)}>
+            <Switch checked={v.keep_crops} onCheckedChange={(x) => setV({ ...v, keep_crops: x })} aria-label={t('ocr.settings.keepCrops')} />
+          </div>
+        </Row>
+        <Row label={t('ocr.settings.minConf')} hint={t('ocr.settings.minConfHint')}>
+          <div className={cn(off)}>
+            <NumberInput value={v.min_event_conf} onChange={(x) => setV({ ...v, min_event_conf: x ?? 0 })} step={0.01} min={0} max={1} />
+          </div>
+        </Row>
+      </CardBody>
+      <SaveBar dirty={JSON.stringify(v) !== JSON.stringify(current)} saving={save.isPending} onSave={() => save.mutate()} onReset={() => setV(current)} />
+    </Card>
+  )
+}
+
 /* ───────────── pipeline + thresholds ───────────── */
 function PipelineTab() {
   const s = useSettings()
@@ -498,6 +580,7 @@ function PipelineTab() {
         <SaveBar dirty={JSON.stringify(th) !== JSON.stringify(s.data.quality_thresholds)} saving={saveT.isPending} onSave={() => saveT.mutate()} onReset={() => setTh(s.data.quality_thresholds)} />
       </Card>
       <ValidationCard current={s.data.validation ?? VALIDATION_DEFAULT} />
+      <OcrSettingsCard current={s.data.ocr ?? OCR_DEFAULT} />
       <TextCard current={s.data.text ?? TEXT_DEFAULT} />
     </div>
   )

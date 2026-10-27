@@ -80,7 +80,7 @@ export const api = {
     patch<T.User>(`/users/${id}`, b),
   // settings
   settings: () => get<T.Settings>('/settings'),
-  putSetting: <K extends 'youtube' | 'pipeline' | 'quality_thresholds' | 'text' | 'validation'>(key: K, value: NonNullable<T.Settings[K]>) =>
+  putSetting: <K extends 'youtube' | 'pipeline' | 'quality_thresholds' | 'text' | 'validation' | 'ocr'>(key: K, value: NonNullable<T.Settings[K]>) =>
     put<T.Settings[K]>(`/settings/${key}`, value),
   uploadCookies: (file: File) => {
     const fd = new FormData()
@@ -114,8 +114,7 @@ export const api = {
   // media
   media: (q: T.MediaQuery) => get<T.MediaList>('/media', q as Query),
   mediaDetail: (id: string) => get<T.MediaDetail>(`/media/${id}`),
-  download: (b: { media_ids?: string[]; filter?: T.MediaQuery; caption_langs?: string[]; include_auto: boolean }) =>
-    post<{ queued: number; skipped: number; skipped_reasons?: Record<string, number> }>('/media/download', b),
+  download: (b: T.DownloadRequest) => post<T.DownloadResult>('/media/download', b),
   retryMedia: (id: string) => post<T.Job>(`/media/${id}/retry`),
   reprocess: (id: string, from_step: string) => post<T.Job>(`/media/${id}/reprocess`, { from_step }),
   timeline: (id: string) => get<T.Timeline>(`/media/${id}/timeline`),
@@ -131,6 +130,10 @@ export const api = {
   recheckMediaCaptions: (id: string) => post<T.Job>(`/media/${id}/recheck-captions`),
   alignMedia: (id: string) => post<{ queued: number }>(`/media/${id}/align`),
   validateMedia: (id: string, force = false) => post<{ queued: number }>(`/media/${id}/validate`, { force }),
+  /** hard-subtitle OCR result (all events, time order) */
+  mediaOcr: (id: string) => get<T.OcrResult>(`/media/${id}/ocr`),
+  /** (re-)run OCR; 409 ocr_disabled | unsupported_platform | not_downloaded | job_active | ocr_exists (force: false) */
+  runOcr: (id: string, force = false) => post<T.Job>(`/media/${id}/ocr`, { force }),
   // segments
   mediaSegments: (id: string) => get<T.Page<T.SegmentSummary>>(`/media/${id}/segments`),
   segments: (q: T.SegmentQuery) => get<T.Page<T.SegmentSummary>>('/segments', q as Query),
@@ -175,5 +178,7 @@ export const audioUrl = {
   /** `from` (absolute media seconds): start the clip there — play from a clicked character to the sentence end */
   segment: (id: string, pad = 0.3, rev?: number, from?: number) => `${API_BASE}/audio/segments/${id}${qs({ pad, rev, from: from != null ? Math.round(from * 1000) / 1000 : undefined })}`,
   media: (id: string) => `${API_BASE}/audio/media/${id}`,
+  /** webp crop of one OCR event (≤ 96 px high) */
+  ocrCrop: (mediaId: string, idx: number) => `${API_BASE}/media/${mediaId}/ocr/crops/${idx}.webp`,
   exportFile: (exportId: string, name: string) => `${API_BASE}/exports/${exportId}/download/${name}`,
 }

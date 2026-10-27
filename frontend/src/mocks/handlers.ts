@@ -2,6 +2,7 @@ import { delay, http, HttpResponse } from 'msw'
 import type * as T from '@/api/types'
 import { buildDB, genSegments, newJob, rngFor, summary, tick, topKey, wordsFor, PIPE, type DB, type MockMedia } from './data'
 import { synthWav } from './audio'
+import { cropSvg, ocrResult } from './ocr'
 
 let db: DB
 const SESSION_KEY = 'voti-mock-logged-out'
@@ -177,7 +178,7 @@ function filterSegments(url: URL) {
 function preview(f: T.DatasetFilters): T.DatasetPreview {
   const d = getDB()
   const all = allSegments()
-  const excluded = { repeated: 0, auto_caption: 0, low_quality: 0, review: 0, speaker_cap: 0, invalid: 0 }
+  const excluded = { repeated: 0, auto_caption: 0, ocr_caption: 0, ocr_unverified: 0, low_quality: 0, review: 0, speaker_cap: 0, invalid: 0 }
   const kept: T.SegmentDetail[] = []
   for (const s of all) {
     const m = d.mediaById.get(s.media_id)!
@@ -186,6 +187,12 @@ function preview(f: T.DatasetFilters): T.DatasetPreview {
     if (f.licenses.length && !f.licenses.includes(m.license ?? 'youtube')) continue
     if (f.text_sources.length && !f.text_sources.includes(s.text_source)) {
       if (s.text_source === 'auto_caption') excluded.auto_caption++
+      if (s.text_source === 'ocr_caption') excluded.ocr_caption++
+      continue
+    }
+    // OCR text is taken only when alignment confirmed it (validity valid)
+    if (s.text_source === 'ocr_caption' && s.validity === 'unknown') {
+      excluded.ocr_unverified++
       continue
     }
     if (f.review_status.length && !f.review_status.includes(s.review_status)) {
@@ -495,13 +502,16 @@ function textState(m: MockMedia) {
     ...m.manual_caption_langs.map((l, i) => ({ id: `${m.id}-m${i}`, language: l, kind: 'manual' as const, format: 'vtt', s2t_converted: false, script: (l === 'nan' ? 'not_chinese' : 'traditional') as T.TrackScript, cues_converted: null })),
     ...m.auto_caption_langs.map((l, i) => ({ id: `${m.id}-a${i}`, language: l, kind: 'auto' as const, format: 'vtt', s2t_converted: false, script: (l === 'zh' ? 'traditional' : 'not_chinese') as T.TrackScript, cues_converted: null })),
   ]
+  const ocr = db.ocr.get(m.id)
+  if (ocr?.summary.status === 'done')
+    tracks.push({ id: ocr.trackId, language: 'zh-TW', kind: 'ocr', format: 'json', s2t_converted: !!ocr.summary.text_converted, script: 'traditional', cues_converted: Number(ocr.summary.text_converted) || null })
   if (demo || legacy) {
     tracks.unshift({ id: `${m.id}-s`, language: 'zh-CN', kind: 'manual', format: 'vtt', s2t_converted: true, script: 'simplified', cues_converted: demo ? 86 : 41 })
   }
   // demo: one Chinese auto track was never examined → converting would still change something
   const zhAuto = tracks.find((x) => x.kind === 'auto' && x.language === 'zh')
   if (demo && zhAuto) zhAuto.script = null
-  const convertible = !!db.settings.text?.convert_simplified && tracks.some((x) => x.script === 'simplified' && !x.s2t_converted || (x.script == null && x.language.startsWith('zh')))
+  const convertible = !!db.settings.text?.convert_simplified && tracks.some((x) => x.kind !== 'ocr') && tracks.some((x) => x.script === 'simplified' && !x.s2t_converted || (x.script == null && x.language.startsWith('zh')))
   return {
     tracks,
     text_converted: demo || legacy,
@@ -515,6 +525,10 @@ function speakerSummary(s: DB['speakers'][number]): T.Speaker {
   void _s, _a, _e
   return rest
 }
+
+const ocrActive = (id: string) => db.jobs.some((j) => j.media_id === id && j.kind === 'media.ocr' && (j.status === 'queued' || j.status === 'running'))
+/** full-media audio (synthetic, ≤ 10 min) per media, cached: OCR event playback seeks inside it */
+const mediaWav = new Map<string, ArrayBuffer>()
 
 // ───────────── handlers ─────────────
 export const handlers = [
@@ -587,7 +601,7 @@ export const handlers = [
     return new HttpResponse(null, { status: 204 })
   }),
   http.put(`${A}/settings/:key`, async ({ request, params }) => {
-    const k = params.key as 'youtube' | 'pipeline' | 'quality_thresholds' | 'text' | 'validation'
+    const k = params.key as 'youtube' | 'pipeline' | 'quality_thresholds' | 'text' | 'validation' | 'ocr'
     const cur = (db.settings as unknown as Record<string, object>)[k] ?? {}
     ;(db.settings as unknown as Record<string, unknown>)[k] = { ...cur, ...((await request.json()) as object) }
     return json(db.settings[k])
@@ -718,24 +732,29 @@ export const handlers = [
     return json({ ...page(xs.map(mediaSummary), url), facets: facets(f) })
   }),
   http.post(`${A}/media/download`, async ({ request }) => {
-    const b = (await request.json()) as { media_ids?: string[]; filter?: MF; include_auto: boolean }
+    const b = (await request.json()) as T.DownloadRequest & { filter?: MF }
     const targets = b.media_ids ? b.media_ids.map((id) => db.mediaById.get(id)!).filter(Boolean) : db.media.filter((m) => matchMedia(m, b.filter ?? {}))
     let queued = 0
     let skipped = 0
+    let ocr = 0
+    const cfg = db.settings.ocr!
+    const ocrOk = cfg.enabled && b.ocr !== false
+    const ocrAuto = ocrOk && (b.ocr === true || cfg.auto_when_no_captions)
     const reasons: Record<string, number> = {}
     for (const m of targets) {
-      const ok = m.has_manual_captions || (b.include_auto && m.has_auto_captions)
-      if (m.captions_empty || m.failure_code === 'members_only' || !ok || !['listed', 'detailed', 'failed'].includes(m.status)) {
-        const why = m.captions_empty ? 'empty_captions' : m.failure_code === 'members_only' ? 'members_only' : !ok ? 'no_usable_captions' : 'already_downloaded'
+      const noCc = !!m.captions_empty || !(m.has_manual_captions || (b.include_auto && m.has_auto_captions))
+      if (m.failure_code === 'members_only' || (noCc && !ocrAuto) || !['listed', 'detailed', 'failed', 'skipped'].includes(m.status)) {
+        const why = m.failure_code === 'members_only' ? 'members_only' : !['listed', 'detailed', 'failed', 'skipped'].includes(m.status) ? 'already_downloaded' : m.captions_empty ? 'empty_captions' : 'no_usable_captions'
         reasons[why] = (reasons[why] ?? 0) + 1
         skipped++
         continue
       }
+      if ((ocrOk && b.ocr === true) || (noCc && ocrAuto)) ocr++
       m.status = 'queued'
-      newJob(db, 'media.download', { media_id: m.id })
+      newJob(db, 'media.download', { media_id: m.id, payload: b.ocr == null ? {} : { ocr: b.ocr } })
       queued++
     }
-    return json({ queued, skipped, skipped_reasons: reasons })
+    return json({ queued, skipped, skipped_reasons: reasons, ocr } satisfies T.DownloadResult)
   }),
   http.get(`${A}/media/:id/timeline`, ({ params }) => {
     const m = db.mediaById.get(params.id as string)
@@ -812,6 +831,33 @@ export const handlers = [
     m.stage = b.from_step
     return json(strip(newJob(db, b.from_step, { media_id: m.id })))
   }),
+  // hard-subtitle OCR
+  http.get(`${A}/media/:id/ocr`, ({ params }) => {
+    const m = db.mediaById.get(params.id as string)
+    if (!m) return err(404, '找不到影片', 'not_found')
+    return json(ocrResult(db.ocr.get(m.id), ocrActive(m.id)))
+  }),
+  http.get(`${A}/media/:id/ocr/crops/:name`, ({ params }) => {
+    const o = db.ocr.get(params.id as string)
+    const e = o?.events[Number(String(params.name).replace(/\.webp$/, ''))]
+    if (!e) return err(404, '找不到截圖', 'not_found')
+    return new HttpResponse(cropSvg(e), { headers: { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'private, max-age=86400' } })
+  }),
+  http.post(`${A}/media/:id/ocr`, async ({ request, params }) => {
+    const m = db.mediaById.get(params.id as string)
+    if (!m) return err(404, '找不到影片', 'not_found')
+    const b = ((await request.json().catch(() => ({}))) ?? {}) as { force?: boolean }
+    if (!db.settings.ocr?.enabled) return err(409, '硬字幕 OCR 已在設定中停用', 'ocr_disabled')
+    if (m.platform !== 'youtube') return err(409, '只有 YouTube 影片可以下載影片做 OCR', 'unsupported_platform')
+    if (!['downloaded', 'processing', 'ready', 'failed'].includes(m.status)) return err(409, '影片尚未下載，請先下載（可在下載時選擇 OCR）', 'not_downloaded')
+    if (ocrActive(m.id)) return err(409, 'OCR 工作已在執行中', 'job_active')
+    const o = db.ocr.get(m.id)
+    if (o?.summary.status === 'done' && !b.force) return err(409, '已有 OCR 字幕；要重新辨識請帶 force: true', 'ocr_exists')
+    const job = newJob(db, 'media.ocr', { media_id: m.id, channel_id: m.channel?.id ?? null, payload: { rerun: true } })
+    if (o) o.summary = { ...o.summary, status: 'pending', requested: 'rerun' }
+    else db.ocr.set(m.id, { summary: { status: 'pending', requested: 'rerun', queued_at: new Date().toISOString() }, events: [], trackId: crypto.randomUUID(), videoAvailable: false })
+    return json(strip(job))
+  }),
   http.get(`${A}/media/:id`, ({ params }) => {
     const m = db.mediaById.get(params.id as string)
     if (!m) return err(404, '找不到影片', 'not_found')
@@ -842,6 +888,8 @@ export const handlers = [
         return c
       })(),
       validation_job_active: db.jobs.some((j) => j.media_id === m.id && j.kind === 'media.validate' && (j.status === 'queued' || j.status === 'running')),
+      ocr: db.ocr.get(m.id)?.summary ?? null,
+      ocr_job_active: ocrActive(m.id),
     }
     return json(det)
   }),
@@ -898,7 +946,7 @@ export const handlers = [
     if (b.corrected_text !== undefined) {
       s.corrected_text = b.corrected_text
       s.text = b.corrected_text ?? s.original_text
-      if (b.corrected_text && b.corrected_text !== s.original_text) s.text_source = 'human_revision'
+      if (b.corrected_text && b.corrected_text !== s.original_text && s.text_source !== 'ocr_caption') s.text_source = 'human_revision'
     }
     if (b.review_status) {
       s.review_status = b.review_status
@@ -934,6 +982,16 @@ export const handlers = [
   }),
 
   // audio
+  http.get(`${A}/audio/media/:id`, ({ params }) => {
+    const m = db.mediaById.get(params.id as string)
+    if (!m) return err(404, '找不到正規化音訊（影片可能尚未處理）', 'audio_missing')
+    let wav = mediaWav.get(m.id)
+    if (!wav) {
+      wav = synthWav(m.id.charCodeAt(0) * 131 + m.id.charCodeAt(3), Math.min(600, m.duration_sec ?? 60), m.q?.snr_mean ?? 20, 150, 600)
+      mediaWav.set(m.id, wav)
+    }
+    return new HttpResponse(wav.slice(0), { headers: { 'Content-Type': 'audio/wav', 'Content-Length': String(wav.byteLength), 'Accept-Ranges': 'none' } })
+  }),
   http.get(`${A}/audio/segments/:id`, ({ params, request }) => {
     const s = db.segById.get(params.id as string)
     const u = new URL(request.url).searchParams

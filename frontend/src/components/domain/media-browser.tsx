@@ -249,6 +249,7 @@ function ActiveChips({ ctl, playlistTitle }: { ctl: ReturnType<typeof useMediaFi
 }
 
 /* ───────────── download dialog ───────────── */
+type OcrChoice = 'auto' | 'always' | 'never'
 export function DownloadDialog({
   open,
   onOpenChange,
@@ -279,16 +280,20 @@ export function DownloadDialog({
   }, [sample])
   const [picked, setPicked] = useState<string[]>([])
   const [includeAuto, setIncludeAuto] = useState(false)
+  /** hard-subtitle OCR: null = settings decide (OCR when no usable captions), true = always, false = never */
+  const [ocr, setOcr] = useState<OcrChoice>('auto')
   useEffect(() => {
     if (open) {
       // default: every Chinese / Taiwanese / Hakka track present; none → let the server pick (it prefers zh-TW)
       setPicked(langs.filter(isPreferredCaptionLang))
       setIncludeAuto(!!query.include_auto)
+      setOcr('auto')
     }
   }, [open, langs, query.include_auto])
   const withManual = selection.ids ? sample.filter((m) => selection.ids!.includes(m.id) && m.has_manual_captions).length : (manualCount ?? null)
   const m = useMutation({
-    mutationFn: () => api.download({ media_ids: selection.ids, filter: selection.filter, caption_langs: picked, include_auto: includeAuto }),
+    mutationFn: () =>
+      api.download({ media_ids: selection.ids, filter: selection.filter, caption_langs: picked, include_auto: includeAuto, ocr: ocr === 'auto' ? null : ocr === 'always' }),
     onSuccess: (r) => {
       if (r.queued === 0) {
         const known = ['already_downloaded', 'no_usable_captions', 'members_only', 'not_found', 'empty_captions'] as const
@@ -298,7 +303,8 @@ export function DownloadDialog({
         toast.error(t('collect.media.dl.nothingQueued'), { description: reasons.join(t('common.listSep')) || undefined })
         return
       }
-      toast.success(t('collect.media.dl.toast', r.queued), { description: r.skipped ? t('collect.media.dl.toastSkipped', r.skipped) : t('collect.media.dl.toastHint') })
+      const desc = [r.ocr ? t('ocr.download.toastOcr', r.ocr) : null, r.skipped ? t('collect.media.dl.toastSkipped', r.skipped) : null].filter(Boolean).join(t('common.listSep'))
+      toast.success(t('collect.media.dl.toast', r.queued), { description: desc || t('collect.media.dl.toastHint') })
       // refresh every view of the affected videos so progress shows without a page reload
       qc.invalidateQueries({ queryKey: ['media'] })
       qc.invalidateQueries({ queryKey: ['mediaDetail'] })
@@ -322,7 +328,7 @@ export function DownloadDialog({
           <Button variant="secondary" onClick={() => onOpenChange(false)}>
             {t('common.cancel')}
           </Button>
-          <Button variant="primary" loading={m.isPending} onClick={() => m.mutate()} disabled={!picked.length && !includeAuto}>
+          <Button variant="primary" loading={m.isPending} onClick={() => m.mutate()} disabled={!picked.length && !includeAuto && ocr !== 'always'}>
             <Download /> {t('collect.media.dl.start')}
           </Button>
         </>
@@ -367,6 +373,13 @@ export function DownloadDialog({
             </p>
           )}
         </div>
+        <Field label={t('ocr.download.label')} htmlFor="dl-ocr" hint={ocr === 'always' ? t('ocr.download.hintAlways') : ocr === 'never' ? t('ocr.download.hintNever') : t('ocr.download.hintAuto')}>
+          <Select id="dl-ocr" data-shot="dl-ocr" value={ocr} onChange={(e) => setOcr(e.target.value as OcrChoice)}>
+            <option value="auto">{t('ocr.download.auto')}</option>
+            <option value="always">{t('ocr.download.always')}</option>
+            <option value="never">{t('ocr.download.never')}</option>
+          </Select>
+        </Field>
       </div>
     </Dialog>
   )

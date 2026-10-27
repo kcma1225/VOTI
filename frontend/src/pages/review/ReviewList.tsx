@@ -9,6 +9,7 @@ import { qk, useChannels, useSegment, useSegments } from '@/api/queries'
 import type { SegmentSummary } from '@/api/types'
 import { fmtDb, fmtMos, fmtSec, fmtTimestamp } from '@/lib/format'
 import { flagLabel, textSource } from '@/lib/labels'
+import { OcrSourceBadge, OcrUnverifiedTag, isOcrSource, isOcrUnverified } from '@/components/domain/ocr'
 import { cn } from '@/lib/cn'
 import { useT } from '@/i18n'
 import { useIsDesktop } from '@/hooks/useMedia'
@@ -76,6 +77,7 @@ function MoreFilters({ p, set, stacked }: { p: ReviewParams; set: ReturnType<typ
           <option value="">{t('process.review.allSources')}</option>
           <option value="manual_caption">{textSource.manual_caption}</option>
           <option value="auto_caption">{textSource.auto_caption}</option>
+          <option value="ocr_caption">{textSource.ocr_caption}</option>
           <option value="human_revision">{textSource.human_revision}</option>
         </Select>
       </label>
@@ -240,10 +242,12 @@ function SegmentRow({
             <span className="shrink-0 truncate">{s.channel_title}</span>
             <span className="hidden shrink-0 font-mono sm:inline">· {fmtTimestamp(s.start_sec).replace(/\.\d+$/, '')}</span>
           </span>
-          {(s.flags.length > 0 || s.text_source === 'auto_caption' || s.validity === 'invalid' || s.validity_source === 'manual') && (
+          {(s.flags.length > 0 || s.text_source === 'auto_caption' || isOcrSource(s) || s.validity === 'invalid' || s.validity_source === 'manual') && (
             <span className="mt-1 flex flex-wrap gap-1">
               <ValidityBadge s={s} className="h-auto min-h-5 text-[11px]" />
               {s.text_source === 'auto_caption' && <Tag className="border-warning/30 text-warning-fg">{textSource.auto_caption}</Tag>}
+              {isOcrSource(s) && <OcrSourceBadge tag />}
+              {isOcrUnverified(s) && <OcrUnverifiedTag />}
               {s.flags.map((f) => (
                 <Tag key={f}>{flagLabel[f] ?? f}</Tag>
               ))}

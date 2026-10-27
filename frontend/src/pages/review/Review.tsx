@@ -47,6 +47,7 @@ import { KaraokeText, toUnits } from '@/components/domain/karaoke'
 import { speakerColor, speakerVars, useSpeakerIndex } from '@/components/domain/speaker-color'
 import { LIST_LIMIT, setListReturn, toSegmentQuery, useReviewParams, type ReviewNavState } from './params'
 import { canGoBack } from '@/hooks/useBack'
+import { OcrCropsPanel, OcrSourceBadge, OcrUnverifiedTag, isOcrSource, isOcrUnverified } from '@/components/domain/ocr'
 
 const NUDGE = 0.05
 
@@ -634,15 +635,17 @@ export default function Review() {
           <Card>
             <CardBody className="space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <label htmlFor="seg-text" className="flex items-center gap-2 text-[13px] font-medium">
+                <label htmlFor="seg-text" className="flex min-w-0 flex-wrap items-center gap-2 text-[13px] font-medium">
                   {t('process.review.text')}
-                  {s && <Badge tone={s.text_source === 'auto_caption' ? 'warning' : s.text_source === 'human_revision' ? 'success' : 'neutral'}>{textSource[s.text_source] ?? s.text_source}</Badge>}
+                  {s && (isOcrSource(s) ? <OcrSourceBadge /> : <Badge tone={s.text_source === 'auto_caption' ? 'warning' : s.text_source === 'human_revision' ? 'success' : 'neutral'}>{textSource[s.text_source] ?? s.text_source}</Badge>)}
+                  {s && isOcrUnverified(s) && <OcrUnverifiedTag />}
                   {s?.flags.includes('s2t_converted') && <Badge tone="info">{flagLabel.s2t_converted}</Badge>}
                 </label>
                 <span className="hidden text-[11px] text-fg-3 sm:inline">
                   <Kbd>E</Kbd> {t('process.review.editHint')} · <Kbd>Ctrl</Kbd>+<Kbd>Enter</Kbd> {t('process.review.saveHint')}
                 </span>
               </div>
+              {s && isOcrSource(s) && <OcrCropsPanel s={s} />}
               <Textarea
                 id="seg-text"
                 ref={textRef}

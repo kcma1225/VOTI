@@ -64,6 +64,19 @@ export interface ValidationSettings {
   align_min_score: number
   align_min_units: number
 }
+/** hard-subtitle OCR (settings key `ocr`) */
+export type OcrModel = 'server' | 'mobile'
+export interface OcrSettings {
+  enabled: boolean
+  auto_when_no_captions: boolean
+  fps: number
+  discovery_step_sec: number
+  max_discovery_frames: number
+  model: OcrModel
+  cpu_model: OcrModel
+  keep_crops: boolean
+  min_event_conf: number
+}
 export interface CookiesState {
   present: boolean
   updated_at: ISODate | null
@@ -74,6 +87,7 @@ export interface Settings {
   quality_thresholds: QualityThresholds
   text?: TextSettings
   validation?: ValidationSettings
+  ocr?: OcrSettings
   cookies: CookiesState
 }
 
@@ -100,6 +114,7 @@ export type JobKind =
   | 'media.align'
   | 'media.validate'
   | 'channel.align'
+  | 'media.ocr'
 
 export interface Job {
   id: UUID
@@ -329,18 +344,152 @@ export interface MediaDetail extends Omit<MediaSummary, 'quality'> {
   /** POST /media/{id}/convert-text would still change something */
   text_convertible?: boolean
   text_conversion?: TextConversion | null
+  /** metadata.ocr: hard-subtitle OCR status/summary (null = never requested) */
+  ocr?: OcrSummary | null
+  /** a media.ocr job (or its video-only download) is queued/running */
+  ocr_job_active?: boolean
 }
 export type TrackScript = 'simplified' | 'traditional' | 'neutral' | 'mixed' | 'unknown' | 'not_chinese'
 export interface Track {
   id: UUID
   language: string
-  kind: 'manual' | 'auto' | 'translated' | 'uploaded'
+  kind: 'manual' | 'auto' | 'translated' | 'uploaded' | 'ocr'
   format?: string
   s2t_converted?: boolean
   /** null = never examined */
   script?: TrackScript | null
   cues_converted?: number | null
 }
+// ─────────────── hard-subtitle OCR ───────────────
+export type OcrStatus = 'pending' | 'done' | 'no_subtitles' | 'failed'
+export type OcrRejectReason =
+  | 'no_speech'
+  | 'little_speech'
+  | 'rate_mismatch'
+  | 'static_text'
+  | 'concurrent_tracks'
+  | 'low_ocr_confidence'
+  | 'too_short_text'
+  | 'too_long'
+  | 'too_short'
+export interface OcrStyle {
+  id: number
+  cy: number
+  h: number
+  fill: [number, number, number] | number[]
+  edge: [number, number, number] | number[]
+  accepted?: boolean
+  reasons?: string[]
+  stats?: Record<string, unknown>
+}
+export interface OcrStats {
+  frame_size?: number[]
+  duration?: number
+  discovery_step_sec?: number
+  discovery_frames?: number
+  discovery_boxes?: number
+  styles_found?: number
+  styles_accepted?: number
+  tracks?: number
+  tracking_frames?: number
+  ocr_frames?: number
+  reused_frames?: number
+  discovery_sec?: number
+  tracking_sec?: number
+  events?: number
+  paired?: number
+  rejected?: number
+  [k: string]: unknown
+}
+/** Media.metadata.ocr (= MediaDetail.ocr, OcrOut.summary). Every field but status may be missing (pending). */
+export interface OcrSummary {
+  status: OcrStatus
+  requested?: 'manual' | 'auto_no_captions' | 'rerun' | null
+  queued_at?: ISODate | null
+  video_bytes?: number | null
+  video_format?: string | null
+  at?: ISODate | null
+  model?: string | null
+  device?: string | null
+  fps?: number | null
+  styles?: OcrStyle[]
+  tracks?: number
+  events?: number
+  paired?: number
+  rejected?: Partial<Record<OcrRejectReason | string, number>>
+  paired_sec?: number
+  crops?: number
+  text_converted?: number | boolean
+  video_deleted?: boolean
+  elapsed_sec?: number
+  stats?: OcrStats
+  speech_source?: string | null
+  track_id?: UUID | null
+  error_code?: string | null
+  error?: string | null
+  [k: string]: unknown
+}
+export interface OcrEvent {
+  idx: number
+  cue_id: UUID | null
+  start: number
+  end: number
+  /** OCR consensus as read */
+  raw_text: string
+  /** cleaned (editor notes removed, 「」 fixed) + Simplified → Traditional */
+  text: string
+  s2t_converted: boolean
+  track: number
+  style: number
+  /** [x0, y0, x1, y1] in OcrResult.frame_size px */
+  bbox: number[]
+  lines: number
+  /** mean recognition confidence of the voting frames */
+  conf: number
+  n_frames: number
+  /** share of readings equal to the consensus */
+  agreement: number
+  status: 'paired' | 'rejected'
+  reason: OcrRejectReason | string | null
+  speech_sec: number
+  paired_start: number | null
+  paired_end: number | null
+  /** /api/media/{id}/ocr/crops/{idx}.webp */
+  crop_url: string | null
+}
+/** GET /media/{id}/ocr */
+export interface OcrResult {
+  status: 'none' | OcrStatus
+  /** metadata.ocr ({} when never requested) */
+  summary: Partial<OcrSummary>
+  model: string | null
+  frame_size: number[] | null
+  fps: number | null
+  styles: OcrStyle[]
+  tracks: { track: number; styles: number[]; band: number[] }[]
+  events: OcrEvent[]
+  total: number
+  job_active: boolean
+  /** the temporary OCR video is still stored (re-run without re-download) */
+  video_available: boolean
+}
+/** POST /media/download */
+export interface DownloadRequest {
+  media_ids?: UUID[]
+  filter?: MediaQuery
+  caption_langs?: string[]
+  include_auto: boolean
+  /** hard-subtitle OCR: true = always, false = never, null/absent = settings.ocr.auto_when_no_captions */
+  ocr?: boolean | null
+}
+export interface DownloadResult {
+  queued: number
+  skipped: number
+  skipped_reasons?: Record<string, number>
+  /** of `queued`: media that will also download video for OCR */
+  ocr?: number
+}
+
 export interface TextConversion {
   converted: boolean
   cues_converted?: number
@@ -430,7 +579,7 @@ export interface Timeline {
 // ─────────────── segments ───────────────
 export type ReviewStatus = 'unchecked' | 'passed' | 'needs_fix' | 'excluded'
 export type SpeakerState = 'unknown' | 'single' | 'multiple' | 'overlap'
-export type TextSource = 'manual_caption' | 'auto_caption' | 'human_revision' | 'none' | string
+export type TextSource = 'manual_caption' | 'auto_caption' | 'ocr_caption' | 'uploaded' | 'human_revision' | 'none' | string
 export type Validity = 'valid' | 'invalid' | 'unknown'
 export type InvalidReason = 'language_mismatch' | 'text_mismatch' | 'manual'
 export interface SegmentSummary {
@@ -680,7 +829,8 @@ export interface DatasetPreview {
   channels: number
   by_channel: { channel_id: UUID; title: string; total_sec: number; segment_count?: number }[]
   by_sex: Dist
-  excluded: { repeated: number; auto_caption: number; low_quality: number; [k: string]: number }
+  /** ocr_caption: OCR segments left out because the source was not chosen; ocr_unverified: OCR segments with validity unknown */
+  excluded: { repeated: number; auto_caption: number; low_quality: number; ocr_caption?: number; ocr_unverified?: number; [k: string]: number | undefined }
 }
 export type ExportStatus = 'queued' | 'running' | 'completed' | 'failed'
 export interface DatasetExport {

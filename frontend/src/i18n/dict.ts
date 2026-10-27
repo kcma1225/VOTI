@@ -9,6 +9,7 @@ import * as process from './messages/process'
 import * as people from './messages/people'
 import * as output from './messages/output'
 import * as validate from './messages/validate'
+import * as ocr from './messages/ocr'
 
 export const zh = {
   common: common.zh,
@@ -25,6 +26,8 @@ export const zh = {
   output: output.zh,
   /** Caption ↔ audio validation (invalid segments) */
   validate: validate.zh,
+  /** Hard-subtitle OCR (burned-in subtitles) */
+  ocr: ocr.zh,
 }
 
 export const en: Shape<typeof zh> = {
@@ -37,4 +40,5 @@ export const en: Shape<typeof zh> = {
   people: people.en,
   output: output.en,
   validate: validate.en,
+  ocr: ocr.en,
 }

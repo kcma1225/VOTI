@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { AlertTriangle, Download, PackageOpen, RotateCcw, Save } from 'lucide-react'
+import { AlertTriangle, Download, PackageOpen, RotateCcw, Save, ScanText } from 'lucide-react'
 import { api } from '@/api/client'
 import { onErr, qk, useChannels, useDataset, useExports } from '@/api/queries'
 import type { DatasetFilters, DatasetPreview, ReviewStatus, SpeakerState } from '@/api/types'
@@ -88,8 +88,8 @@ function PreviewPanel({ p, loading, error }: { p?: DatasetPreview; loading: bool
         <Skeleton className="h-24" />
       </div>
     )
-  const ex = Object.entries(p.excluded).filter(([, v]) => v > 0)
-  const exLabel: Record<string, string> = { ...msgs().output.builder.excluded, invalid: t('validate.excludedInvalid') }
+  const ex = Object.entries(p.excluded).filter((x): x is [string, number] => (x[1] ?? 0) > 0)
+  const exLabel: Record<string, string> = { ...msgs().output.builder.excluded, invalid: t('validate.excludedInvalid'), ocr_caption: t('ocr.dataset.excludedOcr'), ocr_unverified: t('ocr.dataset.excludedUnverified') }
   return (
     <div className={cn('transition-opacity', loading && 'opacity-60')}>
       <CardBody className="space-y-5">
@@ -205,6 +205,7 @@ export default function DatasetBuilder() {
     )
 
   const includeAuto = f.text_sources.includes('auto_caption')
+  const includeOcr = f.text_sources.includes('ocr_caption')
   const p = preview.data
   return (
     <Page wide>
@@ -280,6 +281,19 @@ export default function DatasetBuilder() {
                 {includeAuto && (
                   <p className="mt-2 flex items-start gap-1.5 text-xs text-warning-fg">
                     <AlertTriangle className="mt-0.5 size-3.5 shrink-0" /> {t('output.builder.autoWarning')}
+                  </p>
+                )}
+              </div>
+              <div data-shot="dataset-ocr-source" className={cn('rounded-xl border p-3.5', includeOcr ? 'border-ocr/40 bg-ocr-soft/50' : 'border-border')}>
+                <Switch checked={includeOcr} onCheckedChange={() => upd({ text_sources: toggle(f.text_sources, 'ocr_caption') })} label={t('ocr.dataset.include')} description={t('ocr.dataset.includeDesc')} />
+                {includeOcr && (
+                  <p className="mt-2 flex items-start gap-1.5 text-xs text-ocr-fg">
+                    <ScanText className="mt-0.5 size-3.5 shrink-0" /> {t('ocr.dataset.warning')}
+                  </p>
+                )}
+                {!includeOcr && (p?.excluded.ocr_caption ?? 0) > 0 && (
+                  <p className="mt-2 text-xs text-fg-3">
+                    {t('ocr.dataset.excludedOcr')}：{t('output.builder.segmentsN', p!.excluded.ocr_caption!)}
                   </p>
                 )}
               </div>

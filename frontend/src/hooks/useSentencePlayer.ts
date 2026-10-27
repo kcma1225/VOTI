@@ -19,6 +19,8 @@ export interface SentenceRef {
 export function useSentencePlayer() {
   const el = useRef<HTMLAudioElement | null>(null)
   const offset = useRef(0)
+  /** playRange(): the media-time window being played from the full media audio (null = a sentence clip) */
+  const range = useRef<{ start: number; end: number; raf: number } | null>(null)
   /** mock screenshots only: a fixed playhead (headless audio can't be relied on to play or seek) */
   const frozen = useRef<number | null>(null)
   const [state, setState] = useState<{ id: string | null; status: Status }>({ id: null, status: 'idle' })
@@ -37,13 +39,30 @@ export function useSentencePlayer() {
     return el.current
   }, [])
 
-  useEffect(() => () => el.current?.pause(), [])
+  useEffect(
+    () => () => {
+      el.current?.pause()
+      if (range.current) cancelAnimationFrame(range.current.raf)
+    },
+    [],
+  )
+  /** leave range mode (a sentence clip or stop follows) */
+  const endRange = useCallback(() => {
+    if (range.current) cancelAnimationFrame(range.current.raf)
+    range.current = null
+  }, [])
 
   const play = useCallback(
     (seg: SentenceRef, at?: number) => {
       const a = audio()
-      const s = cur.current
+      let s = cur.current
       frozen.current = null
+      if (range.current) {
+        // leaving a media time range: the next clip loads from scratch
+        endRange()
+        a.pause()
+        s = { id: null, status: 'idle' }
+      }
       const failed = (e: unknown) => {
         // a newer play() interrupting this one is not an error
         if (e instanceof DOMException && e.name === 'AbortError') return
@@ -84,13 +103,67 @@ export function useSentencePlayer() {
       }
       load(from != null && from > seg.start_sec + 0.01 ? from : null)
     },
-    [audio],
+    [audio, endRange],
+  )
+  /** Play [start, end] (absolute media seconds) of the full media audio under `key` (e.g. an OCR event), for time
+   * ranges that are not a segment. Toggles like play(); clock() stays absolute media time. */
+  const playRange = useCallback(
+    (key: string, mediaId: string, start: number, end: number) => {
+      const a = audio()
+      const s = cur.current
+      frozen.current = null
+      if (s.id === key && s.status !== 'idle' && range.current) {
+        if (s.status === 'playing' || s.status === 'loading') {
+          a.pause()
+          setState({ id: key, status: 'paused' })
+        } else {
+          if (a.currentTime >= range.current.end - 0.05) a.currentTime = range.current.start
+          void a.play().catch(() => setState({ id: null, status: 'idle' }))
+        }
+        return
+      }
+      endRange()
+      a.pause()
+      offset.current = 0
+      const src = audioUrl.media(mediaId)
+      if (!a.src.endsWith(src)) a.src = src
+      const r = { start, end, raf: 0 }
+      range.current = r
+      setState({ id: key, status: 'loading' })
+      const stopAtEnd = () => {
+        if (range.current !== r) return
+        if (!a.paused && a.currentTime >= r.end) {
+          a.pause()
+          range.current = null
+          setState({ id: null, status: 'idle' })
+          return
+        }
+        r.raf = requestAnimationFrame(stopAtEnd)
+      }
+      const go = () => {
+        if (range.current !== r) return
+        a.currentTime = start
+        void a
+          .play()
+          .then(() => {
+            if (range.current === r) r.raf = requestAnimationFrame(stopAtEnd)
+          })
+          .catch((e) => {
+            if (e instanceof DOMException && e.name === 'AbortError') return
+            setState((x) => (x.id === key ? { id: key, status: 'paused' } : x))
+          })
+      }
+      if (a.readyState >= 1) go()
+      else a.addEventListener('loadedmetadata', go, { once: true })
+    },
+    [audio, endRange],
   )
   const stop = useCallback(() => {
     frozen.current = null
+    endRange()
     el.current?.pause()
     setState({ id: null, status: 'idle' })
-  }, [])
+  }, [endRange])
   const clock = useCallback(() => (frozen.current != null ? frozen.current : el.current ? offset.current + el.current.currentTime : null), [])
 
   // Screenshot hook in mock builds: freeze the active sentence at a fraction of its length.
@@ -104,7 +177,8 @@ export function useSentencePlayer() {
         if (!a || !id) return false
         if (a.readyState < 1) await new Promise((r) => a.addEventListener('loadedmetadata', r, { once: true }))
         a.pause()
-        frozen.current = offset.current + (Number.isFinite(a.duration) ? a.duration : 0) * frac
+        const rg = range.current
+        frozen.current = rg ? rg.start + (rg.end - rg.start) * frac : offset.current + (Number.isFinite(a.duration) ? a.duration : 0) * frac
         setState({ id, status: 'paused' })
         return true
       },
@@ -114,5 +188,5 @@ export function useSentencePlayer() {
     }
   }, [])
 
-  return { ...state, play, stop, clock }
+  return { ...state, play, playRange, stop, clock }
 }

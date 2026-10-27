@@ -1,9 +1,9 @@
 /* Synthesises a speech-like 16 kHz mono WAV (voiced harmonics with syllable envelope + noise). */
 import { rngFor } from './data'
 
-export function synthWav(seed: number, durSec: number, snrDb = 20, f0Base = 140): ArrayBuffer {
+export function synthWav(seed: number, durSec: number, snrDb = 20, f0Base = 140, maxSec = 30): ArrayBuffer {
   const sr = 16000
-  const n = Math.max(1, Math.round(Math.min(30, durSec) * sr))
+  const n = Math.max(1, Math.round(Math.min(maxSec, durSec) * sr))
   const r = rngFor(seed)
   const buf = new ArrayBuffer(44 + n * 2)
   const v = new DataView(buf)

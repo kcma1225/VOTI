@@ -43,6 +43,10 @@ export const zh = {
     cross_site: '拒絕跨站請求',
     text_conversion_disabled: '簡轉繁已在設定中停用（設定 → 處理流程 → 字幕文字）',
     alignment_unavailable: '逐字對齊服務目前無法使用',
+    ocr_disabled: '畫面字幕 OCR 已在設定中停用',
+    ocr_exists: '已有 OCR 結果',
+    ocr_video_missing: 'OCR 用的影片已刪除，請用「重新執行 OCR」',
+    unsupported_platform: '只有 YouTube 影片可以下載畫面做 OCR',
   },
   status: {
     400: '請求錯誤',
@@ -99,6 +103,10 @@ export const en: Shape<typeof zh> = {
     cross_site: 'Cross-site request rejected.',
     text_conversion_disabled: 'Simplified → Traditional conversion is turned off in Settings → Pipeline → Caption text.',
     alignment_unavailable: 'Word alignment is not available right now.',
+    ocr_disabled: 'On-screen subtitle OCR is turned off in Settings.',
+    ocr_exists: 'An OCR result already exists.',
+    ocr_video_missing: 'The OCR video was deleted; use “Re-run OCR”.',
+    unsupported_platform: 'Only YouTube videos can be downloaded for OCR.',
   },
   status: {
     400: 'Bad request.',

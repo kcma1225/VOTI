@@ -15,6 +15,7 @@ export const qk = {
   mediaDetail: (id: string) => ['mediaDetail', id] as const,
   timeline: (id: string) => ['timeline', id] as const,
   mediaWords: (id: string) => ['mediaWords', id] as const,
+  mediaOcr: (id: string) => ['mediaOcr', id] as const,
   mediaSpeakers: (id: string) => ['mediaSpeakers', id] as const,
   mediaSegments: (id: string) => ['segments', 'media', id] as const,
   neighbors: (id: string, q: T.SegmentQuery) => ['neighbors', id, q] as const,
@@ -131,6 +132,35 @@ export const useMediaWords = (id: string, enabled = true) =>
     staleTime: 60_000,
     refetchInterval: (q) => (q.state.data?.job_active || q.state.data?.status.pending ? 5000 : false),
   })
+/** Hard-subtitle OCR result of a media (events + crops). Polls while an OCR job is queued/running. */
+export const useMediaOcr = (id: string | undefined, enabled = true) =>
+  useQuery({
+    queryKey: qk.mediaOcr(id ?? ''),
+    queryFn: () => api.mediaOcr(id!),
+    enabled: enabled && !!id,
+    staleTime: 60_000,
+    refetchInterval: (q) => (q.state.data?.job_active || q.state.data?.status === 'pending' ? 5000 : false),
+  })
+const OCR_ERRORS = ['not_downloaded', 'ocr_exists', 'job_active', 'ocr_disabled', 'unsupported_platform'] as const
+/** OCR-specific error text (both languages) for POST /media/{id}/ocr, else the generic mapping. */
+export function ocrErrMsg(e: unknown): string {
+  if (e instanceof ApiError && (OCR_ERRORS as readonly string[]).includes(e.code)) return t(`ocr.errors.${e.code as (typeof OCR_ERRORS)[number]}`)
+  return errMsg(e)
+}
+/** POST /media/{id}/ocr — run (force: re-run) hard-subtitle OCR. */
+export function useRunOcr(mediaId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (force: boolean) => api.runOcr(mediaId, force),
+    onSuccess: (_j, force) => {
+      toast.success(force ? t('ocr.rerunQueued') : t('ocr.runQueued'), { description: t('ocr.queuedHint') })
+      qc.invalidateQueries({ queryKey: qk.mediaDetail(mediaId) })
+      qc.invalidateQueries({ queryKey: qk.mediaOcr(mediaId) })
+      qc.invalidateQueries({ queryKey: ['jobs'] })
+    },
+    onError: (e) => toast.error(ocrErrMsg(e)),
+  })
+}
 export const useNeighbors = (id: string | undefined, q: T.SegmentQuery) =>
   useQuery({ queryKey: qk.neighbors(id ?? '', q), queryFn: () => api.neighbors(id!, q), enabled: !!id, retry: false, placeholderData: keepPreviousData })
 /** Diarized speakers of a media (cards + colour order). An older API without the endpoint yields []. */

@@ -42,9 +42,13 @@ export function jobPhaseText(job: Pick<Job, 'phase' | 'message'>): string {
 }
 
 const PIPELINE: JobKind[] = ['media.download', 'media.normalize', 'media.quality', 'media.diarize', 'media.segment', 'media.embed', 'media.profile', 'media.fingerprint']
-/** Media pipeline steps in order, with short labels in the active language. */
-export const pipelineSteps = (): { kind: JobKind; short: string }[] =>
-  PIPELINE.map((kind) => ({ kind, short: L().pipelineShort[kind as keyof ReturnType<typeof L>['pipelineShort']] }))
+/** Media pipeline steps in order, with short labels in the active language. `ocr`: include the hard-subtitle OCR
+ * step (runs between diarize and segment only for media with an OCR video). */
+export const pipelineSteps = (o?: { ocr?: boolean }): { kind: JobKind; short: string }[] =>
+  (o?.ocr ? PIPELINE.flatMap((k) => (k === 'media.diarize' ? [k, 'media.ocr' as JobKind] : [k])) : PIPELINE).map((kind) => ({
+    kind,
+    short: L().pipelineShort[kind as keyof ReturnType<typeof L>['pipelineShort']],
+  }))
 
 export const queueLabel: Record<string, string> = localized(() => L().queue)
 

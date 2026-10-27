@@ -81,8 +81,12 @@ async function discover(page) {
     const invalidSeg = (inv.find((s) => s.invalid_reason === 'language_mismatch') ?? inv[0])?.id
     // uploader captions that turned out empty
     const emptyCap = ((await j('/api/media?captions=empty&include_auto=true&limit=1')).items ?? [])[0]?.id
+    // hard-subtitle OCR: a segment whose text was read from burned-in subtitles (and its media)
+    const ocrSegs = (await j('/api/segments?text_source=ocr_caption&limit=20')).items ?? []
+    const ocrSeg = (ocrSegs[2] ?? ocrSegs[0])?.id
+    const ocrMedia = ocrSegs[0]?.media_id
     return {
-      invalidSeg, emptyCap,
+      invalidSeg, emptyCap, ocrSeg, ocrMedia,
       ch: listed[0]?.id, ch2: listed[1]?.id, media: media[0]?.id, failed: failed[0]?.id, speaker: (sp[1] ?? sp[0])?.id, dataset: (ds.items ?? ds)[0]?.id,
       queued: ch.find((c) => c.list_status === 'queued' || c.list_status === 'new')?.id, listing: ch.find((c) => c.list_status === 'listing' && !c.last_listed_at)?.id,
       segment: seg[0]?.id, unaligned,
@@ -161,8 +165,32 @@ function screens(ids, lang) {
       await p.waitForSelector('[data-shot="range-hint"]', { timeout: 4000 })
       void boxes
     } },
+    // hard-subtitle OCR
+    { name: '60-ocr-media-header', path: `/media/${ids.ocrMedia}`, act: async (p) => { await p.waitForSelector('[data-shot="ocr-header-badge"]'); await p.evaluate(() => window.scrollTo(0, 0)) } },
+    { name: '61-ocr-media-panel', path: `/media/${ids.ocrMedia}`, act: async (p) => { await p.waitForSelector('[data-ocr-event]'); await scrollTop(p, '[data-shot="media-ocr"]') } },
+    { name: '62-ocr-media-events', path: `/media/${ids.ocrMedia}`, act: async (p) => { await p.waitForSelector('[data-ocr-event]'); await waitImages(p); await centerOn(p, '[data-ocr-event]:nth-child(6)') } },
+    { name: '63-ocr-media-reason-filter', path: `/media/${ids.ocrMedia}`, act: async (p) => { await p.locator('[data-ocr-reason]').first().click(); await p.waitForTimeout(300); await waitImages(p); await scrollTop(p, '[data-ocr-reason]') } },
+    { name: '64-ocr-media-playing', path: `/media/${ids.ocrMedia}`, act: async (p) => { const row = p.locator('[data-ocr-event]').nth(3); await row.scrollIntoViewIfNeeded(); await row.click(); await p.waitForTimeout(1200); if (!(await p.evaluate(() => window.__votiPlayer?.freeze(0.45)))) throw new Error('player hook unavailable'); await waitImages(p); await centerOn(p, '[data-ocr-event].hl-row-active') } },
+    { name: '65-ocr-rerun-confirm', path: `/media/${ids.ocrMedia}`, act: async (p) => { await p.locator('[data-shot="ocr-run"]').first().click(); await p.waitForSelector('[role="dialog"]') } },
+    { name: '66-ocr-start-card', path: `/media/${ids.media}`, act: async (p) => { await p.waitForSelector('[data-shot="media-ocr-start"]'); await centerOn(p, '[data-shot="media-ocr-start"]') } },
+    { name: '67-ocr-review-detail', path: `/review/${ids.ocrSeg}?status=all&source=ocr_caption`, act: async (p, vp) => { await p.waitForSelector('[data-shot="review-ocr-crops"] img'); await waitImages(p); if (vp === 'phone') await centerOn(p, '[data-shot="review-ocr-crops"]') } },
+    { name: '68-ocr-review-list', path: '/review?status=all&source=ocr_caption' },
+    { name: '69-ocr-download-dialog', path: `/channels/${ids.ch}`, act: async (p) => { await p.locator('[data-shot="select-all-page"]:visible').first().click(); await p.locator('[data-shot="open-download"]').first().click(); await p.waitForSelector('[data-shot="dl-ocr"]'); await p.evaluate(() => document.querySelector('[data-shot="dl-ocr"]')?.scrollIntoView({ block: 'end' })) } },
+    { name: '70-ocr-settings', path: '/settings/pipeline', act: async (p) => { await scrollTop(p, '[data-shot="ocr-settings-card"]') } },
+    { name: '71-ocr-dataset-off', path: '/datasets/new', act: async (p) => { await p.waitForTimeout(600); await centerOn(p, '[data-shot="dataset-ocr-source"]') } },
+    { name: '72-ocr-dataset-on', path: '/datasets/new', act: async (p) => { await p.locator('[data-shot="dataset-ocr-source"] button[role="switch"]').click(); await p.waitForTimeout(900); await centerOn(p, '[data-shot="dataset-ocr-source"]') } },
     { name: '33-add-video-new-channel', path: '/sources/new', act: async (p) => { await p.fill('input[name="url"]', 'https://youtu.be/dQw4w9WgXcQ'); await p.locator('form button[type="submit"]').click(); await p.waitForTimeout(1600) } },
   ]
+}
+
+async function scrollTop(p, sel) {
+  await p.evaluate((s) => { const el = document.querySelector(s); if (el) window.scrollTo(0, el.getBoundingClientRect().top + window.scrollY - 16) }, sel)
+  await p.waitForTimeout(150)
+}
+
+/** wait until every <img> in the viewport has loaded (OCR crops) */
+async function waitImages(p) {
+  await p.waitForFunction(() => [...document.images].every((i) => i.complete), null, { timeout: 8000 }).catch(() => {})
 }
 
 async function centerOn(p, sel) {

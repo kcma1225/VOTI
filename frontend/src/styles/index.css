@@ -42,6 +42,10 @@
   --info: #0b7fab;
   --info-soft: #e5f4fa;
   --info-fg: #08617f;
+  /* hard-subtitle OCR text source */
+  --ocr: #6250d6;
+  --ocr-soft: #efedfc;
+  --ocr-fg: #4635b0;
   --neutral-soft: #eef0f3;
   --neutral-fg: #4c5461;
 
@@ -111,6 +115,9 @@
   --info: #3aaedb;
   --info-soft: rgba(58, 174, 219, 0.14);
   --info-fg: #8fd3ef;
+  --ocr: #9085e9;
+  --ocr-soft: rgba(144, 133, 233, 0.16);
+  --ocr-fg: #c6bff7;
   --neutral-soft: rgba(255, 255, 255, 0.07);
   --neutral-fg: #b3bac5;
 
@@ -178,6 +185,9 @@
   --color-info: var(--info);
   --color-info-soft: var(--info-soft);
   --color-info-fg: var(--info-fg);
+  --color-ocr: var(--ocr);
+  --color-ocr-soft: var(--ocr-soft);
+  --color-ocr-fg: var(--ocr-fg);
   --color-neutral-soft: var(--neutral-soft);
   --color-neutral-fg: var(--neutral-fg);
   --color-series-1: var(--series-1);

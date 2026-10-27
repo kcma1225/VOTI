@@ -35,6 +35,7 @@ export const zh = {
     'media.align': '逐字對齊',
     'channel.align': '頻道逐字對齊',
     'media.validate': '字幕驗證',
+    'media.ocr': '畫面字幕 OCR',
   },
   /** Job phase codes (Job.phase) → label; unknown phases fall back to the raw text. */
   phase: {
@@ -44,6 +45,7 @@ export const zh = {
     diarize: '語者分段', ecapa: '計算語者向量', voxprofile: 'Vox-Profile 語者特徵', fingerprint: '計算音訊指紋',
     load: '載入資料', match: '比對重複片段', cluster: '語者分群', save: '寫入結果', select: '篩選音段',
     manifest: '寫入清單', convert_text: '簡轉繁', align: '逐字對齊', lid: '辨識語言', load_model: '載入模型', done: '完成', rate_limit: '等待（速率限制）',
+    discover: '尋找畫面字幕', track: '追蹤畫面字幕', crops: '儲存字幕截圖',
     waiting_slot: '等待下載名額', retry_wait: '等待自動重試', recovered: '已自動恢復', requeued: '已放回佇列',
   },
   listStatus: { new: '尚未列出', queued: '排隊中', listing: '列出中', listed: '已列出', failed: '列出失敗' },
@@ -53,11 +55,12 @@ export const zh = {
   pipelineShort: {
     'media.download': '下載', 'media.normalize': '正規化', 'media.quality': '音質', 'media.diarize': '分段',
     'media.segment': '切分', 'media.embed': '嵌入', 'media.profile': '特徵', 'media.fingerprint': '指紋',
+    'media.ocr': 'OCR',
   },
   queue: { scan: '掃描', detail: '字幕資訊', download: '下載', audio: '音訊', ml: '模型', export: '匯出' },
   reviewStatus: { unchecked: '未審查', passed: '通過', needs_fix: '需修正', excluded: '排除' },
   speakerState: { unknown: '未確認', single: '單一語者', multiple: '多位語者', overlap: '語音重疊' },
-  textSource: { manual_caption: '原生字幕', auto_caption: '自動字幕', human_revision: '人工校正', none: '無文字' },
+  textSource: { manual_caption: '原生字幕', auto_caption: '自動字幕', ocr_caption: '畫面字幕（OCR）', uploaded: '上傳字幕', human_revision: '人工校正', none: '無文字' },
   flag: {
     low_speech: '語音比例低', low_snr: '訊噪比低', clipped: '削波失真', repeated: '重複片段', overlap: '語音重疊',
     boundary_adjusted: '已調邊界', too_short: '過短', too_long: '過長', upsampled: '疑似升頻', music: '背景音樂',
@@ -134,6 +137,7 @@ export const en: Shape<typeof zh> = {
     'media.align': 'Word alignment',
     'channel.align': 'Channel word alignment',
     'media.validate': 'Caption validation',
+    'media.ocr': 'On-screen subtitle OCR',
   },
   phase: {
     resolve: 'Resolving URL', listing: 'Listing videos', detail: 'Fetching details', download: 'Downloading', audio: 'Downloading audio',
@@ -142,6 +146,7 @@ export const en: Shape<typeof zh> = {
     diarize: 'Speaker diarization', ecapa: 'Speaker embeddings', voxprofile: 'Vox-Profile traits', fingerprint: 'Audio fingerprinting',
     load: 'Loading', match: 'Matching repeats', cluster: 'Clustering speakers', save: 'Saving results', select: 'Selecting segments',
     manifest: 'Writing manifest', convert_text: 'Converting to Traditional', align: 'Aligning words', lid: 'Identifying language', load_model: 'Loading model', done: 'Done', rate_limit: 'Waiting (rate limit)',
+    discover: 'Finding on-screen subtitles', track: 'Tracking subtitles', crops: 'Saving subtitle crops',
     waiting_slot: 'Waiting for a download slot', retry_wait: 'Waiting to retry', recovered: 'Recovered', requeued: 'Requeued',
   },
   listStatus: { new: 'Not listed', queued: 'Queued', listing: 'Listing', listed: 'Listed', failed: 'Listing failed' },
@@ -151,11 +156,12 @@ export const en: Shape<typeof zh> = {
   pipelineShort: {
     'media.download': 'Download', 'media.normalize': 'Normalize', 'media.quality': 'Quality', 'media.diarize': 'Diarize',
     'media.segment': 'Segment', 'media.embed': 'Embed', 'media.profile': 'Profile', 'media.fingerprint': 'Fingerprint',
+    'media.ocr': 'OCR',
   },
   queue: { scan: 'Scan', detail: 'Details', download: 'Download', audio: 'Audio', ml: 'ML', export: 'Export' },
   reviewStatus: { unchecked: 'Unreviewed', passed: 'Passed', needs_fix: 'Needs fix', excluded: 'Excluded' },
   speakerState: { unknown: 'Unconfirmed', single: 'Single speaker', multiple: 'Multiple speakers', overlap: 'Overlapping speech' },
-  textSource: { manual_caption: 'Uploader captions', auto_caption: 'Auto captions', human_revision: 'Human revision', none: 'No text' },
+  textSource: { manual_caption: 'Uploader captions', auto_caption: 'Auto captions', ocr_caption: 'On-screen subtitles (OCR)', uploaded: 'Uploaded captions', human_revision: 'Human revision', none: 'No text' },
   flag: {
     low_speech: 'Low speech ratio', low_snr: 'Low SNR', clipped: 'Clipping', repeated: 'Repeated intro/outro', overlap: 'Overlapping speech',
     boundary_adjusted: 'Boundary adjusted', too_short: 'Too short', too_long: 'Too long', upsampled: 'Likely upsampled', music: 'Background music',

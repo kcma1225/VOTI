@@ -23,6 +23,7 @@ import { speakerName } from '@/components/domain/speakers'
 import { KaraokeText, toUnits, useClock, type Unit } from '@/components/domain/karaoke'
 import { SpeakerDot, localSpeakerName, speakerVars, useSpeakerIndex } from '@/components/domain/speaker-color'
 import { ValidityBadge, useValidityActions } from '@/components/domain/validity'
+import { OcrSourceBadge, OcrUnverifiedTag, isOcrSource, isOcrUnverified } from '@/components/domain/ocr'
 
 /** rows rendered at first; the rest on demand (long podcasts have 1000+ sentences) */
 const STEP = 120
@@ -231,6 +232,8 @@ const Row = forwardRef<
           <ValidityBadge s={s} className="text-[11px]" />
           {who && (speakerIdx != null ? <SpeakerDot index={speakerIdx} label={who} title={whoTitle} className="max-w-48" /> : <span className="max-w-40 truncate">{who}</span>)}
           <span className="tabular">{fmtSec(s.duration)}</span>
+          {isOcrSource(s) && <OcrSourceBadge tag short />}
+          {isOcrUnverified(s) && <OcrUnverifiedTag />}
           {s.corrected_text && <Tag className="border-success/30 text-success-fg">{textSource.human_revision}</Tag>}
           {s.flags.map((f) => (
             <Tag key={f}>{flagLabel[f] ?? f}</Tag>

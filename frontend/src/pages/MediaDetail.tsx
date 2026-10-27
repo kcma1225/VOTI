@@ -24,14 +24,17 @@ import { useSize } from '@/components/charts/charts'
 import { useSentencePlayer } from '@/hooks/useSentencePlayer'
 import { TranscriptCard } from './media/Transcript'
 import { SpeakersCard } from './media/Speakers'
+import { OcrCard, OcrStartCard, canRunOcr, hasOcr } from './media/Ocr'
+import { OcrSourceBadge, OcrStatusBadge } from '@/components/domain/ocr'
 
 function Stepper({ m }: { m: TMedia }) {
   const byKind = new Map<string, Job>()
   ;[...m.jobs].reverse().forEach((j) => byKind.set(j.kind, j))
-  const stageIdx = pipelineSteps().findIndex((s) => s.kind === m.stage)
+  const steps = pipelineSteps({ ocr: hasOcr(m) })
+  const stageIdx = steps.findIndex((s) => s.kind === m.stage)
   return (
     <ol className="flex min-w-0 items-start overflow-x-auto pb-1 no-scrollbar">
-      {pipelineSteps().map((s, i) => {
+      {steps.map((s, i) => {
         const j = byKind.get(s.kind)
         const st =
           m.status === 'ready' ? 'completed' : j?.status === 'completed' ? 'completed' : j?.status === 'failed' || (m.status === 'failed' && i === stageIdx) ? 'failed' : j?.status === 'running' ? 'running' : j?.status === 'queued' ? 'queued' : 'pending'
@@ -53,7 +56,7 @@ function Stepper({ m }: { m: TMedia }) {
                   {st === 'completed' ? <Check className="size-3.5" strokeWidth={3} /> : st === 'running' ? <Loader2 className="size-3.5 animate-spin" /> : st === 'failed' ? <X className="size-3.5" strokeWidth={3} /> : i + 1}
                 </span>
               </Tooltip>
-              <span className={cn('h-px flex-1', i === pipelineSteps().length - 1 ? 'opacity-0' : st === 'completed' ? 'bg-success' : 'bg-border-strong')} />
+              <span className={cn('h-px flex-1', i === steps.length - 1 ? 'opacity-0' : st === 'completed' ? 'bg-success' : 'bg-border-strong')} />
             </div>
             <span className={cn('whitespace-nowrap text-[11px]', st === 'running' ? 'font-medium text-primary' : st === 'failed' ? 'font-medium text-danger-fg' : 'text-fg-3')}>{s.short}</span>
           </li>
@@ -212,7 +215,11 @@ function TrackList({ tracks }: { tracks: Track[] }) {
     <ul className="space-y-1">
       {tracks.map((tr) => (
         <li key={tr.id} className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
-          <span>{t('process.media.track', lang(tr.language), tr.kind === 'manual' ? t('process.media.trackKind.manual') : tr.kind === 'auto' ? t('process.media.trackKind.auto') : tr.kind)}</span>
+          <span>
+            {tr.kind === 'ocr' && (tr.language === 'und' || !tr.language)
+              ? t('ocr.trackKind')
+              : t('process.media.track', lang(tr.language), tr.kind === 'manual' ? t('process.media.trackKind.manual') : tr.kind === 'auto' ? t('process.media.trackKind.auto') : tr.kind === 'ocr' ? t('ocr.trackKind') : tr.kind)}
+          </span>
           {tr.s2t_converted ? (
             <Tag className="border-info/30 bg-info-soft text-info-fg">
               <Languages className="size-3" />
@@ -307,6 +314,7 @@ export default function MediaDetail() {
   // caption re-check: a button before processing (listed/detailed/skipped/blocked), else in the ⋯ menu
   const recheckAsButton = ['listed', 'detailed', 'skipped', 'blocked'].includes(m.status)
   const recheckActive = m.jobs.some((j) => j.kind === 'media.detail' && (j.status === 'queued' || j.status === 'running'))
+  const ocrTrack = m.tracks.some((tr) => tr.kind === 'ocr')
   const canDownload = !membersOnly && m.failure_code !== 'empty_captions' && ['listed', 'detailed', 'skipped', 'blocked', 'failed'].includes(m.status) && !m.jobs.some((j) => j.kind !== 'media.download' && ['queued', 'running'].includes(j.status)) && m.segment_count === 0
   return (
     <Page wide>
@@ -324,6 +332,18 @@ export default function MediaDetail() {
             <span>{licenseLabel[m.license ?? 'youtube']}</span>
             {m.kind === 'short' && <Tag>Shorts</Tag>}
             <CaptionBadges empty={m.captions_empty} check={m.caption_check} manual={m.has_manual_captions} auto={m.has_auto_captions} manualLangs={m.manual_caption_langs} autoLangs={m.auto_caption_langs} />
+            {ocrTrack && (
+              <button
+                type="button"
+                data-shot="ocr-header-badge"
+                aria-label={t('ocr.card.jump')}
+                onClick={() => document.getElementById('ocr')?.scrollIntoView({ block: 'start', behavior: 'smooth' })}
+                className="inline-flex rounded transition hover:brightness-95"
+              >
+                <OcrSourceBadge tag />
+              </button>
+            )}
+            {(m.ocr_job_active || (m.ocr?.status === 'pending' && !ocrTrack)) && <OcrStatusBadge status={m.ocr?.status} active={m.ocr_job_active} />}
             {m.text_converted && (
               <Tooltip content={t('process.media.s2tTip', m.text_conversion?.cues_converted ?? m.tracks.reduce((a, x) => a + (x.cues_converted ?? 0), 0))}>
                 <Badge tone="info">
@@ -452,6 +472,7 @@ export default function MediaDetail() {
               />
             </Card>
           )}
+          {hasOcr(m) && <OcrCard m={m} player={player} />}
           <Card>
             <CardHeader title={t('process.media.jobHistory')} description={t('process.media.jobCount', m.jobs.length)} />
             <div className="mt-3 divide-y divide-border border-t border-border">
@@ -492,6 +513,7 @@ export default function MediaDetail() {
               )}
             </CardBody>
           </Card>
+          {!hasOcr(m) && canRunOcr(m) && <OcrStartCard m={m} />}
         </div>
       </div>
       <DownloadDialog
