@@ -56,7 +56,8 @@ export const zh = {
   flag: {
     low_speech: '語音比例低', low_snr: '訊噪比低', clipped: '削波失真', repeated: '重複片段', overlap: '語音重疊',
     boundary_adjusted: '已調邊界', too_short: '過短', too_long: '過長', upsampled: '疑似升頻', music: '背景音樂',
-    s2t_converted: '已簡轉繁',
+    s2t_converted: '已簡轉繁', boundary_in_speech: '邊界在語音中', multi_speaker: '多位語者', caption_speaker_change: '字幕換人',
+    no_text: '無文字', empty: '空白字幕', non_speech: '非語音', out_of_range: '超出音檔範圍',
   },
   sex: { male: '男性', female: '女性', unknown: '未知' },
   emotion: {
@@ -134,7 +135,9 @@ export const en: Shape<typeof zh> = {
   flag: {
     low_speech: 'Low speech ratio', low_snr: 'Low SNR', clipped: 'Clipping', repeated: 'Repeated intro/outro', overlap: 'Overlapping speech',
     boundary_adjusted: 'Boundary adjusted', too_short: 'Too short', too_long: 'Too long', upsampled: 'Likely upsampled', music: 'Background music',
-    s2t_converted: 'Converted to Traditional',
+    s2t_converted: 'Converted to Traditional', boundary_in_speech: 'Cut inside speech', multi_speaker: 'Multiple speakers',
+    caption_speaker_change: 'Speaker change in caption', no_text: 'No text', empty: 'Empty caption', non_speech: 'Non-speech',
+    out_of_range: 'Outside audio',
   },
   sex: { male: 'Male', female: 'Female', unknown: 'Unknown' },
   emotion: {

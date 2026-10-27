@@ -307,7 +307,7 @@ export default function DatasetBuilder() {
               <Checkbox checked={f.exclude_upsampled} onCheckedChange={(v) => upd({ exclude_upsampled: v })} label={t('output.builder.excludeUpsampled')} description={t('output.builder.excludeUpsampledDesc')} />
               <Field label={t('output.builder.excludeFlags')}>
                 <div className="flex flex-wrap gap-1.5">
-                  {['clipped', 'low_snr', 'low_speech', 'overlap', 'too_short'].map((fl) => (
+                  {['clipped', 'low_snr', 'low_speech', 'overlap', 'multi_speaker', 'too_short'].map((fl) => (
                     <Chip key={fl} active={f.exclude_flags.includes(fl)} onClick={() => upd({ exclude_flags: toggle(f.exclude_flags, fl) })}>
                       {flagLabel[fl]}
                     </Chip>

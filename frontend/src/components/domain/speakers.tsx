@@ -115,8 +115,16 @@ export function SpeakerList({ items, className }: { items: Speaker[]; className?
 }
 
 /* ───────────── Vox-Profile traits ───────────── */
-function DistBars({ d, labels, max = 4 }: { d: Dist; labels: Record<string, string>; max?: number }) {
-  const entries = Object.entries(d)
+/** Accepts a flat {label: p} distribution (speaker aggregates) or a per-segment Vox-Profile trait
+ *  {label, probs: {label: p}, …} and keeps only numeric probabilities. */
+function toDist(d: unknown): Dist {
+  if (!d || typeof d !== 'object') return {}
+  const src = 'probs' in d && d.probs && typeof d.probs === 'object' ? (d.probs as Record<string, unknown>) : (d as Record<string, unknown>)
+  return Object.fromEntries(Object.entries(src).filter((e): e is [string, number] => typeof e[1] === 'number' && Number.isFinite(e[1])))
+}
+
+function DistBars({ d, labels, max = 4 }: { d: unknown; labels: Record<string, string>; max?: number }) {
+  const entries = Object.entries(toDist(d))
     .sort((a, b) => b[1] - a[1])
     .slice(0, max)
   const top = entries[0]?.[1] ?? 1
