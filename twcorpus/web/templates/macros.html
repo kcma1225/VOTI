@@ -1,0 +1,43 @@
+{% macro theme_toggle() -%}
+<button type="button" class="theme-toggle" data-theme-toggle aria-pressed="false" title="切換深淺色">
+  <span class="dot" aria-hidden="true"></span><span>主題：<span data-theme-label>自動</span></span>
+</button>
+{%- endmacro %}
+
+{% macro jobs_toggle(where) -%}
+<button type="button" class="jobs-toggle {{ where }}" data-jobs-toggle aria-controls="jobs-panel" aria-expanded="false">
+  <span>處理任務</span><span class="count" data-jobs-count hidden>0</span>
+</button>
+{%- endmacro %}
+
+{% macro badge(code, options) -%}
+<span class="badge {{ code | tone }}">{{ code | label(options) }}</span>
+{%- endmacro %}
+
+{% macro options(choices, selected, empty=None) -%}
+{% if empty is not none %}<option value=""{% if not selected %} selected{% endif %}>{{ empty }}</option>{% endif %}
+{% for code, text in choices.items() %}<option value="{{ code }}"{% if code == selected %} selected{% endif %}>{{ text }}</option>{% endfor %}
+{%- endmacro %}
+
+{% macro select(name, label, choices, selected, empty=None, help=None) -%}
+<label class="field">{{ label }}
+  <select name="{{ name }}">{{ options(choices, selected, empty) }}</select>
+  {% if help %}<span class="help">{{ help }}</span>{% endif %}
+</label>
+{%- endmacro %}
+
+{% macro kpi(label, value, hint=None) -%}
+<div class="kpi"><div class="label">{{ label }}</div><div class="value">{{ value }}</div>{% if hint %}<div class="hint">{{ hint }}</div>{% endif %}</div>
+{%- endmacro %}
+
+{% macro bars(counts, names=None, labels=None) -%}
+{% set total = counts.values() | sum %}
+{% if not counts %}<p class="muted">尚無資料</p>{% endif %}
+{% for key, n in counts | dictsort(by='value', reverse=true) %}
+<div class="bar-row">
+  <span title="{{ key }}">{% if labels %}{{ key | label(labels) }}{% elif names %}{{ (names.get(key) or key)[:24] }}{% else %}{{ key }}{% endif %}</span>
+  <progress class="bar" max="{{ total }}" value="{{ n }}" aria-label="{{ key }}：{{ n }}">{{ n }}</progress>
+  <span class="n">{{ n }}</span>
+</div>
+{% endfor %}
+{%- endmacro %}

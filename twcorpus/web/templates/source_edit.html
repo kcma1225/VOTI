@@ -1,0 +1,22 @@
+{% extends "source_base.html" %}
+{% block crumb %}編輯{% endblock %}
+{% block content %}
+<section class="card">
+  <header><h2>資料與授權</h2><p>修改授權或語言不會自動重新切片。</p></header>
+  <form method="post" action="/api/sources/{{ source.id }}/edit">
+    <div class="fields">
+      <label class="field wide">標題 <input type="text" name="title" maxlength="300" value="{{ source.title }}"></label>
+      {{ m.select("license_label", "授權標示", L.LICENSES, source.license_label) }}
+      {{ m.select("domain", "領域", L.DOMAINS, source.domain, help="語料多樣性的主要篩選軸；YouTube 會依影片分類先猜一個。") }}
+      {{ m.select("audio_language", "音訊語言", L.LANGUAGES, source.audio_language) }}
+      {{ m.select("speaker_count", "語者數", L.SPEAKER_COUNT, source.speaker_count) }}
+      {{ m.select("taiwan_basis", "台灣語者證據", L.TAIWAN_BASIS, source.taiwan_basis) }}
+      <label class="field wide">授權證據
+        <textarea name="license_evidence" rows="4" placeholder="例如：影片說明標示 CC BY 4.0，2026-10-27 檢視">{{ source.license_evidence }}</textarea>
+        <span class="help">「未知」以外的授權標示必須附證據。</span>
+      </label>
+    </div>
+    <div class="row end mt"><button class="btn primary" type="submit">儲存</button></div>
+  </form>
+</section>
+{% endblock %}

@@ -1,0 +1,7 @@
+# Install only when speaker embeddings or word alignment (MMS_FA) are required. Models download separately on first use.
+-r requirements.txt
+torch==2.8.0
+torchaudio==2.8.0
+speechbrain==1.0.3
+huggingface_hub==0.36.0
+pypinyin==0.55.0

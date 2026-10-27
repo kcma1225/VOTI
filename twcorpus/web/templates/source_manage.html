@@ -1,0 +1,19 @@
+{% extends "source_base.html" %}
+{% block crumb %}管理{% endblock %}
+{% block content %}
+<section class="card flush">
+  <header><h2>管理此來源</h2><p>每項功能各自一頁，點進去才會修改。</p></header>
+  <ul class="menu">
+    <li><a href="/sources/{{ source.id }}/edit"><strong>編輯資料與授權</strong><span>標題、授權標示與證據、音訊語言、語者數、台灣語者證據</span></a></li>
+    <li><a href="/sources/{{ source.id }}/fetch"><strong>{{ "取得音訊與字幕" if source.platform == "youtube" else "重新處理" }}</strong><span>{% if source.platform == "youtube" %}字幕列表 {{ listed_count }} 軌；只取字幕、取得音訊＋字幕或整個重新處理{% else %}以已保存的原始音訊重建 MP3、16 kHz 音訊與音段{% endif %}</span></a></li>
+    <li><a href="/sources/{{ source.id }}/tracks"><strong>字幕軌與檔案</strong><span>已保存 {{ tracks | length }} 軌；上傳 SRT／VTT 並重新切片、下載字幕檔</span></a></li>
+    <li><a href="/sources/{{ source.id }}/audio"><strong>音訊與字詞對齊</strong><span>{{ "已有 MP3 播放檔" if has_mp3 else "尚無 MP3 播放檔" }}；強制對齊計算字詞時間</span></a></li>
+  </ul>
+</section>
+<section class="card danger-zone">
+  <header><h2>刪除來源</h2><p>字幕、音段、審查紀錄與已存檔案都會一併移除，無法復原。</p></header>
+  <form method="post" action="/api/sources/{{ source.id }}/delete" data-confirm="刪除此來源？字幕、音段、審查紀錄與已存檔案都會一併移除，無法復原。">
+    <button class="btn danger" type="submit">刪除來源</button>
+  </form>
+</section>
+{% endblock %}

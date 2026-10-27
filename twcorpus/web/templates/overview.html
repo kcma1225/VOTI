@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block lead %}<p>從來源、切片到逐段審查。未知狀態不當作已通過；候選分群不等於確認的語者。</p>{% endblock %}
+{% block actions %}<a class="btn primary" href="/sources">匯入資料</a><a class="btn" href="/segments">開始審查</a>{% endblock %}
+{% block content %}
+<section class="kpis" aria-label="語料概況">
+  {{ m.kpi("來源", stats.candidate_sources, "已取得 %d · 失敗 %d" % (stats.acquired_sources, stats.failed_sources)) }}
+  {{ m.kpi("來源時長", stats.candidate_hours | duration, "已取得 " ~ (stats.acquired_hours | duration)) }}
+  {{ m.kpi("有效音段", stats.segments, "待審 %d" % stats.pending_segments) }}
+  {{ m.kpi("審查通過", stats.reviewed_hours_sum | duration, "review_status = passed") }}
+</section>
+
+{% if worker_age is none %}
+<div class="alert warn"><div><strong>尚未偵測到 worker。</strong>匯入、切片、YouTube 檢查與取得、字詞對齊、語者向量都由 worker 執行；用 <code>docker compose up -d</code> 啟動時會一併執行。</div></div>
+{% elif worker_age > 60 %}
+<div class="alert warn"><div><strong>worker 已 {{ (worker_age / 60) | round(1) }} 分鐘無回應。</strong>請檢查 <code>docker compose ps</code> 與 <code>docker compose logs worker</code>。</div></div>
+{% endif %}
+
+<div class="grid two">
+  <section class="card flush">
+    <header><h2>最近來源</h2><a href="/sources">全部來源 →</a></header>
+    {% if sources %}
+    <div class="table-wrap"><table class="responsive">
+      <thead><tr><th>標題</th><th>平台</th><th>狀態</th><th class="num">時長</th></tr></thead>
+      <tbody>
+      {% for s in sources %}
+      <tr>
+        <td data-label="標題" class="title-cell"><a href="/sources/{{ s.id }}">{{ s.title or "未命名" }}</a></td>
+        <td data-label="平台" class="nowrap">{{ s.platform | label(L.PLATFORMS) }}</td>
+        <td data-label="狀態" class="nowrap">{{ m.badge(s.status, L.SOURCE_STATUS) }}</td>
+        <td data-label="時長" class="num">{{ s.duration_sec | clock }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+    {% else %}<p class="empty">還沒有來源。先到「匯入與來源」上傳本地音訊＋字幕，或貼上 YouTube 網址。</p>{% endif %}
+  </section>
+
+  <section class="card flush">
+    <header><h2>最近工作</h2><button type="button" class="btn small ghost" data-jobs-toggle aria-controls="jobs-panel">開啟任務面板 →</button></header>
+    {% if jobs %}
+    <div class="table-wrap"><table class="responsive">
+      <thead><tr><th>類型</th><th>狀態</th><th>階段</th><th>建立時間</th></tr></thead>
+      <tbody>
+      {% for j in jobs %}
+      <tr>
+        <td data-label="類型" class="nowrap">{{ j.kind | label(L.JOB_KIND) }}</td>
+        <td data-label="狀態" class="nowrap">{{ m.badge(j.status, L.JOB_STATUS) }}</td>
+        <td data-label="階段">{{ j.phase | label(L.JOB_PHASE) }}</td>
+        <td data-label="建立時間" class="mono nowrap">{{ j.created_at | local_time(16) }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+    {% else %}<p class="empty">尚無工作。</p>{% endif %}
+  </section>
+</div>
+
+<section class="card">
+  <header><h2>工作流程</h2></header>
+  <ol class="muted">
+    <li><strong>匯入</strong>：本地音訊＋SRT/VTT 直接切片；YouTube 先檢查，再填授權證據後取得。</li>
+    <li><strong>審查</strong>：逐段聽音、修正文字與邊界、標記狀態。只有「逐段校對」可稱人工轉寫。</li>
+    <li><strong>語者向量</strong>：在「聲音相似群」排入 ECAPA 向量工作，完成後分群並人工修正。進度見右側「處理任務」面板。</li>
+    <li><strong>匯出</strong>：依條件建立 JSONL／CSV＋音訊快照；不代表可公開發布。</li>
+  </ol>
+</section>
+
+<details class="card">
+  <summary><h2>環境診斷與容量</h2></summary>
+  <div class="grid two mt">
+    <div class="table-wrap"><table>
+      <thead><tr><th>項目</th><th>狀態</th></tr></thead>
+      <tbody>
+      {% for k, v in tools.items() %}
+      <tr><td>{{ k }}</td><td>{% if v == "missing" %}<span class="badge bad">缺少</span>{% else %}<span class="mono">{{ v[:60] }}</span>{% endif %}</td></tr>
+      {% endfor %}
+      <tr><td>SPEAKER_DEVICE</td><td class="mono">{{ settings.speaker_device }}</td></tr>
+      <tr><td>YouTube API key</td><td>{% if settings.youtube_api_key %}<span class="badge ok">已設定</span>{% else %}<span class="badge muted">未設定</span>{% endif %}</td></tr>
+      </tbody>
+    </table></div>
+    <div class="stack">
+      <dl class="meta">
+        <dt>資料目錄</dt><dd class="mono">{{ settings.data_dir }}</dd>
+        <dt>已用</dt><dd>{{ space.data_bytes | mb }}</dd>
+        <dt>磁碟剩餘</dt><dd>{{ space.free_bytes | gb }}</dd>
+        {% for k, v in space.by_folder | dictsort %}<dt class="mono">{{ k }}/</dt><dd>{{ v | mb }}</dd>{% endfor %}
+      </dl>
+      {% if devices %}
+      <dl class="meta">
+        {% for k, v in devices.items() %}<dt>{{ k }}</dt><dd class="mono">{{ v }}</dd>{% endfor %}
+      </dl>
+      {% else %}
+      <a class="btn small" href="/?devices=1">檢查 CPU／GPU（會載入 PyTorch）</a>
+      {% endif %}
+    </div>
+  </div>
+</details>
+{% endblock %}

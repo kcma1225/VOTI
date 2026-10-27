@@ -1,0 +1,47 @@
+{% extends "source_base.html" %}
+{% block crumb %}取得／重新處理{% endblock %}
+{% block content %}
+{% if source.platform == "youtube" %}
+<section class="card">
+  <header><h2>取得音訊與字幕</h2><p>音訊會自動轉成 MP3 供播放。不繞過登入、付費、地區限制。</p></header>
+  <form method="post" action="/api/sources/{{ source.id }}/refresh-tracks" class="row spread" data-busy>
+    <span class="muted">{% if source.inspected_at %}字幕列表更新於 {{ source.inspected_at | local_time(16) }}{% else %}尚未檢查字幕列表{% endif %}</span>
+    <button class="btn small" type="submit">重新取得字幕列表</button>
+  </form>
+  <form method="post" action="/api/sources/{{ source.id }}/acquire" class="mt" data-busy>
+    {% if listed_tracks %}
+    <div class="fields tight">
+      <label class="field wide">字幕軌（{{ listed_tracks | length }}）
+        <select name="track">
+          {% for t in listed_tracks %}<option value="{{ t.kind }}|{{ t.language }}"{% if t.kind == "uploader_provided" and t.language == preferred_language %} selected{% endif %}>{{ t.language }} · {{ t.kind | label(L.SUBTITLE_KINDS) }}{% if t.formats %} · {{ t.formats | join("/") }}{% endif %}</option>{% endfor %}
+        </select>
+        <span class="help">取得後一律轉成 SRT 保存。</span>
+      </label>
+    </div>
+    {% else %}
+    <p class="muted">未發現字幕軌（可先按「重新取得字幕列表」）；仍可手動指定語言碼嘗試。</p>
+    <div class="fields tight">
+      <label class="field">字幕語言代碼 <input type="text" name="subtitle_language" value="{{ preferred_language }}" pattern="[A-Za-z0-9_\-]{2,20}" required></label>
+      {{ m.select("subtitle_kind", "字幕類型", L.DOWNLOAD_KINDS, "uploader_provided") }}
+    </div>
+    {% endif %}
+    <div class="acquire-bar end">
+      <div class="row nowrap">
+        <button class="btn" type="submit" formaction="/api/sources/{{ source.id }}/fetch-subtitles">只取字幕</button>
+        <button class="btn primary" type="submit">取得音訊＋字幕</button>
+        <button class="btn" type="submit" formaction="/api/sources/{{ source.id }}/reprocess" title="重新抓取字幕列表、音訊與 SRT，並重建 MP3、音訊與音段">重新處理</button>
+      </div>
+    </div>
+  </form>
+</section>
+{% else %}
+<section class="card">
+  <header><h2>重新處理</h2><p>以已保存的原始音訊重建 MP3、16 kHz 音訊與音段。</p></header>
+  {% if has_original %}
+  <form method="post" action="/api/sources/{{ source.id }}/reprocess" data-confirm="重新處理此來源？會以已保存的原始音訊重建 MP3、16 kHz 音訊與音段。">
+    <button class="btn primary" type="submit">重新處理</button>
+  </form>
+  {% else %}<p class="empty">尚無原始音訊可重新處理。</p>{% endif %}
+</section>
+{% endif %}
+{% endblock %}

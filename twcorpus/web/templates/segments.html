@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block lead %}<p>跨來源瀏覽所有音段。點一列會到該來源的音段審查頁修訂；只有「逐段校對」代表人工轉寫，其他字幕不得稱 ground truth。</p>{% endblock %}
+{% block content %}
+<section class="card">
+  <form method="get" action="/segments" class="filters" role="search" data-live>
+    <label class="field">來源
+      <select name="source"><option value="">全部來源</option>
+        {% for s in sources %}<option value="{{ s.id }}"{% if s.id == filters.source %} selected{% endif %}>{{ (s.title or s.id)[:40] }}</option>{% endfor %}
+      </select></label>
+    {{ m.select("status", "審查狀態", L.REVIEW_STATUS, filters.status, "全部") }}
+    {{ m.select("language", "語言", L.LANGUAGES, filters.language, "全部") }}
+    {{ m.select("kind", "字幕來源", L.SUBTITLE_KINDS, filters.kind, "全部") }}
+    {{ m.select("flag", "旗標", flag_options, filters.flag, "全部") }}
+    <label class="field">群組 <input type="text" name="group" value="{{ filters.group }}" placeholder="candidate_001"></label>
+    <label class="field">搜尋文字 <input type="search" name="q" value="{{ filters.q }}" placeholder="字幕、修訂或標題"></label>
+    <div class="row"><noscript><button class="btn" type="submit">套用</button></noscript><span data-live-region="clear">{% if filtered %}<a class="btn ghost" href="/segments">清除篩選</a>{% endif %}</span></div>
+  </form>
+</section>
+
+<div data-live-region="results">
+<section class="card flush">
+  <header><h2>音段（{{ segments | length }}{% if segments | length >= 500 %}+{% endif %}）</h2></header>
+  {% if segments %}
+  <div class="table-wrap"><table class="responsive">
+    <thead><tr><th>時間</th><th>文字</th><th>來源</th><th>字幕</th><th>審查</th></tr></thead>
+    <tbody>
+    {% for s in segments %}
+    <tr>
+      <td data-label="時間" class="mono nowrap">{{ s.start_sec | clock }}–{{ s.end_sec | clock }}</td>
+      <td data-label="文字" class="title-cell"><a href="/sources/{{ s.source_id }}/review?segment={{ s.id }}">{{ s.corrected_text if s.corrected_text is not none else s.original_text }}</a></td>
+      <td data-label="來源"><a href="/sources/{{ s.source_id }}">{{ (s.source_title or "")[:30] }}</a></td>
+      <td data-label="字幕" class="nowrap">{{ s.track_kind | label(L.SUBTITLE_KINDS) }} · <span class="mono">{{ s.track_language }}</span></td>
+      <td data-label="審查" class="nowrap"><span class="badge {{ s.review_status | tone }}">{{ s.review_status | label(L.REVIEW_STATUS) }}</span></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<p class="empty">沒有符合條件的音段。</p>{% endif %}
+</section>
+</div>
+{% endblock %}

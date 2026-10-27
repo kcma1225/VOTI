@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block scripts %}<script src="{{ asset('player.js') }}" defer></script>{% endblock %}
+{% block eyebrow %}source / {{ source.id[:12] }}{% endblock %}
+{% block lead %}<p>{{ source.platform | label(L.PLATFORMS) }} · {{ m.badge(source.status, L.SOURCE_STATUS) }} · {{ segment_count }} 個有效音段</p>{% endblock %}
+{% block actions %}
+<a class="btn" href="/sources">← 來源清單</a>
+{% if segment_count %}<a class="btn" href="/sources/{{ source.id }}/review">音段審查</a>{% endif %}
+<a class="btn primary" href="/sources/{{ source.id }}/manage">管理此來源</a>
+{% endblock %}
+{% block content %}
+{% if source.failure_reason %}<div class="alert bad"><div><strong>{{ source.status | label(L.SOURCE_STATUS) }}：</strong>{{ source.failure_reason }}</div></div>{% endif %}
+
+<div class="grid source-main">
+  <section class="card transcript-card" id="transcript">
+    <header>
+      <h2>逐字稿</h2>
+      {% if tracks | length > 1 %}
+      <form method="get" action="/sources/{{ source.id }}#transcript" class="row">
+        <label class="sr-only" for="track-pick">字幕軌</label>
+        <select id="track-pick" name="track">
+          {% for t in tracks %}<option value="{{ t.id }}"{% if track and t.id == track.id %} selected{% endif %}>{{ t.language | label(L.LANGUAGES) }} · {{ t.kind | label(L.SUBTITLE_KINDS) }} · {{ t.created_at | local_time(10) }}</option>{% endfor %}
+        </select>
+        <button class="btn small" type="submit">切換</button>
+      </form>
+      {% endif %}
+    </header>
+    {% if playable %}
+    <div class="player" data-player>
+      <audio controls preload="metadata" src="/api/media/sources/{{ source.id }}" data-player-audio></audio>
+      <label class="check"><input type="checkbox" data-player-follow checked><span>播放時自動捲動</span></label>
+    </div>
+    {% endif %}
+    {% if not track %}
+    <p class="empty">尚無字幕軌。<a href="/sources/{{ source.id }}/tracks">補上字幕</a>{% if source.platform == "youtube" %}，或<a href="/sources/{{ source.id }}/fetch">從 YouTube 取得</a>{% endif %}。</p>
+    {% else %}
+    <ol class="transcript" data-transcript>
+      {% for c in cues %}
+      <li class="cue" data-start="{{ c.start_sec if c.start_sec is not none else '' }}" data-end="{{ c.end_sec if c.end_sec is not none else '' }}">
+        <button type="button" class="cue-time mono" data-seek="{{ c.start_sec if c.start_sec is not none else '' }}"{% if c.start_sec is none %} disabled{% endif %} aria-label="跳到 {{ c.start_sec | clock }}">{{ c.start_sec | clock }}</button>
+        <p class="cue-text">
+          {%- if c.units -%}
+            {%- for u in c.units -%}
+              {%- if u.start_sec is not none -%}<span class="w" data-start="{{ u.start_sec }}" data-end="{{ u.end_sec }}" title="{{ u.start_sec | clock }}{% if u.score is not none %} · 信心 {{ '%.2f' | format(u.score) }}{% endif %}">{{ u.word }}</span>
+              {%- else -%}{{ u.word }}{%- endif -%}
+            {%- endfor -%}
+          {%- else -%}{{ c.cleaned_text or "（空白）" }}{%- endif -%}
+        </p>
+      </li>
+      {% endfor %}
+    </ol>
+    <p class="muted mt">點時間或文字跳到對應位置。字幕是外部資料，未經人工校對前不視為正確轉寫。{% if aligned %}字詞時間 {{ aligned }}／{{ cues | length }} 句。{% endif %}</p>
+    {% endif %}
+  </section>
+
+  <aside class="card meta-card">
+    <header><h2>資料</h2></header>
+    <dl class="meta">
+      <dt>標題</dt><dd>{{ source.title or "未命名" }}</dd>
+      <dt>平台</dt><dd>{{ source.platform | label(L.PLATFORMS) }}</dd>
+      {% if link %}<dt>網址</dt><dd><a href="{{ link }}" target="_blank" rel="noopener noreferrer">{{ link }}</a></dd>{% endif %}
+      {% if source.channel_name %}<dt>頻道</dt><dd>{{ source.channel_name }}</dd>{% endif %}
+      {% if source.published_date %}<dt>發布日期</dt><dd>{{ source.published_date }}</dd>{% endif %}
+      <dt>領域</dt><dd>{{ source.domain | label(L.DOMAINS) }}</dd>
+      <dt>時長</dt><dd class="mono">{{ source.duration_sec | clock }}</dd>
+      <dt>音訊語言</dt><dd>{{ source.audio_language | label(L.LANGUAGES) }}</dd>
+      <dt>字幕</dt><dd>{{ source.subtitle_kind | label(L.SUBTITLE_KINDS) }}{% if source.subtitle_language %} · <span class="mono">{{ source.subtitle_language }}</span>{% endif %}</dd>
+      <dt>語者數</dt><dd>{{ source.speaker_count | label(L.SPEAKER_COUNT) }}</dd>
+      <dt>台灣語者證據</dt><dd>{{ source.taiwan_basis | label(L.TAIWAN_BASIS) }}</dd>
+      <dt>授權觀察</dt><dd>{{ source.license_label | label(L.LICENSES) }}{% if source.license_checked_at %}<span class="sub muted">記錄於 {{ source.license_checked_at | local_time(16) }}</span>{% endif %}</dd>
+      <dt>授權證據</dt><dd>{{ source.license_evidence or "—" }}</dd>
+      <dt>建立</dt><dd class="mono">{{ source.created_at | local_time(19) }}</dd>
+      <dt>來源 ID</dt><dd class="mono">{{ source.id }}</dd>
+      <dt>{{ "影片 ID" if source.platform == "youtube" else "檔案 SHA-256" }}</dt><dd class="mono">{{ source.video_id }}</dd>
+    </dl>
+    {% if tags %}<p class="tags mt">{% for tg in tags %}<span class="tag">{{ tg }}</span>{% endfor %}</p>{% endif %}
+    {% if source.description %}
+    <details class="mt"><summary>平台描述（外部文字，僅供參考）</summary><p class="quote mt">{{ source.description[:3000] }}</p></details>
+    {% endif %}
+  </aside>
+</div>
+{% endblock %}

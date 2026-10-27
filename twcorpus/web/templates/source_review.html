@@ -1,0 +1,90 @@
+{% extends "source_base.html" %}
+{% block crumb %}音段審查{% endblock %}
+{% block content %}
+<section class="card">
+  <form method="get" action="/sources/{{ source.id }}/review" class="filters" role="search" data-live>
+    {% if selected %}<input type="hidden" name="segment" value="{{ selected.id }}">{% endif %}
+    {{ m.select("status", "審查狀態", L.REVIEW_STATUS, filters.status, "全部") }}
+    {{ m.select("language", "語言", L.LANGUAGES, filters.language, "全部") }}
+    {{ m.select("kind", "字幕來源", L.SUBTITLE_KINDS, filters.kind, "全部") }}
+    {{ m.select("flag", "旗標", flag_options, filters.flag, "全部") }}
+    <label class="field">群組 <input type="text" name="group" value="{{ filters.group }}" placeholder="candidate_001"></label>
+    <label class="field">搜尋文字 <input type="search" name="q" value="{{ filters.q }}" placeholder="字幕或修訂"></label>
+    <div class="row"><noscript><button class="btn" type="submit">套用</button></noscript><span data-live-region="clear">{% if filtered %}<a class="btn ghost" href="/sources/{{ source.id }}/review">清除篩選</a>{% endif %}</span></div>
+  </form>
+</section>
+
+<div class="grid split">
+  <section class="card flush sticky" data-live-region="list">
+    <header><h2>音段（{{ segments | length }}{% if segments | length >= 500 %}+{% endif %}）</h2></header>
+    {% if segments %}
+    <ul class="seg-list">
+      {% for s in segments %}
+      <li><a href="/sources/{{ source.id }}/review?{{ query }}{{ '&' if query }}segment={{ s.id }}"{% if selected and s.id == selected.id %} aria-current="true"{% endif %}>
+        <span class="line"><span class="mono">{{ s.start_sec | clock }}–{{ s.end_sec | clock }}</span><span class="badge {{ s.review_status | tone }}">{{ s.review_status | label(L.REVIEW_STATUS) }}</span></span>
+        <span class="text">{{ s.corrected_text if s.corrected_text is not none else s.original_text }}</span>
+        <span class="line"><span>{{ s.track_language }}</span><span>{{ s.track_kind | label(L.SUBTITLE_KINDS) }}</span></span>
+      </a></li>
+      {% endfor %}
+    </ul>
+    {% else %}<p class="empty">沒有符合條件的音段。</p>{% endif %}
+  </section>
+
+  {% if selected %}
+  <div class="stack">
+    <section class="card">
+      <header>
+        <h2>音段 <span class="mono">{{ selected.id[:12] }}</span> · 第 {{ selected.revision }} 版</h2>
+        <div class="row">
+          {% if selected.link %}<a href="{{ selected.link }}" target="_blank" rel="noopener noreferrer">在 YouTube 開啟 ↗</a>{% endif %}
+        </div>
+      </header>
+      <audio controls preload="metadata" src="/api/media/segments/{{ selected.id }}?r={{ selected.revision }}"></audio>
+      <dl class="meta mt">
+                <dt>時間</dt><dd class="mono">{{ selected.start_sec | round(2) }}s – {{ selected.end_sec | round(2) }}s（{{ (selected.end_sec - selected.start_sec) | round(2) }}s）</dd>
+        <dt>字幕</dt><dd>{{ selected.track_kind | label(L.SUBTITLE_KINDS) }} · <span class="mono">{{ selected.track_language }}</span></dd>
+        <dt>授權</dt><dd>{{ selected.license_label | label(L.LICENSES) }}</dd>
+        <dt>語者向量</dt><dd>{{ m.badge(selected.embedding_status, L.EMBEDDING_STATUS) }}{% if selected.manual_group or selected.candidate_group %} · 群組 <a class="mono" href="/clusters?group={{ (selected.manual_group or selected.candidate_group) | urlencode }}">{{ selected.manual_group or selected.candidate_group }}</a>{% if selected.manual_group %}（人工）{% else %}（候選）{% endif %}{% endif %}</dd>
+        <dt>SHA-256</dt><dd class="mono">{{ selected.audio_sha256[:16] }}…</dd>
+        {% if selected.flags %}<dt>自動旗標</dt><dd class="chips">{% for f in selected.flags %}<span class="badge warn">{{ f | label(L.QUALITY_FLAGS) }}</span>{% endfor %}</dd>{% endif %}
+      </dl>
+      <h3 class="mt">原始字幕</h3>
+      <p class="quote mt">{{ selected.original_text or "（空白）" }}</p>
+    </section>
+
+    <section class="card">
+      <header><h2>審查</h2><p>修改邊界會重新切音、產生新版本，並使語者向量回到待計算。</p></header>
+      <form method="post" action="/api/review/{{ selected.id }}">
+        <span data-live-carry>{% for k, v in filters.items() %}{% if v %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endif %}{% endfor %}</span>
+        <div class="fields">
+          <label class="field wide">修訂文字
+            <textarea name="corrected_text" rows="4" placeholder="留空表示沿用原始字幕">{{ selected.corrected_text or "" }}</textarea></label>
+          <label class="field">起點（秒） <input type="number" name="start_sec" step="0.01" min="0" value="{{ selected.start_sec }}" required></label>
+          <label class="field">終點（秒） <input type="number" name="end_sec" step="0.01" min="0" value="{{ selected.end_sec }}" required></label>
+          {{ m.select("review_status", "審查狀態", L.REVIEW_STATUS, selected.review_status) }}
+          {{ m.select("review_level", "校對程度", L.REVIEW_LEVEL, selected.review_level) }}
+          {{ m.select("language", "音段語言", L.LANGUAGES, selected.language) }}
+          {{ m.select("speaker_state", "語者狀態", L.SPEAKER_STATE, selected.speaker_state) }}
+          <label class="field">來源內語者代號 <input type="text" name="local_speaker_id" maxlength="80" value="{{ selected.local_short }}" placeholder="例如 A、主持人">
+            <span class="help">只在同一來源內有效，不代表真實身分。</span></label>
+          <fieldset class="wide"><legend>人工標記</legend>
+            <div class="checks">
+              {% for code, text in L.MANUAL_LABELS.items() %}
+              <label class="check"><input type="checkbox" name="manual_labels" value="{{ code }}"{% if code in selected.labels %} checked{% endif %}><span>{{ text }}</span></label>
+              {% endfor %}
+            </div>
+          </fieldset>
+          <label class="field wide">備註 <textarea name="note" rows="2">{{ selected.review_note }}</textarea></label>
+        </div>
+        <div class="row end mt actions">
+          <button class="btn" type="submit">儲存</button>
+          {% if next_id %}<button class="btn primary" type="submit" name="next" value="{{ next_id }}">儲存並下一段 →</button>{% endif %}
+        </div>
+      </form>
+    </section>
+  </div>
+  {% else %}
+  <section class="card"><p class="empty">從左側選一個音段開始審查。</p></section>
+  {% endif %}
+</div>
+{% endblock %}

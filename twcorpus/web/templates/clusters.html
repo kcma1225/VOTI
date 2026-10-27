@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block lead %}<p>聲音相似不等於同一人、真實姓名或口音；cosine 分數不是校準機率。分群結果只是候選，需人工確認。</p>{% endblock %}
+{% block content %}
+<section class="kpis">
+  {{ m.kpi("已有向量的音段", ready | length, "共 %d 段" % total) }}
+  {{ m.kpi("群組", groups | length, "人工覆寫優先於候選") }}
+</section>
+
+<div class="grid two">
+  <section class="card">
+    <header><h2>建立分群</h2><p>平均連結、cosine 距離。門檻越小越容易拆成多群。</p></header>
+    {% if ready %}
+    <form method="post" action="/api/clusters/run" class="row" data-busy>
+      <label class="field">距離門檻（0.05–1.0） <input type="number" name="threshold" step="0.01" min="0.05" max="1" value="{{ threshold }}" required></label>
+      <button class="btn primary" type="submit">執行分群</button>
+    </form>
+    {% else %}
+    <div class="alert info"><div>尚無語者向量。請先排入語者向量計算。</div></div>
+    {% endif %}
+    <form method="post" action="/api/jobs/embedding" class="row mt" data-confirm="排入語者向量工作？首次執行會下載 SpeechBrain ECAPA 模型。">
+      <button class="btn{% if not ready %} primary{% endif %}" type="submit">排入語者向量計算</button>
+      <span class="muted">只計算尚無向量的音段；缺模型時標為「受阻」，不產生假向量。</span>
+    </form>
+  </section>
+
+  <section class="card">
+    <header><h2>找相似音段</h2><p>以單一音段為查詢，列出最相近的 10 段。</p></header>
+    {% if ready %}
+    <form method="get" action="/clusters" class="row">
+      <label class="field">查詢音段
+        <select name="query">
+          {% for s in ready %}<option value="{{ s.id }}"{% if query_segment and s.id == query_segment.id %} selected{% endif %}>{{ s.id[:8] }} · {{ (s.corrected_text or s.original_text)[:28] }}</option>{% endfor %}
+        </select></label>
+      <button class="btn" type="submit">查詢</button>
+    </form>
+    {% else %}<p class="muted">需要先計算語者向量。</p>{% endif %}
+  </section>
+</div>
+
+{% if query_segment %}
+<section class="card">
+  <header><h2>相似於 <span class="mono">{{ query_segment.id[:12] }}</span></h2></header>
+  <div class="media-row">
+    <div><span class="badge info">查詢</span> {{ query_segment.corrected_text or query_segment.original_text }}<span class="sub muted">{{ query_segment.source_title }}</span></div>
+    <audio controls preload="none" src="/api/media/segments/{{ query_segment.id }}?r={{ query_segment.revision }}"></audio>
+  </div>
+  {% for seg, score in matches %}
+  <div class="media-row">
+    <div><span class="score">{{ "%.3f" % score }}</span> · <a href="/sources/{{ seg.source_id }}/review?segment={{ seg.id }}">{{ seg.corrected_text or seg.original_text }}</a><span class="sub muted">{{ seg.source_title }}</span></div>
+    <audio controls preload="none" src="/api/media/segments/{{ seg.id }}?r={{ seg.revision }}"></audio>
+  </div>
+  {% else %}<p class="empty">沒有其他可比較的向量。</p>{% endfor %}
+</section>
+{% endif %}
+
+<div class="grid split">
+  <section class="card flush">
+    <header><h2>群組</h2></header>
+    {% if groups %}
+    <ul class="seg-list">
+      {% for name, n in groups %}
+      <li><a href="/clusters?group={{ name | urlencode }}"{% if name == group %} aria-current="true"{% endif %}>
+        <span class="line"><span class="mono">{{ name }}</span><span>{{ n }} 段</span></span></a></li>
+      {% endfor %}
+    </ul>
+    {% else %}<p class="empty">尚未分群。</p>{% endif %}
+  </section>
+
+  <section class="card">
+    {% if group %}
+    <header><h2>群組 <span class="mono">{{ group }}</span>（{{ member_count }} 段{% if member_count > members | length %}，顯示前 {{ members | length }} 段{% endif %}）</h2></header>
+    {% for seg in members %}
+    <div class="media-row">
+      <div>
+        <a href="/sources/{{ seg.source_id }}/review?segment={{ seg.id }}">{{ seg.corrected_text or seg.original_text }}</a>
+        <span class="sub muted">{{ seg.source_title }} · {% if seg.manual_group %}人工指定{% else %}候選{% endif %}</span>
+        <form method="post" action="/api/clusters/{{ seg.id }}/group" class="row mt">
+          <label class="sr-only" for="g-{{ seg.id }}">改到群組</label>
+          <input id="g-{{ seg.id }}" type="text" name="group" maxlength="80" value="{{ seg.manual_group or seg.candidate_group }}" required>
+          <input type="hidden" name="note" value="">
+          <button class="btn small" type="submit">改群組</button>
+        </form>
+      </div>
+      <audio controls preload="none" src="/api/media/segments/{{ seg.id }}?r={{ seg.revision }}"></audio>
+    </div>
+    {% endfor %}
+    {% else %}
+    <p class="empty">從左側選一個群組。人工改群組的結果會在重新分群後保留。</p>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

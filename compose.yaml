@@ -1,0 +1,98 @@
+# 啟動：docker compose up -d --build   → http://127.0.0.1
+# 只有 nginx 對外，且只綁定本機 127.0.0.1:80；web、worker、db 只在 compose 內部網路。檔案與模型快取在 ./data，資料庫在具名 volume pgdata。
+# 資料表只由 db/init.sql 建立（volume 第一次建立時執行一次）；沒有 migration。改 schema：編輯 db/init.sql 後
+# docker compose down -v && docker compose up -d --build（會清空資料庫，./data 內的檔案不受影響）。
+name: twcorpus
+
+x-app: &app
+  build: .
+  image: twcorpus:local
+  init: true
+  restart: unless-stopped
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    CORPUS_DATA_DIR: /data
+    CORPUS_DATABASE_URL: postgresql://corpus:${POSTGRES_PASSWORD:-corpus}@db:5432/corpus
+    HF_HOME: /data/hf-cache
+    TORCH_HOME: /data/torch-cache
+  volumes:
+    - ./data:/data
+  depends_on:
+    db:
+      condition: service_healthy
+
+services:
+  db:
+    image: postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: corpus
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-corpus}
+      POSTGRES_DB: corpus
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U corpus -d corpus"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  nginx:
+    image: nginxinc/nginx-unprivileged:1.30.4-alpine-slim@sha256:7bbe8940bc478e5618e6d4cfbeda406e5b4217cacc06faacd665aca5e468595e
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - ./deploy/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "127.0.0.1:80:8080"
+    depends_on:
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "--header", "Host: localhost", "http://127.0.0.1:8080/api/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  web:
+    <<: *app
+    command: ["uvicorn", "twcorpus.web.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8501",
+              "--proxy-headers", "--forwarded-allow-ips", "*"]
+    environment:
+      CORPUS_DATA_DIR: /data
+      CORPUS_DATABASE_URL: postgresql://corpus:${POSTGRES_PASSWORD:-corpus}@db:5432/corpus
+      HF_HOME: /data/hf-cache
+      TORCH_HOME: /data/torch-cache
+      ALLOWED_HOSTS: 127.0.0.1,localhost
+      MAX_UPLOAD_MB: "2048"
+    expose:
+      - "8501"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8501/api/healthz', headers={'Host': 'localhost'}), timeout=3).status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "twcorpus.cli", "worker", "--loop"]
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys,time; p='/data/worker.heartbeat'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p) < 60 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  pgdata:

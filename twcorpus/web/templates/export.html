@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block lead %}<p>時數皆由資料庫即時計算。匯出為凍結快照，含 JSONL／CSV manifest 與音訊。</p>{% endblock %}
+{% block content %}
+<div class="alert warn"><div><strong>僅供本地研究；</strong>輸出不代表允許公開發布。只有「逐段校對」代表逐段人工校對；其餘字幕不得稱 ground truth。每筆 <code>publication_rights_confirmed=false</code>。</div></div>
+
+<section class="kpis" aria-label="時數">
+  {{ m.kpi("候選來源時長", stats.candidate_hours | duration, "%d 個來源" % stats.candidate_sources) }}
+  {{ m.kpi("已取得時長", stats.acquired_hours | duration, "%d 個來源" % stats.acquired_sources) }}
+  {{ m.kpi("音段時長合計", stats.segment_hours_sum | duration, "%d 段" % stats.segments) }}
+  {{ m.kpi("來源覆蓋時長", stats.source_coverage_hours | duration, "重疊區間只算一次") }}
+  {{ m.kpi("審查通過", stats.reviewed_hours_sum | duration, "review_status = passed") }}
+  {{ m.kpi("待審／排除", "%d / %d" % (stats.pending_segments, stats.excluded_segments)) }}
+  {{ m.kpi("候選群數", stats.candidate_clusters, "最近一次分群") }}
+</section>
+
+<div class="grid two">
+  <section class="card"><header><h2>依審查狀態</h2></header>{{ m.bars(stats.distribution.review_status, labels=L.REVIEW_STATUS) }}</section>
+  <section class="card"><header><h2>依字幕來源</h2></header>{{ m.bars(stats.distribution.subtitle_kind, labels=L.SUBTITLE_KINDS) }}</section>
+  <section class="card"><header><h2>依語言</h2></header>{{ m.bars(stats.distribution.language, labels=L.LANGUAGES) }}</section>
+  <section class="card"><header><h2>依來源</h2></header>{{ m.bars(stats.distribution.source_id, names=titles) }}</section>
+</div>
+
+<section class="card">
+  <header><h2>建立匯出</h2><p>條件為空表示不篩選。</p></header>
+  <form method="post" action="/api/export" data-busy>
+    <div class="fields">
+      <label class="field">來源
+        <select name="source"><option value="">全部來源</option>
+          {% for s in sources %}<option value="{{ s.id }}">{{ (s.title or s.id)[:40] }}</option>{% endfor %}
+        </select></label>
+      {{ m.select("language", "語言", L.LANGUAGES, "", "全部") }}
+      {{ m.select("status", "審查狀態", L.REVIEW_STATUS, "passed", "全部") }}
+      {{ m.select("kind", "字幕來源", L.SUBTITLE_KINDS, "", "全部") }}
+      <label class="field">群組 <input type="text" name="group" maxlength="80" placeholder="例如 candidate_001"></label>
+      <label class="check wide"><input type="checkbox" name="corrected_only" value="yes"><span>只匯出「逐段校對」的音段</span></label>
+    </div>
+    <div class="row end mt"><button class="btn primary" type="submit">建立匯出快照</button></div>
+  </form>
+</section>
+
+<section class="card flush">
+  <header><h2>匯出紀錄</h2><p>位於資料目錄 <code>exports/</code>。</p></header>
+  {% if exports %}
+  <div class="table-wrap"><table class="responsive">
+    <thead><tr><th>時間</th><th>條件</th><th class="num">音段</th><th>下載</th></tr></thead>
+    <tbody>
+    {% for e in exports %}
+    <tr>
+      <td data-label="時間" class="mono nowrap">{{ e.created_at | local_time(16) }}<span class="sub">{{ e.id[:12] }}</span></td>
+      <td data-label="條件"><span class="chips">{% for k, v in e.filters.items() %}<span class="badge outline">{{ k }}={{ (titles.get(v) or v) if k == "source_id" else v }}</span>{% else %}<span class="muted">全部</span>{% endfor %}</span></td>
+      <td data-label="音段" class="num">{{ e.count }}</td>
+      <td data-label="下載" class="nowrap"><a href="/api/exports/{{ e.id }}/manifest.jsonl">JSONL</a> · <a href="/api/exports/{{ e.id }}/manifest.csv">CSV</a> · <a href="/api/exports/{{ e.id }}/README.txt">README</a></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<p class="empty">尚無匯出。</p>{% endif %}
+</section>
+{% endblock %}

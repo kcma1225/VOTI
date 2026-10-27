@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% block lead %}<p>語料的價值在多樣性與 metadata 的完整：用領域、平台、語言、狀態篩選，找到不同情境的語音。</p>{% endblock %}
+{% block actions %}
+<button type="button" class="btn primary" data-dialog-open="dlg-local">＋ 本地配對</button>
+<button type="button" class="btn" data-dialog-open="dlg-urls">＋ YouTube 網址</button>
+<button type="button" class="btn" data-dialog-open="dlg-candidates">候選搜尋</button>
+{% endblock %}
+{% block content %}
+<form method="get" action="/sources" class="filter-bar" role="search" data-live>
+  <div class="chips" role="group" aria-label="領域" data-live-region="chips">
+    <a class="chip" href="{{ filter_url(filters, domain='') }}" data-live-set="domain="{% if not filters.domain %} aria-current="true"{% endif %}>全部 <span class="n">{{ domain_counts.values() | sum }}</span></a>
+    {% for code, name in L.DOMAINS.items() %}{% if domain_counts.get(code) or filters.domain == code %}
+    <a class="chip" href="{{ filter_url(filters, domain=code) }}" data-live-set="domain={{ code }}"{% if filters.domain == code %} aria-current="true"{% endif %}>{{ name }} <span class="n">{{ domain_counts.get(code, 0) }}</span></a>
+    {% endif %}{% endfor %}
+  </div>
+  <div class="row filter-fields">
+    <input type="hidden" name="domain" value="{{ filters.domain }}">
+    <label class="sr-only" for="f-q">搜尋</label>
+    <input id="f-q" type="search" name="q" value="{{ filters.q }}" placeholder="搜尋標題、頻道、描述">
+    <label class="sr-only" for="f-platform">平台</label>
+    <select id="f-platform" name="platform">{{ m.options(L.PLATFORMS, filters.platform, "全部平台") }}</select>
+    <label class="sr-only" for="f-language">音訊語言</label>
+    <select id="f-language" name="language">{{ m.options(L.LANGUAGES, filters.language, "全部語言") }}</select>
+    <label class="sr-only" for="f-status">狀態</label>
+    <select id="f-status" name="status">{{ m.options(L.SOURCE_STATUS, filters.status, "全部狀態") }}</select>
+    <noscript><button class="btn small" type="submit">套用</button></noscript>
+    <span data-live-region="clear">{% if filtered %}<a class="btn small ghost" href="/sources">清除篩選</a>{% endif %}</span>
+  </div>
+</form>
+
+<div data-live-region="results">
+<section class="card flush">
+  <header><h2>來源清單（{{ sources | length }}{% if filtered %}／{{ total }}{% endif %}）</h2><p>點標題看逐字稿與 metadata；編輯、取得字幕、對齊與刪除在來源頁的「管理此來源」。</p></header>
+  {% if sources %}
+  <div class="table-wrap"><table class="responsive">
+    <thead><tr><th>標題</th><th>領域</th><th>平台</th><th>語言</th><th>狀態</th><th>授權</th><th class="num">時長</th><th class="num">音段</th><th>建立</th><th><span class="sr-only">操作</span></th></tr></thead>
+    <tbody>
+    {% for s in sources %}
+    <tr>
+      <td data-label="標題" class="title-cell"><a href="/sources/{{ s.id }}">{{ s.title or "未命名" }}</a>{% if s.channel_name %}<span class="sub">{{ s.channel_name }}</span>{% endif %}{% if s.failure_reason %}<span class="sub">{{ s.failure_reason[:120] }}</span>{% endif %}</td>
+      <td data-label="領域" class="nowrap">{{ s.domain | label(L.DOMAINS) }}</td>
+      <td data-label="平台" class="nowrap">{{ s.platform | label(L.PLATFORMS) }}</td>
+      <td data-label="語言" class="nowrap">{{ s.audio_language | label(L.LANGUAGES) }}</td>
+      <td data-label="狀態" class="nowrap">{{ m.badge(s.status, L.SOURCE_STATUS) }}</td>
+      <td data-label="授權" class="nowrap">{{ s.license_label | label(L.LICENSES) }}</td>
+      <td data-label="時長" class="num">{{ s.duration_sec | clock }}</td>
+      <td data-label="音段" class="num">{{ segments.get(s.id, 0) }}</td>
+      <td data-label="建立" class="mono nowrap">{{ s.created_at | local_time(10) }}</td>
+      <td data-label="" class="nowrap act">
+        <form method="post" action="/api/sources/{{ s.id }}/delete" data-confirm="刪除來源「{{ (s.title or '未命名')[:60] }}」？字幕、音段、審查紀錄與已存檔案都會一併移除，無法復原。">
+          <input type="hidden" name="next" value="list">
+          <button class="btn small danger" type="submit">刪除</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% elif filtered %}<p class="empty">沒有符合篩選的來源。<a href="/sources">清除篩選</a></p>
+  {% else %}<p class="empty">尚無來源。用右上角的按鈕匯入本地檔案或 YouTube 影片。</p>{% endif %}
+</section>
+</div>
+
+<dialog class="modal wide" id="dlg-local" aria-labelledby="dlg-local-title"{% if tab == "local" %} data-open-on-load{% endif %}>
+  <header class="modal-head">
+    <div><h2 id="dlg-local-title">本地音訊＋字幕</h2><p>上傳後由背景 worker 計算指紋、正規化並依 cue 切片；沒有字幕的來源保留為待補件。</p></div>
+    <button type="button" class="btn small ghost" data-dialog-close aria-label="關閉">✕</button>
+  </header>
+  {% if tab == "local" and error %}<div class="alert bad" role="alert"><div><strong>操作未完成：</strong>{{ error }}</div></div>{% endif %}
+  <form method="post" action="/api/sources/local" enctype="multipart/form-data" data-busy>
+    <div class="fields">
+      <label class="field">音訊或影片檔
+        <input type="file" name="audio" required accept=".wav,.mp3,.m4a,.mp4,.flac,.ogg,.opus,.webm,.aac,.mkv,.mov,audio/*,video/*">
+        <span class="help">WAV、MP3、M4A、MP4、FLAC、OGG、OPUS、WEBM、AAC、MKV、MOV</span>
+      </label>
+      <label class="field">字幕（選填）
+        <input type="file" name="subtitle" accept=".srt,.vtt">
+        <span class="help">SRT 或 VTT，須與音訊同語言</span>
+      </label>
+      <label class="field wide">標題 <input type="text" name="title" maxlength="300" placeholder="留空則使用檔名"></label>
+      {{ m.select("language", "音訊語言", L.LANGUAGES, "zh") }}
+      {{ m.select("subtitle_language", "字幕語言", L.LANGUAGES, "zh") }}
+      {{ m.select("subtitle_kind", "字幕來源", L.SUBTITLE_KINDS, "local_provided") }}
+      {{ m.select("speaker_count", "語者數", L.SPEAKER_COUNT, "unknown") }}
+      {{ m.select("taiwan_basis", "台灣語者證據", L.TAIWAN_BASIS, "unknown") }}
+      {{ m.select("domain", "領域", L.DOMAINS, "unknown") }}
+      {{ m.select("license_label", "授權觀察", L.LICENSES, "unknown") }}
+      <label class="field wide">授權證據
+        <textarea name="license_evidence" rows="2" placeholder="例如：自行錄製並取得受訪者書面同意（2026-10-01）"></textarea>
+        <span class="help">非「未知」時必填。僅為觀察紀錄，不是法律意見。</span>
+      </label>
+    </div>
+    <div class="row end mt"><button class="btn primary" type="submit">上傳並排入處理</button></div>
+  </form>
+</dialog>
+<dialog class="modal" id="dlg-urls" aria-labelledby="dlg-urls-title"{% if tab == "urls" %} data-open-on-load{% endif %}>
+  <header class="modal-head">
+    <div><h2 id="dlg-urls-title">YouTube 影片網址</h2><p>每行一支，最多 20 支。只檢查中繼資料與字幕軌，不下載音訊。</p></div>
+    <button type="button" class="btn small ghost" data-dialog-close aria-label="關閉">✕</button>
+  </header>
+  {% if tab == "urls" and error %}<div class="alert bad" role="alert"><div><strong>操作未完成：</strong>{{ error }}</div></div>{% endif %}
+  <form method="post" action="/api/sources/inspect" data-busy>
+    <label class="field">影片網址
+      <textarea name="urls" rows="6" required placeholder="https://www.youtube.com/watch?v=…&#10;https://youtu.be/…"></textarea>
+    </label>
+    <div class="row end mt"><button class="btn primary" type="submit">排入檢查</button></div>
+  </form>
+</dialog>
+<dialog class="modal wide" id="dlg-candidates" aria-labelledby="dlg-candidates-title"{% if tab == "candidates" %} data-open-on-load{% endif %}>
+  <header class="modal-head">
+    <div><h2 id="dlg-candidates-title">候選搜尋</h2><p>展開頻道或播放清單，或用 API 搜尋創用 CC 影片；候選不代表授權可用。</p></div>
+    <button type="button" class="btn small ghost" data-dialog-close aria-label="關閉">✕</button>
+  </header>
+  {% if tab == "candidates" and error %}<div class="alert bad" role="alert"><div><strong>操作未完成：</strong>{{ error }}</div></div>{% endif %}
+  <div class="grid two">
+  <section class="card">
+    <header><h2>頻道／播放清單展開</h2><p>不需 API key；用 yt-dlp 列出影片，不下載。</p></header>
+    <form method="post" action="/api/sources/candidates" data-busy>
+      <input type="hidden" name="mode" value="expand">
+      <div class="fields">
+        <label class="field wide">頻道或播放清單網址 <input type="url" name="url" required placeholder="https://www.youtube.com/@…/videos"></label>
+        <label class="field">上限 <input type="number" name="limit" min="1" max="50" value="10"></label>
+      </div>
+      <div class="row end mt"><button class="btn" type="submit">列出候選</button></div>
+    </form>
+  </section>
+  <section class="card">
+    <header><h2>API 搜尋（創用 CC＋字幕）</h2><p>{% if has_key %}使用 <code>YOUTUBE_API_KEY</code>。{% else %}未設定 <code>YOUTUBE_API_KEY</code>，此功能停用。{% endif %}</p></header>
+    <form method="post" action="/api/sources/candidates" data-busy>
+      <input type="hidden" name="mode" value="search">
+      <div class="fields">
+        <label class="field wide">關鍵字 <input type="search" name="query" required {% if not has_key %}disabled{% endif %}></label>
+        <label class="field">發布於之後 <input type="text" name="after" placeholder="2024-01-01T00:00:00Z" {% if not has_key %}disabled{% endif %}></label>
+        <label class="field">頻道 ID <input type="text" name="channel" {% if not has_key %}disabled{% endif %}></label>
+        <label class="field">上限 <input type="number" name="limit" min="1" max="50" value="10" {% if not has_key %}disabled{% endif %}></label>
+      </div>
+      <div class="row end mt"><button class="btn" type="submit" {% if not has_key %}disabled{% endif %}>搜尋</button></div>
+    </form>
+  </section>
+  </div>
+{% if candidates is not none %}
+<section class="card flush">
+  <header><h2>候選影片（{{ candidates | length }}）</h2><p>候選不代表授權可用；排入檢查後再逐支確認。</p></header>
+  {% if candidates %}
+  <form method="post" action="/api/sources/inspect">
+    <div class="table-wrap"><table class="responsive">
+      <thead><tr><th><label class="check"><input type="checkbox" data-check-all checked><span class="sr-only">全選</span></label></th><th>標題</th><th>影片 ID</th></tr></thead>
+      <tbody>
+      {% for c in candidates %}
+      <tr>
+        <td data-label="選取"><label class="check"><input type="checkbox" name="url" value="{{ c.url }}" checked><span class="sr-only">選取 {{ c.title }}</span></label></td>
+        <td data-label="標題">{{ c.title or "（無標題）" }}</td>
+        <td data-label="影片 ID" class="mono"><a href="{{ c.url }}" target="_blank" rel="noopener noreferrer">{{ c.id }}</a></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+    <div class="row end card-foot"><button class="btn primary" type="submit">排入檢查（最多 20 支）</button></div>
+  </form>
+  {% else %}<p class="empty">沒有找到候選影片。</p>{% endif %}
+</section>
+{% endif %}
+</dialog>
+{% endblock %}

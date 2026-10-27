@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>{{ title }}｜島嶼之聲</title>
+  <script src="{{ asset('theme.js') }}"></script>
+  <script src="{{ asset('jobs.js') }}" defer></script>
+  <script src="{{ asset('select.js') }}" defer></script>
+  <script src="{{ asset('live.js') }}" defer></script>
+  {% block scripts %}{% endblock %}
+  <link rel="stylesheet" href="{{ asset('app.css') }}">
+  <link rel="icon" type="image/svg+xml" href="{{ asset('favicon.svg') }}">
+</head>
+<body>
+{% import "macros.html" as m %}
+<a class="skip" href="#content">跳到主要內容</a>
+<div class="shell">
+  <aside class="sidebar" aria-label="主選單">
+    <a class="brand" href="/"><img class="brand-mark" src="{{ asset('mark.svg') }}" alt="" width="40" height="40"><span class="brand-text"><strong>島嶼之聲</strong><span class="en">VOICE OF ISLAND</span><span>台灣語音語料 · 本機</span></span></a>
+    <nav class="nav">
+      {% for key, href, label in L.NAV %}
+      <a href="{{ href }}"{% if key == active %} aria-current="page"{% endif %}><span class="num">{{ '%02d' % loop.index }}</span>{{ label }}</a>
+      {% endfor %}
+    </nav>
+    <div class="sidebar-foot">
+      {{ m.theme_toggle() }}
+      <span>僅供 localhost 使用<br>授權須逐項確認</span>
+      <span class="mono">v{{ version }}</span>
+      {{ m.jobs_toggle("side") }}
+    </div>
+  </aside>
+  <header class="topbar">
+    <div class="spread">
+      <a class="brand" href="/"><img class="brand-mark" src="{{ asset('mark.svg') }}" alt="" width="28" height="28"><strong>島嶼之聲</strong></a>
+      <div class="row nowrap">{{ m.jobs_toggle("top") }}{{ m.theme_toggle() }}</div>
+    </div>
+    <nav class="nav" aria-label="主選單">
+      {% for key, href, label in L.NAV %}
+      <a href="{{ href }}"{% if key == active %} aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
+    </nav>
+  </header>
+  <main class="main" id="content">
+    <div class="page-head">
+      <div>
+        <div class="eyebrow">{% block eyebrow %}corpus / workspace{% endblock %}</div>
+        <h1>{% block heading %}{{ title }}{% endblock %}</h1>
+        {% block lead %}{% endblock %}
+      </div>
+      <div class="row">{% block actions %}{% endblock %}</div>
+    </div>
+    <div class="stack">
+      {% if notice %}<div class="alert ok" role="status"><div>{{ notice }}</div></div>{% endif %}
+      {% if error %}<div class="alert bad" role="alert"><div><strong>操作未完成：</strong>{{ error }}</div></div>{% endif %}
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+</div>
+
+{# Background jobs: filled by jobs.js from /api/jobs. Work keeps running in the worker after the page closes. #}
+<aside class="jobs-panel" id="jobs-panel" aria-labelledby="jobs-panel-title" hidden>
+  <header class="jobs-head">
+    <div>
+      <h2 id="jobs-panel-title">處理任務</h2>
+      <p class="muted" data-jobs-worker>正在讀取…</p>
+    </div>
+    <button type="button" class="btn small ghost" data-jobs-close aria-label="關閉處理任務面板">✕</button>
+  </header>
+  <p class="jobs-note">背景執行：關閉頁面也會繼續。預計完成時間依目前實測速度線性推估，僅供參考。</p>
+  <ol class="jobs-list" data-jobs-list aria-live="off"></ol>
+  <p class="empty" data-jobs-empty hidden>尚無工作。</p>
+</aside>
+<div class="toasts" data-toasts role="status" aria-live="polite"></div>
+</body>
+</html>

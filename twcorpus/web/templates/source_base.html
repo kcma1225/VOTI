@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{# Layer 2 of a source: one task per page, always one click from the transcript. #}
+{% block eyebrow %}source / {{ source.id[:12] }} / {% block crumb %}{% endblock %}{% endblock %}
+{% block lead %}<p>{{ source.title or "未命名來源" }}</p>{% endblock %}
+{% block actions %}
+<a class="btn" href="/sources/{{ source.id }}">← 逐字稿</a>
+{% block more_actions %}{% endblock %}
+{% endblock %}

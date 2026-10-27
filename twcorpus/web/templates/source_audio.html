@@ -1,0 +1,45 @@
+{% extends "source_base.html" %}
+{% block crumb %}音訊與對齊{% endblock %}
+{% block content %}
+<section class="card">
+  <header><h2>播放檔</h2><p>逐字稿播放用 MP3；沒有時退回 16 kHz WAV（檔案較大）。</p></header>
+  {% if has_mp3 %}
+  <p><span class="badge ok">已有 MP3</span></p>
+  {% elif playable %}
+  <p class="muted">目前以 16 kHz WAV 播放。</p>
+  {% else %}
+  <p class="muted">尚無可播放音訊；完成取得或切片工作後即可播放。</p>
+  {% endif %}
+  {% if has_original %}
+  <form method="post" action="/api/sources/{{ source.id }}/playback" class="row mt" data-busy>
+    <button class="btn small{% if not has_mp3 %} primary{% endif %}" type="submit">{{ "重新轉成 MP3" if has_mp3 else "轉成 MP3 播放檔" }}</button>
+  </form>
+  {% elif not has_mp3 %}<p class="muted mt">尚無原始音訊可轉檔。</p>{% endif %}
+</section>
+
+<section class="card flush">
+  <header><h2>字詞時間（強制對齊）</h2><p>MMS_FA CTC 強制對齊（torchaudio），在各句字幕時間窗內計算；句界取自字幕，字詞時間為模型推估。只支援與音訊同語言的英文、中文字幕。</p></header>
+  {% if tracks %}
+  <div class="table-wrap"><table class="responsive">
+    <thead><tr><th>字幕軌</th><th>字詞時間</th><th><span class="sr-only">操作</span></th></tr></thead>
+    <tbody>
+    {% for t in tracks %}
+    {% set st = states[t.id] %}
+    <tr>
+      <td data-label="字幕軌">{{ t.language | label(L.LANGUAGES) }} · {{ t.kind | label(L.SUBTITLE_KINDS) }} · {{ t.created_at | local_time(10) }}</td>
+      <td data-label="字詞時間">{% if st.aligned %}<span class="badge ok">{{ st.aligned }}／{{ t.cue_count }} 句</span>{% else %}<span class="badge muted">句子層級</span>{% endif %}</td>
+      <td data-label="" class="act">
+        {% if st.can %}
+        <form method="post" action="/api/sources/{{ source.id }}/align" data-confirm="{% if model_cached %}排入字詞對齊？{% else %}排入字詞對齊？首次執行會下載 MMS_FA 模型（約 {{ '%.2f' | format(model_gb) }} GB）到 data/models。{% endif %}">
+          <input type="hidden" name="track_id" value="{{ t.id }}">
+          <button class="btn small{% if not st.aligned %} primary{% endif %}" type="submit" {% if not playable %}disabled{% endif %}>{{ "重新對齊" if st.aligned else "計算字詞時間" }}</button>
+        </form>
+        {% else %}<span class="muted">不支援</span>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<p class="empty">尚無字幕軌。</p>{% endif %}
+</section>
+{% endblock %}

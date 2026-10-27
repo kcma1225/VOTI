@@ -1,0 +1,37 @@
+{% extends "source_base.html" %}
+{% block crumb %}字幕軌{% endblock %}
+{% block content %}
+<section class="card flush">
+  <header><h2>已保存字幕軌</h2></header>
+  {% if tracks %}
+  <div class="table-wrap"><table class="responsive">
+    <thead><tr><th>語言</th><th>類型</th><th>格式</th><th class="num">cue</th><th class="num">有效音段</th><th>建立</th><th>檔案</th></tr></thead>
+    <tbody>
+    {% for t in tracks %}
+    <tr>
+      <td data-label="語言">{{ t.language | label(L.LANGUAGES) }}</td>
+      <td data-label="類型">{{ t.kind | label(L.SUBTITLE_KINDS) }}</td>
+      <td data-label="格式" class="mono">{{ t.format }}</td>
+      <td data-label="cue" class="num">{{ t.cue_count }}</td>
+      <td data-label="有效音段" class="num">{{ t.segment_count }}</td>
+      <td data-label="建立" class="mono">{{ t.created_at | local_time(16) }}</td>
+      <td data-label="檔案"><a href="/api/media/tracks/{{ t.id }}" download>下載 {{ t.format | upper }}</a></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<p class="empty">尚無字幕軌。</p>{% endif %}
+</section>
+
+<section class="card">
+  <header><h2>補字幕並重新切片</h2><p>字幕須與音訊同語言；翻譯字幕不會切成語音轉寫配對。切片在背景執行。</p></header>
+  <form method="post" action="/api/sources/{{ source.id }}/subtitles" enctype="multipart/form-data" data-busy>
+    <div class="fields">
+      <label class="field wide">SRT／VTT <input type="file" name="subtitle" accept=".srt,.vtt" required></label>
+      {{ m.select("language", "字幕語言", L.LANGUAGES, source.audio_language) }}
+      {{ m.select("kind", "字幕身分", L.SUBTITLE_KINDS, "local_provided") }}
+    </div>
+    <div class="row end mt"><button class="btn primary" type="submit">上傳並排入切片</button></div>
+  </form>
+</section>
+{% endblock %}
