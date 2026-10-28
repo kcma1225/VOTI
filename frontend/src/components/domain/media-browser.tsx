@@ -7,7 +7,7 @@ import { api } from '@/api/client'
 import { errMsg, useMedia, usePlaylists } from '@/api/queries'
 import type { CaptionFilter, MediaKind, MediaQuery, MediaSort, MediaStatus, MediaSummary } from '@/api/types'
 import { fmtClock, fmtCompact, fmtDate, fmtDb, fmtHours, fmtInt, fmtMos } from '@/lib/format'
-import { isPreferredCaptionLang, lang, langRank, licenseLabel, mediaStatus } from '@/lib/labels'
+import { lang, langRank, licenseLabel, mediaStatus } from '@/lib/labels'
 import { cn } from '@/lib/cn'
 import { useIsDesktop } from '@/hooks/useMedia'
 import { Button } from '@/components/ui/button'
@@ -271,21 +271,27 @@ export function DownloadDialog({
 }) {
   const qc = useQueryClient()
   const t = useT()
-  const langs = useMemo(() => {
+  // Only languages the selected videos actually have (from the loaded rows), with how many videos have each.
+  const langCounts = useMemo(() => {
     const s = new Map<string, number>()
-    sample.forEach((m) => m.manual_caption_langs.forEach((l) => s.set(l, (s.get(l) ?? 0) + 1)))
-    if (!s.size) s.set('zh-TW', 0)
-    // preferred languages first (Traditional/Taiwan Chinese, Taiwanese, Hakka, Simplified), then by frequency
-    return [...s.entries()].sort((a, b) => langRank(a[0]) - langRank(b[0]) || b[1] - a[1]).map(([l]) => l)
-  }, [sample])
+    const rows = selection.ids ? sample.filter((m) => selection.ids!.includes(m.id)) : sample
+    rows.forEach((m) => m.manual_caption_langs.forEach((l) => s.set(l, (s.get(l) ?? 0) + 1)))
+    return s
+  }, [sample, selection.ids])
+  // preferred languages first (Traditional/Taiwan Chinese, Taiwanese, Hakka, Simplified), then by frequency
+  const langs = useMemo(
+    () => [...langCounts.entries()].sort((a, b) => langRank(a[0]) - langRank(b[0]) || b[1] - a[1]).map(([l]) => l),
+    [langCounts],
+  )
   const [picked, setPicked] = useState<string[]>([])
   const [includeAuto, setIncludeAuto] = useState(false)
   /** hard-subtitle OCR: null = settings decide (OCR when no usable captions), true = always, false = never */
   const [ocr, setOcr] = useState<OcrChoice>('auto')
   useEffect(() => {
     if (open) {
-      // default: every Chinese / Taiwanese / Hakka track present; none → let the server pick (it prefers zh-TW)
-      setPicked(langs.filter(isPreferredCaptionLang))
+      // default: automatic — the server picks each video's best track (zh-TW > zh-Hant > … > zh-Hans converted to
+      // Traditional, plus Taiwanese/Hakka), so a language one video lacks never makes another video fail
+      setPicked([])
       setIncludeAuto(!!query.include_auto)
       setOcr('auto')
     }
@@ -328,7 +334,7 @@ export function DownloadDialog({
           <Button variant="secondary" onClick={() => onOpenChange(false)}>
             {t('common.cancel')}
           </Button>
-          <Button variant="primary" loading={m.isPending} onClick={() => m.mutate()} disabled={!picked.length && !includeAuto && ocr !== 'always'}>
+          <Button variant="primary" loading={m.isPending} onClick={() => m.mutate()}>
             <Download /> {t('collect.media.dl.start')}
           </Button>
         </>
@@ -353,9 +359,13 @@ export function DownloadDialog({
         </div>
         <Field label={t('collect.media.dl.langs')} hint={t('collect.media.dl.langsHint')}>
           <div className="flex flex-wrap gap-1.5">
-            {[...new Set([...langs, 'zh-TW', 'nan', 'zh-Hant', 'en'])].map((l) => (
+            <Chip active={picked.length === 0} onClick={() => setPicked([])}>
+              {t('collect.media.dl.langsAuto')}
+            </Chip>
+            {langs.map((l) => (
               <Chip key={l} active={picked.includes(l)} onClick={() => setPicked((p) => (p.includes(l) ? p.filter((x) => x !== l) : [...p, l]))}>
                 {lang(l)} <span className="font-mono text-[11px] opacity-70">{l}</span>
+                {langCounts.get(l) ? <span className="text-[11px] opacity-70">· {t('collect.media.dl.langsCount', langCounts.get(l)!)}</span> : null}
               </Chip>
             ))}
           </div>
