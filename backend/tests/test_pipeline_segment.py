@@ -42,7 +42,15 @@ def test_snap_falls_back_to_least_speechy_point_in_continuous_speech():
     p[int(9.8 / HOP)] = 0.3  # a brief dip, not a pause
     v = sg.Vad(p, HOP, 20)
     t, in_speech = v.snap_end(10.0, 5.0, 20.0)
-    assert abs(t - 9.8) < 0.05 and not in_speech
+    assert abs(t - 10.0) < 0.05 and in_speech  # never inward: the dip before the caption end would cut a word
+    p[int(10.3 / HOP)] = 0.3
+    v = sg.Vad(p, HOP, 20)
+    t, in_speech = v.snap_end(10.0, 5.0, 20.0)
+    assert abs(t - 10.3) < 0.05 and not in_speech  # outward dip is used
+    t, _ = v.snap_start(10.6, 5.0, 20.0)
+    assert abs(t - 10.3) < 0.05  # a start looks earlier
+    t, _ = v.snap_start(9.0, 5.0, 20.0)
+    assert t <= 9.0 + 1e-9  # …never later
 
 
 def test_plan_from_cues_merges_short_cues_and_never_cuts_speech():

@@ -334,3 +334,100 @@ def test_mms_fa_real_clip(tmp_path):
     assert len(timed) >= len(text.replace(" ", "")) // 2
     starts = [u[1] for u in timed]
     assert starts == sorted(starts) and 0 <= starts[0] and timed[-1][2] <= audio.size / SR + 1e-3
+
+
+# ───────────────────────────── boundary refinement ─────────────────────────────
+
+def _mid(a, b):
+    return (a + b) / 2
+
+
+def test_speech_span_ignores_star_and_untimed_units():
+    rows = [["*", 0.5, 0.9, None], ["我", 1.0, 1.2, 0.9], ["，", None, None, None], ["好", 1.3, 1.5, 0.8],
+            ["2024", 1.5, 2.4, None]]
+    assert align.speech_span(rows) == (1.0, 1.5)
+    assert align.speech_span([]) == (None, None)
+    assert align.needs_refine(1.0, 1.4, 1.0, 1.5) and not align.needs_refine(1.0, 1.5, 1.02, 1.5)
+
+
+def test_refine_extends_cut_edges_outward_only():
+    E = align.Edge
+    # last word runs 0.3 s past the end, first word starts inside: only the end moves (+ pad), never inward
+    out = align.refine_bounds([E(1.0, 3.0, 1.2, 3.3, candidate=True)], _mid)
+    assert out == [(1.0, 3.4)]
+    # first word starts 0.25 s early
+    assert align.refine_bounds([E(1.0, 3.0, 0.75, 2.9, candidate=True)], _mid) == [(0.65, 3.0)]
+    # at most REACH_SEC
+    assert align.refine_bounds([E(1.0, 3.0, 1.1, 5.0, candidate=True)], _mid) == [(1.0, 3.0 + align.REACH_SEC)]
+    # not a candidate / protected: unchanged
+    assert align.refine_bounds([E(1.0, 3.0, 1.2, 3.3)], _mid) == [(1.0, 3.0)]
+    assert align.refine_bounds([E(1.0, 3.0, 1.2, 3.3, protected=True, candidate=True)], _mid) == [(1.0, 3.0)]
+
+
+def test_refine_shares_a_touching_boundary_at_the_quiet_point():
+    E = align.Edge
+    # A ends at 3.0 but its last character ends at 3.3; B (touching) starts speaking at 3.6
+    segs = [E(1.0, 3.0, 1.1, 3.3, candidate=True), E(3.0, 6.0, 3.6, 5.8)]
+    out = align.refine_bounds(segs, _mid)
+    assert out == [(1.0, 3.35), (3.35, 6.0)]  # B gives way: cut in [3.3, 3.4], before B's speech
+    segs = [E(1.0, 3.0, 1.1, 3.3, candidate=True), E(3.0, 6.0, 3.35, 5.8)]
+    out = align.refine_bounds(segs, lambda a, b: (a + b) / 2)
+    assert out == [(1.0, 3.325), (3.325, 6.0)]  # cut between A's last (3.3) and B's first (3.35)
+    # overlapping speech claims: nothing moves
+    segs = [E(1.0, 3.0, 1.1, 3.3, candidate=True), E(3.0, 6.0, 3.2, 5.8)]
+    assert align.refine_bounds(segs, _mid) == [(1.0, 3.0), (3.0, 6.0)]
+    # protected neighbour is never cut into
+    segs = [E(1.0, 3.0, 1.1, 3.3, candidate=True), E(3.1, 6.0, 3.35, 5.8, protected=True)]
+    assert align.refine_bounds(segs, _mid) == [(1.0, 3.1), (3.1, 6.0)]
+    # start side: B's first character starts before its start; A's speech ends earlier
+    segs = [E(1.0, 3.0, 1.1, 2.6), E(3.0, 6.0, 2.8, 5.8, candidate=True)]
+    out = align.refine_bounds(segs, lambda a, b: 2.7)
+    assert out == [(1.0, 2.7), (2.7, 6.0)]
+
+
+def test_quietest_finds_the_pause():
+    sr = align.SR
+    x = np.ones(int(2.0 * sr), np.float32) * 0.5
+    x[int(1.2 * sr):int(1.3 * sr)] = 0.0
+    assert abs(align.quietest(x, 1.0, 1.6) - 1.25) < 0.05
+    assert align.quietest(x, 1.0, 1.01) == 1.005
+
+
+class EdgeAligner(FakeAligner):
+    """Spreads the tokens over the whole window but 0.05 s: speech always seems to run past the segment edges."""
+
+    def align(self, samples, words):
+        FakeAligner.calls.append((self.device, list(words)))
+        dur = samples.size / SR
+        step = (dur - 0.1) / max(1, len(words))
+        return [(0.05 + i * step, 0.05 + (i + 1) * step, 0.9) for i in range(len(words))]
+
+
+def test_align_run_refines_cut_boundaries(db, factory, monkeypatch):  # noqa: ANN001
+    from voti.models import Segment, WordAlignment
+    FakeAligner.calls = []
+    monkeypatch.setattr(align, "load_aligner", lambda dev: EdgeAligner(dev))
+    monkeypatch.setattr("voti.devices.torch_device", lambda: "cpu")
+    monkeypatch.setattr(gpu, "free_cuda", lambda: None)
+    m = _media_with_audio(factory, status="ready")
+    a = factory.segment(m, 2.0, 4.0, original_text="你好世界", language="zh-TW")
+    b = factory.segment(m, 8.0, 10.0, original_text="大家好呀", language="zh-TW", review_status="approved")
+    res = align.run(m.id)
+    assert res["refine"]["refined"] == 1
+    db.expire_all()
+    ga, gb = db.get(Segment, a.id), db.get(Segment, b.id)
+    assert (ga.start_sec, ga.end_sec) == (2.0 - align.REACH_SEC, 4.0 + align.REACH_SEC)
+    assert "boundary_refined" in ga.flags and ga.revision == 1
+    assert (gb.start_sec, gb.end_sec) == (8.0, 10.0)  # reviewed: never moved
+    row = db.get(WordAlignment, a.id)
+    assert row.status == "aligned" and row.revision == 1
+    first, last = align.speech_span(row.units)
+    assert first < 2.0 - align.REACH_SEC + 0.3 and last > 4.0 + align.REACH_SEC - 0.3  # wide-window alignment kept
+    # the row stays current: a normal run has nothing to do; refine_only re-checks (alignment edges are inside now
+    # +/- EDGE_PAD, but the fake always runs to the window edge, so it is capped by REACH again: no further move)
+    FakeAligner.calls = []
+    assert align.run(m.id)["aligned"] == 0
+    res = align.run(m.id, refine_only=True)
+    db.expire_all()
+    ga = db.get(Segment, a.id)
+    assert ga.start_sec >= 2.0 - 2 * align.REACH_SEC - 1e-6 and ga.end_sec <= 4.0 + 2 * align.REACH_SEC + 1e-6

@@ -11,6 +11,17 @@ split into display units whose concatenation is exactly the text:
 Each segment is aligned inside its own window [start − PAD_SEC, end + PAD_SEC] with star tokens at both ends
 (they absorb the padding and untranscribed speech). Segments longer than MAX_SEC are not aligned.
 
+Boundary refinement: the caption timing (snapped to VAD by voti.pipeline.segment) often cuts the first or last
+word — subtitles change while the speaker keeps talking, and burned-in subtitles disappear early. A segment whose
+aligned speech runs past one of its edges by more than EDGE_TOL is re-aligned in a window widened by REACH_SEC
+(never past its neighbours), and the edge moves out to the aligned speech + EDGE_PAD_SEC (at most REACH_SEC; only
+outward). A neighbour that touches the widened edge gives way: both are cut at the quietest point between the
+neighbour's last (first) aligned unit and this segment's first (last) one; when their aligned speech overlaps,
+nothing moves. Human-touched (protected) segments never move and are never cut into. Moved segments get the flag
+boundary_refined and a fresh quality snapshot (SNR/C50/speech ratio/loudness/clipping; DNSMOS is kept); their
+revision is unchanged, so embeddings / voice profiles stay valid (a < 1 s edge move barely changes them).
+Payload {"refine_only": true}: no re-alignment of current rows — only the refinement (backfill).
+
 Languages: zh*/cmn* (Mandarin Han text) and en*. Taiwanese (nan*) / Hakka (hak*) Han text has no usable
 romanizer for this model — such segments are stored `skipped` with the reason (the UI falls back to sentence
 highlighting); so are other languages and segments without text.
@@ -55,6 +66,10 @@ log = logging.getLogger("voti.pipeline.align")
 MODEL_ID = "torchaudio/MMS_FA"
 WEIGHTS_FILE = "mms_fa_ctc_alignment_mling_uroman.pt"
 PAD_SEC = 0.2
+EDGE_TOL = 0.05        # aligned speech beyond a boundary by more than this → refine
+EDGE_PAD_SEC = 0.1     # kept around the aligned speech
+REACH_SEC = 0.8        # largest boundary move
+REFINED = "boundary_refined"
 MAX_SEC = 60.0
 MIN_SAMPLES = int(0.1 * SR)
 WRITE_EVERY = 50
@@ -345,8 +360,169 @@ def _plan(g: SegIn) -> tuple[list[Unit] | None, dict | None]:
     return us, None
 
 
+# ───────────────────────────── boundary refinement ─────────────────────────────
+
+@dataclass
+class Edge:
+    """A segment for refine_bounds: boundaries and the absolute first / last aligned (timed) unit time."""
+    start: float
+    end: float
+    first: float | None
+    last: float | None
+    protected: bool = False
+    candidate: bool = False       # re-aligned in a widened window (first/last come from that alignment)
+
+
+def speech_span(units_rows: Sequence[Sequence] | None) -> tuple[float | None, float | None]:
+    """[[unit, start, end, score], ...] → (first start, last end) over scored units (star units are not speech
+    evidence: they also absorb noise and neighbouring speech)."""
+    t = [(float(u[1]), float(u[2])) for u in (units_rows or []) if len(u) > 3 and u[1] is not None
+         and u[2] is not None and u[3] is not None]
+    return (t[0][0], t[-1][1]) if t else (None, None)
+
+
+def needs_refine(start: float, end: float, first: float | None, last: float | None) -> bool:
+    return first is not None and last is not None and (first < start - EDGE_TOL or last > end + EDGE_TOL)
+
+
+def refine_bounds(segs: Sequence[Edge], quiet: Callable[[float, float], float]) -> list[tuple[float, float]]:
+    """segs in time order → new (start, end) per segment (pure). quiet(a, b): the quietest time in [a, b]."""
+    new = [[g.start, g.end] for g in segs]
+    for i, g in enumerate(segs):
+        if not g.candidate or g.protected or g.first is None or g.last is None:
+            continue
+        if g.first < g.start - EDGE_TOL:
+            want: float | None = max(0.0, g.first - EDGE_PAD_SEC, g.start - REACH_SEC)
+            if i > 0 and new[i - 1][1] > want:
+                p = segs[i - 1]
+                if p.protected:  # never cut into a human-checked neighbour
+                    want = max(want, new[i - 1][1])
+                elif p.last is None or p.last >= g.first:  # unknown / overlapping speech: leave it
+                    want = None
+                else:
+                    c = quiet(max(p.last, want), g.first)
+                    want = c
+                    new[i - 1][1] = min(new[i - 1][1], c)
+            if want is not None and want < new[i][0]:
+                new[i][0] = want
+        if g.last > g.end + EDGE_TOL:
+            want = min(g.last + EDGE_PAD_SEC, g.end + REACH_SEC)
+            if i + 1 < len(segs) and new[i + 1][0] < want:
+                n = segs[i + 1]
+                if n.protected:
+                    want = min(want, new[i + 1][0])
+                elif n.first is None or n.first <= g.last:
+                    want = None
+                else:
+                    c = quiet(g.last, min(n.first, want))
+                    want = c
+                    new[i + 1][0] = max(new[i + 1][0], c)
+            if want is not None and want > new[i][1]:
+                new[i][1] = want
+    return [(round(a, 3), round(b, 3)) for a, b in new]
+
+
+def quietest(audio: np.ndarray, a: float, b: float, hop: float = 0.01, win: float = 0.03) -> float:
+    """Time of the lowest short-time energy in [a, b] (midpoint when the gap is shorter than one window)."""
+    if b - a < win + hop:
+        return (a + b) / 2
+    best, best_t = None, (a + b) / 2
+    n, h = int(win * SR), int(hop * SR)
+    i0, i1 = int(a * SR), int(b * SR) - n
+    for i in range(i0, max(i0 + 1, i1 + 1), h):
+        x = audio[i:i + n]
+        if x.size == 0:
+            break
+        e = float(np.mean(x.astype(np.float64) ** 2))
+        if best is None or e < best:
+            best, best_t = e, (i + n / 2) / SR
+    return best_t
+
+
+def refine(media_id: uuid.UUID, audio: np.ndarray, align_fn: Callable[[np.ndarray, list[str]], list],
+           only_ids: set | None = None) -> dict:
+    """Refine the boundaries of segments whose aligned speech runs past an edge (see module doc). only_ids:
+    consider just these (segments aligned in this job); None = every segment of the media."""
+    from .segment import _protected, quality_snapshot
+    from .common import load_frames
+    duration = audio.size / SR
+    with session_scope() as s:
+        segs = s.scalars(select(Segment).where(Segment.media_id == media_id, Segment.active.is_(True))
+                         .order_by(Segment.start_sec)).all()
+        rows = {r.segment_id: r for r in s.scalars(select(WordAlignment).where(WordAlignment.media_id == media_id))}
+        info = []
+        for g in segs:
+            row = rows.get(g.id)
+            ok = row is not None and row.status == "aligned" and _valid(row, g)
+            first, last = speech_span(row.units) if ok else (None, None)
+            info.append(dict(id=g.id, revision=g.revision or 1, text=segment_text(g), language=g.language,
+                             edge=Edge(g.start_sec, g.end_sec, first, last, _protected(g))))
+    stats = {"candidates": 0, "refined": 0, "neighbours": 0}
+    wide: dict = {}
+    for i, d in enumerate(info):
+        e = d["edge"]
+        if e.protected or (only_ids is not None and d["id"] not in only_ids) or \
+                not needs_refine(e.start, e.end, e.first, e.last):
+            continue
+        mode, _ = language_support(d["language"], d["text"])
+        if mode is None:
+            continue
+        us = units(d["text"], mode)
+        a = max(0.0, e.start - REACH_SEC - PAD_SEC, info[i - 1]["edge"].start if i else 0.0)
+        b = min(duration, e.end + REACH_SEC + PAD_SEC, info[i + 1]["edge"].end if i + 1 < len(info) else duration)
+        samples = audio[int(a * SR):int(b * SR)]
+        try:
+            spans = align_fn(samples, [u.token for u in us if u.token is not None])
+            assign_times(us, spans, a)
+        except ValueError:
+            continue
+        rows_out = units_out(us)
+        first, last = speech_span(rows_out)
+        if first is None:
+            continue
+        stats["candidates"] += 1
+        e.first, e.last, e.candidate = first, last, True
+        wide[d["id"]] = rows_out
+    if not wide:
+        return stats
+    new = refine_bounds([d["edge"] for d in info], lambda x, y: quietest(audio, x, y))
+    with session_scope() as s:
+        frames = load_frames(s, media_id)
+        changed = {info[i]["id"]: (i, ab) for i, ab in enumerate(new)
+                   if abs(ab[0] - info[i]["edge"].start) > 1e-3 or abs(ab[1] - info[i]["edge"].end) > 1e-3}
+        locked = {g.id: g for g in s.scalars(select(Segment).where(Segment.id.in_(list(changed) + list(wide)))
+                                             .with_for_update())}
+        for sid, (i, (a, b)) in changed.items():
+            g, d = locked.get(sid), info[i]
+            if g is None or not g.active or _protected(g) or (g.revision or 1) != d["revision"] or \
+                    segment_text(g) != d["text"] or b - a < 0.05:
+                continue
+            g.start_sec, g.end_sec = a, b
+            if frames is not None:
+                for k, v in quality_snapshot(a, b, frames, audio).items():
+                    setattr(g, k, v)
+            if sid in wide:
+                g.flags = sorted(set(g.flags or []) | {REFINED})
+                stats["refined"] += 1
+            else:
+                stats["neighbours"] += 1
+        for sid, us in wide.items():
+            g, d = locked.get(sid), next(x for x in info if x["id"] == sid)
+            if g is None or (g.revision or 1) != d["revision"] or segment_text(g) != d["text"]:
+                continue
+            stmt = insert(WordAlignment).values(segment_id=sid, media_id=media_id, revision=d["revision"],
+                                                text_hash=text_hash(d["text"]), status="aligned", reason=None,
+                                                model_id=MODEL_ID, units=us, created_at=utcnow())
+            s.execute(stmt.on_conflict_do_update(
+                index_elements=["segment_id"],
+                set_={k: stmt.excluded[k] for k in ("revision", "text_hash", "status", "reason", "units",
+                                                    "created_at")}))
+    return stats
+
+
 def run(media_id: uuid.UUID, progress: Callable[[float, str], None] = lambda f, p: None,
-        segment_ids: Sequence[str] | None = None, force: bool = False, pending_only: bool = False) -> dict:
+        segment_ids: Sequence[str] | None = None, force: bool = False, pending_only: bool = False,
+        refine_only: bool = False) -> dict:
     from .gpu import OomFallback, free_cuda
     t0 = time.monotonic()
     stats = {"aligned": 0, "skipped": 0, "failed": 0, "reasons": {}}
@@ -356,7 +532,7 @@ def run(media_id: uuid.UUID, progress: Callable[[float, str], None] = lambda f, 
     rounds = 0
     try:
         with work_dir("align") as wd:
-            todo = select_todo(media_id, segment_ids, force, pending_only)
+            todo = [] if refine_only else select_todo(media_id, segment_ids, force, pending_only)
             while todo and rounds < 4:
                 rounds += 1
                 results: list[dict] = []
@@ -409,6 +585,22 @@ def run(media_id: uuid.UUID, progress: Callable[[float, str], None] = lambda f, 
                     _write(media_id, results)
                 # edits that arrived while we were running (pending / stale rows) are picked up here
                 todo = select_todo(media_id, None, False, True, done)
+            aligned_ids = None if refine_only else {k[0] for k in done}
+            if aligned_ids is None or aligned_ids:
+                if audio is None:
+                    with session_scope() as s:
+                        audio = load_normalized(s, media_id, wd)
+                if fallback is None:
+                    fallback = OomFallback("MMS_FA 字詞對齊")
+                    fallback.call(load_aligner)
+
+                def wide_align(samples: np.ndarray, words: list[str]) -> list:
+                    if samples.size < MIN_SAMPLES:
+                        raise ValueError("audio_too_short")
+                    with _lock:
+                        return fallback.call(lambda dev: load_aligner(dev).align(samples, words))
+                progress(0.97, "refine")
+                stats["refine"] = refine(media_id, audio, wide_align, aligned_ids)
     finally:
         free_cuda()
     stats.update(rounds=rounds, device=fallback.device if fallback else None,

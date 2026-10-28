@@ -222,7 +222,8 @@ def h_align(ctx: JobContext) -> dict:
         _begin(ctx)
     try:
         res = align.run(ctx.media_id, _progress(ctx), segment_ids=ctx.payload.get("segment_ids"),
-                        force=bool(ctx.payload.get("force")), pending_only=bool(ctx.payload.get("pending_only")))
+                        force=bool(ctx.payload.get("force")), pending_only=bool(ctx.payload.get("pending_only")),
+                        refine_only=bool(ctx.payload.get("refine_only")))
     except JobError as e:
         if not chained or e.code not in ("align_unavailable", "align_model_unavailable", "out_of_memory") \
                 or ctx.will_retry(e):

@@ -7,10 +7,12 @@ Planning (pure, unit-tested: `plan_from_cues`, `plan_from_vad`):
   2. groups longer than segment_max_sec are split at the longest VAD pause nearest the middle (text split
      proportionally at punctuation → flag text_split).
   3. boundaries snap to VAD: a start inside speech moves back to the speech onset, a start in silence moves
-     forward to the onset (symmetrically for ends); if speech cannot be avoided the least-speechy frame is used
-     (flag boundary_in_speech). Moves > 0.25 s → flag boundary_adjusted. Then edge padding (edge_pad_sec),
-     never overlapping neighbours.
+     forward to the onset (symmetrically for ends); if speech cannot be avoided the least-speechy frame on the
+     outer side is used (never inward: that cuts words; flag boundary_in_speech). Moves > 0.25 s → flag
+     boundary_adjusted. Then edge padding (edge_pad_sec), never overlapping neighbours.
 Then each segment gets the dominant diarization speaker, speaker_state, a quality snapshot and flags.
+The alignment step (voti.pipeline.align) later widens boundaries that still cut speech (flag boundary_refined);
+a re-run keeps those refined boundaries for the same segment.
 Re-running is idempotent: ids are uuid5(media_id, start, end); rows that disappear are set active=False;
 human-touched rows (reviewed / corrected / boundary-edited) are kept and new segments overlapping them dropped.
 Segments whose cues were converted Simplified → Traditional (cue flag s2t_converted, voti.textconv) get the flag
@@ -53,6 +55,7 @@ SENTENCE_END = re.compile(r"[。！？!?…\.]\s*[」』”\"')）]*\s*$")
 TEXT_SOURCE = {"manual": "manual_caption", "auto": "auto_caption", "uploaded": "uploaded", "ocr": "ocr_caption"}
 OCR_PAIRED = "ocr_paired"  # voti.pipeline.ocr: only OCR cues paired with speech become segments
 S2T_FLAG = "s2t_converted"  # voti.textconv.FLAG (not imported: textconv pulls in opencc)
+REFINED = "boundary_refined"  # voti.pipeline.align moved the boundaries to the aligned speech
 
 
 @dataclass
@@ -131,7 +134,8 @@ class Vad:
                 j -= 1
             if j == 0 or not self.sp[j - 1]:
                 return self.t(j), False
-            return self._least_speechy(max(ilo, i - w), min(ihi, i + w) + 1, i)
+            # continuous speech: only look outward (earlier) — moving the start later cuts the first word
+            return self._least_speechy(max(ilo, i - w), i + 1, i)
         j = i  # in silence → forward to the onset (leading silence is trimmed; padding re-adds a little)
         while j < min(ihi, i + int(SNAP_SILENCE_REACH / self.hop)) and not self.sp[j]:
             j += 1
@@ -149,7 +153,8 @@ class Vad:
                 j += 1
             if j + 1 >= n or not self.sp[j + 1]:
                 return self.t(j + 1), False
-            return self._least_speechy(max(ilo, i - w), min(ihi, i + w) + 1, i)
+            # continuous speech: only look outward (later) — moving the end earlier cuts the last word
+            return self._least_speechy(i, max(i + 1, min(ihi, i + w) + 1), i)
         j = i  # in silence → back to the end of the last speech
         while j > max(ilo, i - int(SNAP_SILENCE_REACH / self.hop)) and not self.sp[j]:
             j -= 1
@@ -486,8 +491,13 @@ def run(media_id: uuid.UUID, progress: Callable[[float, str], None] = lambda f, 
         text_source = "none"
     plans = [p for p in plans if not any(min(p.end, b) - max(p.start, a) > 0 for _, a, b in protected)]
 
-    # quality snapshot for new plans and protected segments
-    spans = [(p.start, p.end) for p in plans] + [(a, b) for _, a, b in protected]
+    # quality snapshot for new plans and protected segments; a plan whose row was refined by the alignment
+    # (voti.pipeline.align, flag boundary_refined) keeps the refined boundaries
+    plan_ids = [segment_id(media_id, p.start, p.end) for p in plans]
+    refined = {sid: (seg.start_sec, seg.end_sec) for sid, seg in existing.items()
+               if REFINED in (seg.flags or [])}
+    spans = [refined.get(sid, (p.start, p.end)) for sid, p in zip(plan_ids, plans)] + \
+        [(a, b) for _, a, b in protected]
     progress(0.3, "dnsmos")
     clips = [audio[int(a * SR):int(b * SR)] if b - a >= 1.0 else np.zeros(0, np.float32) for a, b in spans]
     scores = dnsmos.score_clips(clips)
@@ -506,7 +516,7 @@ def run(media_id: uuid.UUID, progress: Callable[[float, str], None] = lambda f, 
             rep = round(min(1.0, covered(a, b, repeated) / (b - a)), 4) if b > a else 0.0
             if i < len(plans):
                 p = plans[i]
-                sid = segment_id(media_id, a, b)
+                sid = plan_ids[i]
                 new_ids.add(sid)
                 seg = s.get(Segment, sid)
                 if seg is None:
@@ -521,12 +531,13 @@ def run(media_id: uuid.UUID, progress: Callable[[float, str], None] = lambda f, 
                 seg.cue_ids = list(dict.fromkeys(p.cue_ids))
                 seg.text_source = text_source
                 seg.language = track.language if (track is not None and cues) else media.language
-                flags = quality_flags(q, b - a, state, cfg, thr) | p.flags
+                flags = quality_flags(q, b - a, state, cfg, thr) | p.flags | ({REFINED} if sid in refined else set())
                 if not p.text and text_source != "none":
                     flags.add("no_text")
             else:
                 seg = s.get(Segment, protected[i - len(plans)][0])
-                keep = {f for f in (seg.flags or []) if f in ("boundary_adjusted", "boundary_in_speech", "text_split",
+                keep = {f for f in (seg.flags or []) if f in ("boundary_adjusted", "boundary_in_speech", REFINED,
+                                                             "text_split",
                                                              "music", "caption_speaker_change", "no_text",
                                                              S2T_FLAG)}
                 flags = quality_flags(q, b - a, state, cfg, thr) | keep
