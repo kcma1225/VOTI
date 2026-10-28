@@ -1,5 +1,9 @@
-"""/api/sources/resolve: classify a pasted URL (no network), create placeholder rows, enqueue source.resolve."""
+"""/api/sources/resolve: classify a pasted URL, create rows, enqueue the work. A channel is looked up right away
+(name, avatar: one cheap request) so it shows on the channels page at once; everything else is a background job."""
 from __future__ import annotations
+
+import concurrent.futures as cf
+import logging
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
@@ -10,11 +14,34 @@ from ..auth import current_user
 from ..db import get_session
 from ..models import Channel, Media, Playlist, User
 from ..queue import enqueue
+from ..sources import handlers as source_handlers
 from . import schemas as S
 from .errors import ApiError
 from .views import channel_summaries, job_out, media_summaries
 
 router = APIRouter(prefix="/sources", tags=["sources"])
+log = logging.getLogger(__name__)
+
+RESOLVE_INLINE_TIMEOUT_SEC = 20.0
+
+
+def _resolve_channel_now(target: str) -> dict | None:
+    """Channel metadata (title, avatar, tabs) fetched inside the request, so a new channel appears with its name and
+    icon immediately instead of after the scan queue reaches its source.resolve job. None on any error or timeout:
+    the caller falls back to the background job."""
+    h = source_handlers
+
+    def run() -> dict:
+        with h.fetch_options(h.youtube_settings()) as fo:
+            return h.yt.resolve_channel(target, fo)
+    ex = cf.ThreadPoolExecutor(max_workers=1)
+    try:
+        return ex.submit(run).result(timeout=RESOLVE_INLINE_TIMEOUT_SEC)
+    except Exception as e:  # noqa: BLE001 - network, YouTube errors, timeout: the job retries properly
+        log.info("inline channel resolve failed for %s: %s", target, e)
+        return None
+    finally:
+        ex.shutdown(wait=False)
 
 
 def _classify(url: str) -> dict:
@@ -62,6 +89,22 @@ def resolve(body: S.ResolveIn, user: User = Depends(current_user), s: Session = 
                             "kind": info.get("kind_hint") if info.get("kind_hint") in ("short", "live") else "video"})
         ids["media_id"] = m.id
         out["media"] = m
+    elif kind == "channel" and (res := _resolve_channel_now(info.get("channel_id") or canonical)) is not None:
+        from ..models import Job
+        yt = source_handlers.yt
+        c = source_handlers.upsert_channel(s, res["channel"])
+        c.metadata_ = {**(c.metadata_ or {}), "tabs": res["tabs"]}
+        s.flush()
+        job = s.scalar(select(Job).where(Job.kind.in_(("source.resolve", "channel.list")), Job.channel_id == c.id,
+                                         Job.status.in_(("queued", "running"))).limit(1))
+        if job is None:
+            if c.list_status != "listing":
+                c.list_status = "queued"
+            tabs = [t for t in yt.LISTED_TABS if t in res["tabs"]] or list(yt.LISTED_TABS)
+            job = enqueue(s, "channel.list", channel_id=c.id, created_by=user.id, front=True,
+                          payload={"tabs": tabs, "detail": True, "url": url})
+        s.commit()
+        return S.ResolveOut(type=kind, job=job_out(s, job), channel=channel_summaries(s, [c])[0])
     elif kind == "channel":
         if info.get("channel_id"):
             c = _get_or_create(s, Channel, {"platform": "youtube", "platform_channel_id": info["channel_id"]},
@@ -77,7 +120,8 @@ def resolve(body: S.ResolveIn, user: User = Depends(current_user), s: Session = 
     elif kind not in ("video", "channel", "playlist"):
         raise ApiError(400, "unsupported_url", "不支援的網址類型")
     # for a bare @handle nothing is created; the job resolves it. Per-media jobs are deduplicated by enqueue.
-    job = enqueue(s, "source.resolve", payload={"url": url}, created_by=user.id, **ids)
+    # user-added sources go next in line on the scan queue (it can be busy with long listings and re-checks)
+    job = enqueue(s, "source.resolve", payload={"url": url}, created_by=user.id, front=True, **ids)
     if out.get("channel") is not None:
         from ..queue import sync_channel_list_status
         s.flush()

@@ -425,7 +425,8 @@ def _finish(ctx: JobContext, status: str, result: dict | None = None, code: str 
         if status == "completed":
             job.progress = 1.0
             for kind, payload, ids in ctx._followups:
-                step = kind in PIPELINE and ctx.kind in PIPELINE
+                # pipeline steps and the follow-ups of a user-added source run next in line
+                step = (kind in PIPELINE and ctx.kind in PIPELINE) or ctx.kind == "source.resolve"
                 enqueue(s, kind, payload=payload, parent_id=ctx.job_id, created_by=ctx.created_by,
                         priority=1 if step else 0, front=step, **ids)
         job.error_code, job.error_message = code, message

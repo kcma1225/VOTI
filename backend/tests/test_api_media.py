@@ -264,6 +264,32 @@ def test_resolve_video_channel_playlist_handle(annotator_client, db, monkeypatch
     assert r.status_code == 400 and r.json()["code"] == "unsupported_url"
 
 
+def test_resolve_channel_inline_shows_name_and_icon(annotator_client, db, monkeypatch):
+    """A new channel is looked up inside the request: it appears with its title and avatar at once and its
+    listing is queued directly (no source.resolve round trip)."""
+    from voti.api import sources as api_sources
+    from voti.models import Channel
+    _fake_youtube(monkeypatch, {"type": "channel", "handle": "@newch", "canonical_url": "https://www.youtube.com/@newch"})
+    meta = {"platform_channel_id": "UCabcdefghijklmnopqrstuv", "handle": "@newch", "title": "新頻道",
+            "description": "", "url": "https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv",
+            "thumbnail_url": "https://yt3.example/avatar.jpg", "banner_url": None, "subscriber_count": 12,
+            "tags": [], "metadata": {}}
+    monkeypatch.setattr(api_sources, "_resolve_channel_now",
+                        lambda target: {"channel": meta, "tabs": ["videos", "shorts"], "warnings": []})
+    r = annotator_client.post("/api/sources/resolve", json={"url": "https://www.youtube.com/@newch"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["channel"]["title"] == "新頻道" and body["channel"]["thumbnail_url"] == "https://yt3.example/avatar.jpg"
+    assert body["job"]["kind"] == "channel.list" and body["job"]["channel_id"] == body["channel"]["id"]
+    assert body["job"]["payload"]["tabs"] == ["videos", "shorts"]
+    titles = [c["title"] for c in annotator_client.get("/api/channels").json()["items"]]
+    assert "新頻道" in titles
+    # adding it again neither duplicates the channel nor queues a second listing
+    r2 = annotator_client.post("/api/sources/resolve", json={"url": "https://www.youtube.com/@newch"})
+    assert r2.json()["job"]["id"] == body["job"]["id"]
+    assert len(db.scalars(select(Channel).where(Channel.handle == "@newch")).all()) == 1
+
+
 def test_channels(annotator_client, corpus, db):
     from voti.models import Job
     ch1, _, m = corpus

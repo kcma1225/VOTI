@@ -223,3 +223,6 @@ def _no_caption_network(monkeypatch):  # noqa: ANN001
     from voti.sources import youtube as yt
 
     monkeypatch.setattr(yt, "fetch_caption_bytes", lambda fmt, fo, headers=None: SPEECH_JSON3)
+    # the API's inline channel lookup must not reach YouTube: behave as if it failed (→ background job path)
+    from voti.api import sources as api_sources
+    monkeypatch.setattr(api_sources, "_resolve_channel_now", lambda target: None)
