@@ -8,7 +8,7 @@ This document is the contract between the backend API, workers and the frontend.
 |---|---|---|
 | `nginx` | nginx-unprivileged | Only public entry: `0.0.0.0:8080`. Serves the built SPA, proxies `/api/` to `api`. |
 | `api` | `voti-backend` | FastAPI (`voti.api.app:app`) on 8000, internal only |
-| `worker-scan` ×3 | `voti-backend` | `--queues scan,detail`: URL resolve, channel/playlist listing, caption details (scan first; `SCAN_WORKERS`) |
+| `worker-scan` ×6 | `voti-backend` | `--queues scan,detail`: URL resolve, channel/playlist listing, caption details (scan first; `SCAN_WORKERS`) |
 | `worker-download` ×2 | `voti-backend` | `--queues download`: audio + caption downloads (`DOWNLOAD_WORKERS`, `youtube.max_concurrent_downloads`) |
 | `worker-audio` | `voti-backend` | `--queues audio,export` |
 | `worker-ml` | `voti-backend` | `--queues ml` (torch; GPU via compose.gpu.yaml) |
@@ -98,7 +98,7 @@ shorter than 1 s: result null).
 
 | key | value |
 |---|---|
-| `youtube` | `{"rate_limit_kbps": 0, "sleep_between_downloads_sec": 5, "sleep_between_requests_sec": 2, "max_concurrent_downloads": 2, "cookies_enabled": false, "auto_refresh_hours": 24, "verify_captions": true}` — `auto_refresh_hours`: re-list every channel this often to find new videos (0 = off; see "Channel listing & scheduled refresh"). `verify_captions`: `media.detail` fetches the preferred manual caption track to confirm it is not empty (see "Caption verification"); off = trust YouTube's track list (download still drops empty tracks) |
+| `youtube` | `{"rate_limit_kbps": 0, "sleep_between_downloads_sec": 5, "sleep_between_requests_sec": 0.75, "max_concurrent_downloads": 2, "cookies_enabled": false, "auto_refresh_hours": 24, "verify_captions": true}` — `auto_refresh_hours`: re-list every channel this often to find new videos (0 = off; see "Channel listing & scheduled refresh"). `verify_captions`: `media.detail` fetches the preferred manual caption track to confirm it is not empty (see "Caption verification"); off = trust YouTube's track list (download still drops empty tracks) |
 | `pipeline` | `{"voxprofile_backbone": "whisper-large-v3", "diarization_enabled": true, "segment_min_sec": 1.0, "segment_max_sec": 20.0, "edge_pad_sec": 0.1}` |
 | `quality_thresholds` | `{"low_speech_ratio": 0.5, "low_snr_db": 10, "clipping_ratio": 0.001}` (used to set segment flags) |
 | `validation` | `{"enabled": true, "lid_min_prob": 0.7, "lid_min_speech_sec": 1.0, "align_min_score": 0.4, "align_min_units": 4}` — caption ↔ audio validation (see "Caption validation"). `enabled: false`: `media.validate` does nothing (existing results stay). |

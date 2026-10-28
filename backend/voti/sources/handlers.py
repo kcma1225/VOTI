@@ -2,7 +2,7 @@
 
 Rate limiting
   * Every YouTube extraction job first takes a global Redis "start slot" so job starts are spaced across all
-    fetch workers: `sleep_between_requests_sec` (default 2) for listing/detail, `sleep_between_downloads_sec`
+    fetch workers: `sleep_between_requests_sec` (default 0.75) for listing/detail, `sleep_between_downloads_sec`
     for downloads. Inside one extraction yt-dlp sleeps between HTTP requests (sleep_interval_requests).
   * `max_concurrent_downloads` is enforced with Redis slots; `rate_limit_kbps` maps to yt-dlp `ratelimit`.
   * Cookies: only when settings.youtube.cookies_enabled and S3 `system/cookies.txt` exists (copied to a temp
@@ -59,7 +59,7 @@ YT_DEFAULTS = {"rate_limit_kbps": 0, "sleep_between_downloads_sec": 5, "max_conc
                # re-list every channel this often to find new videos (voti.scheduler); 0 disables
                "auto_refresh_hours": 24,
                # optional (not in the admin form yet): spacing between listing/detail job starts
-               "sleep_between_requests_sec": 2.0,
+               "sleep_between_requests_sec": 0.75,
                # media.detail fetches the preferred manual caption track (≤3 tracks) to confirm it is not empty
                "verify_captions": True}
 DETAIL_BATCH = 20

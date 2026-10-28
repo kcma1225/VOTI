@@ -437,7 +437,7 @@ export function buildDB(): DB {
       { id: r.uuid(), username: 'yating', display_name: '張雅婷', role: 'annotator', is_active: false, created_at: iso(NOW - 200 * DAY), last_login_at: iso(NOW - 80 * DAY), password: 'voti' },
     ],
     settings: {
-      youtube: { rate_limit_kbps: 0, sleep_between_downloads_sec: 5, sleep_between_requests_sec: 2, max_concurrent_downloads: 1, cookies_enabled: false, auto_refresh_hours: 12, verify_captions: true },
+      youtube: { rate_limit_kbps: 0, sleep_between_downloads_sec: 5, sleep_between_requests_sec: 0.75, max_concurrent_downloads: 1, cookies_enabled: false, auto_refresh_hours: 12, verify_captions: true },
       pipeline: { voxprofile_backbone: 'whisper-large-v3', diarization_enabled: true, segment_min_sec: 1.0, segment_max_sec: 20.0, edge_pad_sec: 0.1 },
       quality_thresholds: { low_speech_ratio: 0.5, low_snr_db: 10, clipping_ratio: 0.001 },
       text: { convert_simplified: true, opencc_config: 's2twp' },

@@ -246,7 +246,7 @@ function YoutubeTab() {
             <NumberInput value={v.sleep_between_downloads_sec} onChange={(x) => setV({ ...v, sleep_between_downloads_sec: x ?? 0 })} min={0} suffix={t('output.settings.youtube.sec')} />
           </Row>
           <Row label={t('output.settings.youtube.sleepRequests')} hint={t('output.settings.youtube.sleepRequestsHint')}>
-            <NumberInput value={v.sleep_between_requests_sec ?? 2} onChange={(x) => setV({ ...v, sleep_between_requests_sec: x ?? 0 })} min={0} step={0.5} suffix={t('output.settings.youtube.sec')} />
+            <NumberInput value={v.sleep_between_requests_sec ?? 0.75} onChange={(x) => setV({ ...v, sleep_between_requests_sec: x ?? 0 })} min={0} step={0.25} suffix={t('output.settings.youtube.sec')} />
           </Row>
           <Row label={t('output.settings.youtube.concurrent')}>
             <NumberInput value={v.max_concurrent_downloads} onChange={(x) => setV({ ...v, max_concurrent_downloads: Math.max(1, x ?? 1) })} min={1} max={8} suffix={t('output.settings.youtube.videosUnit')} />

@@ -66,7 +66,7 @@ class YoutubeSettings(BaseModel):
     sleep_between_downloads_sec: float = Field(default=5, ge=0, le=3600)
     max_concurrent_downloads: int = Field(default=2, ge=1, le=16)
     cookies_enabled: bool = False
-    sleep_between_requests_sec: float = Field(default=2.0, ge=0, le=3600)  # listing/detail job spacing
+    sleep_between_requests_sec: float = Field(default=0.75, ge=0, le=3600)  # listing/detail job spacing
     auto_refresh_hours: float = Field(default=24, ge=0, le=24 * 365)  # scheduled channel re-listing; 0 = off
     # media.detail fetches the preferred manual caption track to confirm it is not empty (≤3 small requests)
     verify_captions: bool = True

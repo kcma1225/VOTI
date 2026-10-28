@@ -35,7 +35,7 @@ docker compose -f compose.yaml -f compose.gpu.yaml up -d --build  # GPU（需 nv
 |---|---|
 | `nginx` | 前端 SPA＋`/api` 反向代理 |
 | `api` | FastAPI |
-| `worker-scan` ×3 | 解析網址、列出頻道／播放清單、抓字幕資訊（多個同時進行，大頻道不會卡住其他頻道） |
+| `worker-scan` ×6 | 解析網址、列出頻道／播放清單、抓字幕資訊（多個同時進行，大頻道不會卡住其他頻道） |
 | `worker-download` ×2 | 下載音訊與字幕（獨立進行，不受頻道掃描影響） |
 | `worker-audio` ×2 | 正規化、切音段、資料集匯出（CPU） |
 | `worker-ml` | 音質、語者分段、語者向量、重複偵測、分群（GPU） |
