@@ -1,4 +1,4 @@
-"""Channel and video deletion: impact preview and the delete itself (DB rows + objects in RustFS).
+"""Channel deletion and clearing a video's processed data: impact preview and the delete itself (DB + RustFS).
 
 Deleting a channel removes its playlists, every media row listed under it and — through ON DELETE CASCADE —
 their assets, tracks, cues, quality, VAD/diarization, segments, embeddings, voice profiles, speaker
@@ -10,11 +10,12 @@ from __future__ import annotations
 import logging
 import uuid
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from . import storage
-from .models import (Asset, Channel, Dataset, Job, Media, Playlist, Segment, Speaker, SpeakerAssignment, utcnow)
+from .models import (Asset, Channel, Dataset, DiarizationTurn, Job, Media, MediaQuality, Playlist, RepeatedRegion,
+                     Segment, Speaker, SpeakerAssignment, SpeechRegion, Track, utcnow)
 
 log = logging.getLogger("voti.deletion")
 
@@ -96,42 +97,69 @@ def _refresh_run_speakers(s: Session, run_id: uuid.UUID) -> None:
         sp.channel_ids = sorted(str(c) for c in r.channels if c is not None)
 
 
-# ───────────────────────────── single videos ─────────────────────────────
+# ───────────────────────────── single videos: clear processed data ─────────────────────────────
+# "Deleting a video" removes what downloading and processing produced; the video itself (metadata, channel list
+# entry, playlist membership, info.json) stays and becomes not downloaded again (status detailed / listed).
+
+KEEP_ASSET_KINDS = ("info_json",)                         # listing / detail metadata, not processing output
+PROCESSED_STATUSES = ("downloading", "downloaded", "processing", "ready")
+CLEARED_METADATA = ("download", "ocr", "text_conversion")
+
+
+def processed_condition():  # noqa: ANN201
+    """Media that has anything to clear: a processing status or any stored object besides info.json."""
+    has_assets = select(Asset.id).where(Asset.media_id == Media.id, Asset.kind.notin_(KEEP_ASSET_KINDS)).exists()
+    return or_(Media.status.in_(PROCESSED_STATUSES), has_assets)
+
+
+def processed_ids(s: Session, media_ids: list[uuid.UUID]) -> list[uuid.UUID]:
+    return list(s.scalars(select(Media.id).where(Media.id.in_(list(media_ids)), processed_condition())))
+
 
 def media_impact(s: Session, media_ids: list[uuid.UUID]) -> dict:
-    """What deleting these media removes (the media-level part of channel_impact)."""
-    ids = list(media_ids)
+    """What clearing these media removes. media_total: media with processed data (others are left alone);
+    unprocessed: selected media without anything to clear."""
+    ids = processed_ids(s, media_ids)
     dl_ids = select(Asset.media_id).where(Asset.media_id.in_(ids), Asset.kind.in_(DOWNLOADED_KINDS)).distinct()
     downloaded, downloaded_sec = s.execute(
         select(func.count(), func.coalesce(func.sum(Media.duration_sec), 0.0)).where(Media.id.in_(dl_ids))).one()
     seg_total, seg_reviewed = s.execute(
         select(func.count(), func.count().filter(Segment.review_status != "unchecked"))
         .where(Segment.media_id.in_(ids), Segment.active.is_(True))).one()
-    storage_bytes = s.scalar(select(func.coalesce(func.sum(Asset.bytes), 0)).where(Asset.media_id.in_(ids)))
+    storage_bytes = s.scalar(select(func.coalesce(func.sum(Asset.bytes), 0))
+                             .where(Asset.media_id.in_(ids), Asset.kind.notin_(KEEP_ASSET_KINDS)))
     active_jobs = s.scalar(select(func.count()).select_from(Job).where(Job.status.in_(ACTIVE),
                                                                       Job.media_id.in_(ids))) or 0
-    total = s.scalar(select(func.count()).select_from(Media).where(Media.id.in_(ids))) or 0
-    return {"media_total": total, "downloaded_media": downloaded,
+    selected = s.scalar(select(func.count()).select_from(Media).where(Media.id.in_(list(media_ids)))) or 0
+    return {"media_total": len(ids), "unprocessed": selected - len(ids), "downloaded_media": downloaded,
             "downloaded_sec": round(float(downloaded_sec or 0), 1), "segments": seg_total,
             "reviewed_segments": seg_reviewed, "storage_bytes": int(storage_bytes or 0),
             "active_jobs": active_jobs, "requires_confirmation": downloaded > 0 or seg_reviewed > 0}
 
 
-def delete_media(s: Session, media_ids: list[uuid.UUID]) -> dict:
-    """Delete media rows (and through ON DELETE CASCADE everything per media: assets, tracks, cues, segments,
-    embeddings, profiles, speaker assignments, jobs…) plus their objects. The channel and its playlists stay; a
-    later channel re-list adds a deleted video again as not downloaded. Caller commits."""
-    ids = list(s.scalars(select(Media.id).where(Media.id.in_(list(media_ids)))))
+def clear_media(s: Session, media_ids: list[uuid.UUID]) -> dict:
+    """Remove the downloaded audio and every processing result of these media (assets except info.json, caption
+    tracks/cues, quality, VAD, diarization, repeated regions, segments with their alignments, embeddings, voice
+    profiles and speaker assignments, the media's jobs) and their objects; the media rows stay and go back to
+    detailed (or listed). Media without processed data are left alone. Caller commits."""
+    ids = processed_ids(s, media_ids)
     impact = media_impact(s, ids)
     if not ids:
         return {**impact, "objects_deleted": 0}
     s.execute(update(Job).where(Job.status.in_(ACTIVE), Job.media_id.in_(ids))
               .values(cancel_requested=True, status="cancelled", finished_at=utcnow(),
-                      error_code="cancelled", error_message="影片已刪除"))
+                      error_code="cancelled", error_message="影片處理資料已刪除"))
     affected_runs = list(s.scalars(select(SpeakerAssignment.run_id)
                                    .join(Segment, Segment.id == SpeakerAssignment.segment_id)
                                    .where(Segment.media_id.in_(ids)).distinct()))
-    s.execute(delete(Media).where(Media.id.in_(ids)))
+    keep_keys = set(s.scalars(select(Asset.key).where(Asset.media_id.in_(ids), Asset.kind.in_(KEEP_ASSET_KINDS))))
+    for model in (Segment, Track, MediaQuality, SpeechRegion, DiarizationTurn, RepeatedRegion, Job):
+        s.execute(delete(model).where(model.media_id.in_(ids)))  # cascades: cues, alignments, embeddings, …
+    s.execute(delete(Asset).where(Asset.media_id.in_(ids), Asset.kind.notin_(KEEP_ASSET_KINDS)))
+    for m in s.scalars(select(Media).where(Media.id.in_(ids))):
+        m.status, m.stage = ("detailed" if m.detailed_at else "listed"), None
+        m.failure_code = m.failure_message = None
+        m.metadata_ = {k: v for k, v in (m.metadata_ or {}).items() if k not in CLEARED_METADATA}
     s.flush()
     for run_id in affected_runs:
         _refresh_run_speakers(s, run_id)
@@ -139,7 +167,7 @@ def delete_media(s: Session, media_ids: list[uuid.UUID]) -> dict:
     objects = 0
     for mid in ids:
         try:
-            objects += storage.delete_prefix(f"media/{mid}/")
+            objects += storage.delete_prefix(f"media/{mid}/", keep=keep_keys)
         except Exception:  # noqa: BLE001 — DB rows are gone; orphaned objects are harmless and logged
             log.exception("failed to delete objects of media %s", mid)
     impact["objects_deleted"] = objects

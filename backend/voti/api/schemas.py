@@ -360,7 +360,8 @@ class ChannelDeleteOut(ChannelDeleteImpact):
 
 
 class MediaDeleteImpact(BaseModel):
-    media_total: int
+    media_total: int             # selected media with processed data (the ones that get cleared)
+    unprocessed: int = 0         # selected media without anything to clear (left alone)
     downloaded_media: int
     downloaded_sec: float
     segments: int

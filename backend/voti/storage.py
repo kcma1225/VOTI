@@ -127,13 +127,14 @@ def store_bytes_asset(s: Session, data: bytes, key: str, kind: str, media_id: uu
     return asset
 
 
-def delete_prefix(prefix: str) -> int:
-    """Delete every object under `prefix` (e.g. "media/<id>/"). Returns the number of objects deleted."""
+def delete_prefix(prefix: str, keep: set[str] | frozenset[str] = frozenset()) -> int:
+    """Delete every object under `prefix` (e.g. "media/<id>/") except the keys in `keep`. Returns the number of
+    objects deleted."""
     if not prefix or not prefix.endswith("/"):
         raise ValueError("prefix must be a non-empty directory-like prefix ending with '/'")
     deleted = 0
     for page in client().get_paginator("list_objects_v2").paginate(Bucket=bucket(), Prefix=prefix):
-        keys = [{"Key": o["Key"]} for o in page.get("Contents", [])]
+        keys = [{"Key": o["Key"]} for o in page.get("Contents", []) if o["Key"] not in keep]
         if keys:
             client().delete_objects(Bucket=bucket(), Delete={"Objects": keys, "Quiet": True})
             deleted += len(keys)

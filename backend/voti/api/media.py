@@ -305,25 +305,29 @@ def _selected_ids(s: Session, body: SelectionIn) -> list[uuid.UUID]:
 
 @router.post("/delete-impact", response_model=S.MediaDeleteImpact)
 def media_delete_impact(body: SelectionIn, _: User = Depends(require_admin), s: Session = Depends(get_session)):
-    """Admin only: what deleting the selection (explicit ids or every media matching a filter) would remove."""
+    """Admin only: what deleting the processed data of the selection (explicit ids or every media matching a
+    filter) would remove; media never downloaded / processed are not touched (counted as `unprocessed`)."""
     return deletion.media_impact(s, _selected_ids(s, body))
 
 
 @router.post("/delete", response_model=S.MediaDeleteOut)
 def delete_media(body: MediaDeleteIn, admin: User = Depends(require_admin), s: Session = Depends(get_session)):
-    """Admin only. Deletes the videos completely (audio, captions, segments, analysis, reviews); the channel stays
-    and a later re-list shows them again as not downloaded. Downloaded / reviewed media need confirm=true."""
+    """Admin only. Deletes everything downloading and processing produced (audio, caption tracks, segments,
+    analysis, reviews); the videos stay in their channel as not downloaded and can be downloaded again.
+    Downloaded / reviewed media need confirm=true."""
     ids = _selected_ids(s, body)
     impact = deletion.media_impact(s, ids)
     if impact["requires_confirmation"] and not body.confirm:
         raise ApiError(409, "confirmation_required",
                        f"選取的影片中有 {impact['downloaded_media']} 部已下載或處理過，刪除會永久刪除音檔與分析結果")
-    titles = dict(s.execute(select(Media.id, Media.title).where(Media.id.in_(ids[:50]))).all())
-    result = deletion.delete_media(s, ids)
-    audit(s, admin, "media.delete", "media", ids[0] if len(ids) == 1 else f"{len(ids)} media",
-          before={"count": len(ids), "titles": [titles.get(i, "") for i in ids[:50]], **impact}, after=None)
+    done = deletion.processed_ids(s, ids)
+    titles = dict(s.execute(select(Media.id, Media.title).where(Media.id.in_(done[:50]))).all())
+    result = deletion.clear_media(s, done)
+    if done:
+        audit(s, admin, "media.clear", "media", done[0] if len(done) == 1 else f"{len(done)} media",
+              before={"count": len(done), "titles": [titles.get(i, "") for i in done[:50]], **impact}, after=None)
     s.commit()
-    return result
+    return {**result, "unprocessed": impact["unprocessed"]}
 
 
 @router.post("/download", response_model=S.DownloadOut)

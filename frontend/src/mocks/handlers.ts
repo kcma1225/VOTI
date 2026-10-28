@@ -532,11 +532,12 @@ const ocrActive = (id: string) => db.jobs.some((j) => j.media_id === id && j.kin
 const mediaWav = new Map<string, ArrayBuffer>()
 
 // ───────────── handlers ─────────────
-function mediaDeleteImpact(ms: { status: string; segment_count?: number | null; duration_sec?: number | null }[]): T.MediaDeleteImpact {
+function mediaDeleteImpact(all: { status: string; segment_count?: number | null; duration_sec?: number | null }[]): T.MediaDeleteImpact {
+  const ms = all.filter((m) => ['downloading', 'downloaded', 'processing', 'ready'].includes(m.status))
   const dl = ms.filter((m) => ['downloaded', 'processing', 'ready'].includes(m.status))
   const segs = dl.reduce((a, m) => a + (m.segment_count ?? 0), 0)
   return {
-    media_total: ms.length, downloaded_media: dl.length, downloaded_sec: dl.reduce((a, m) => a + (m.duration_sec ?? 0), 0),
+    media_total: ms.length, unprocessed: all.length - ms.length, downloaded_media: dl.length, downloaded_sec: dl.reduce((a, m) => a + (m.duration_sec ?? 0), 0),
     segments: segs, reviewed_segments: Math.round(segs * 0.18), storage_bytes: dl.reduce((a, m) => a + (m.duration_sec ?? 0) * 210_000, 0),
     active_jobs: ms.filter((m) => m.status === 'processing').length, requires_confirmation: dl.length > 0,
   }
@@ -811,9 +812,12 @@ export const handlers = [
     const targets = b.media_ids ? b.media_ids.map((id) => db.mediaById.get(id)!).filter(Boolean) : db.media.filter((m) => matchMedia(m, b.filter ?? {}))
     const imp = mediaDeleteImpact(targets)
     if (imp.requires_confirmation && !b.confirm) return json({ detail: '需要確認', code: 'confirmation_required' }, { status: 409 })
-    const gone = new Set(targets.map((m) => m.id))
-    db.media = db.media.filter((m) => !gone.has(m.id))
-    for (const id of gone) db.mediaById.delete(id)
+    for (const m of targets) {
+      if (!['downloading', 'downloaded', 'processing', 'ready'].includes(m.status)) continue
+      Object.assign(m, { status: 'detailed', stage: null, segment_count: 0, quality: null })
+      const d = db.mediaById.get(m.id) as (typeof m & { tracks?: unknown[]; jobs?: unknown[] }) | undefined
+      if (d) Object.assign(d, { status: 'detailed', stage: null, segment_count: 0, quality: null, tracks: [], jobs: [] })
+    }
     return json({ ...imp, objects_deleted: imp.downloaded_media })
   }),
   http.post(`${A}/media/download`, async ({ request }) => {

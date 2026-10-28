@@ -189,7 +189,10 @@ export interface JobList extends Page<Job> {
 
 // ─────────────── channels & playlists ───────────────
 export interface MediaDeleteImpact {
+  /** selected media with processed data (the ones that get cleared) */
   media_total: number
+  /** selected media never downloaded / processed (left alone) */
+  unprocessed: number
   downloaded_media: number
   downloaded_sec: number
   segments: number

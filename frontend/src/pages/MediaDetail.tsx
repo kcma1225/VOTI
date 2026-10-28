@@ -2,7 +2,7 @@ import { t } from '@/i18n'
 import { useMemo, useState } from 'react'
 import { DownloadDialog } from '@/components/domain/media-browser'
 import { DeleteMediaDialog } from '@/components/domain/media-delete'
-import { Link, useNavigate, useParams } from 'react-router'
+import { Link, useParams } from 'react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { AlertTriangle, AudioWaveform, CaptionsOff, Check, ChevronDown, ExternalLink, Languages, Loader2, Minus, RotateCw, ShieldCheck, ShieldX, Trash2, X, ZoomIn, ZoomOut, Download } from 'lucide-react'
@@ -245,7 +245,6 @@ export default function MediaDetail() {
   const [dlOpen, setDlOpen] = useState(false)
   const [delOpen, setDelOpen] = useState(false)
   const isAdmin = useMe().data?.role === 'admin'
-  const navigate = useNavigate()
   const retry = useMutation({
     mutationFn: () => api.retryMedia(id),
     onSuccess: () => {
@@ -320,6 +319,8 @@ export default function MediaDetail() {
   const recheckActive = m.jobs.some((j) => j.kind === 'media.detail' && (j.status === 'queued' || j.status === 'running'))
   const ocrTrack = m.tracks.some((tr) => tr.kind === 'ocr')
   const noSubtitles = m.status === 'skipped' && m.failure_code === 'no_subtitles'
+  // only downloaded / processed videos have data to delete (the video itself always stays in its channel)
+  const hasProcessedData = ['downloading', 'downloaded', 'processing', 'ready'].includes(m.status) || m.tracks.length > 0 || m.segment_count > 0 || !!m.ocr
   const canDownload = !membersOnly && !noSubtitles && m.failure_code !== 'empty_captions' && ['listed', 'detailed', 'skipped', 'blocked', 'failed'].includes(m.status) && !m.jobs.some((j) => j.kind !== 'media.download' && ['queued', 'running'].includes(j.status)) && m.segment_count === 0
   return (
     <Page wide>
@@ -428,7 +429,7 @@ export default function MediaDetail() {
                 YouTube <ExternalLink />
               </a>
             </Button>
-            {isAdmin && (
+            {isAdmin && hasProcessedData && (
               <Button variant="ghost" data-shot="delete-media" className="text-danger-fg hover:bg-danger-soft" onClick={() => setDelOpen(true)}>
                 <Trash2 /> {t('remove.action')}
               </Button>
@@ -441,8 +442,7 @@ export default function MediaDetail() {
             count={1}
             title={m.title}
             onDone={() => {
-              qc.removeQueries({ queryKey: qk.mediaDetail(m.id) })
-              navigate(m.channel ? `/channels/${m.channel.id}` : '/channels', { replace: true })
+              qc.invalidateQueries({ queryKey: qk.mediaDetail(m.id) })
             }}
           />
         </div>

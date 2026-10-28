@@ -1,5 +1,6 @@
-/* Delete videos completely (admin): impact preview, explicit "cannot be undone" consent when anything was
-   downloaded or reviewed. Used by the media detail page and the batch bar of the media lists. */
+/* Delete the downloaded / processed data of videos (admin): the videos stay in their channel list as not
+   downloaded. Impact preview, explicit "cannot be undone" consent when anything was downloaded or reviewed.
+   Used by the media detail page and the batch bar of the media lists. */
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -63,11 +64,11 @@ export function DeleteMediaDialog({
         if (o) setAgreed(false)
       }}
       title={t('remove.title', n)}
-      description={title ? t('remove.descOne', title) : t('remove.descMany', n)}
+      description={d && d.media_total === 0 ? undefined : title ? t('remove.descOne', title) : t('remove.descMany', n)}
       footer={
         <>
           <Button onClick={() => onOpenChange(false)}>{t('common.cancel')}</Button>
-          <Button variant="danger" data-shot="confirm-delete-media" loading={del.isPending} disabled={!d || del.isPending || (mustAgree && !agreed) || n === 0} onClick={() => del.mutate()}>
+          <Button variant="danger" data-shot="confirm-delete-media" loading={del.isPending} disabled={!d || del.isPending || (mustAgree && !agreed) || d.media_total === 0} onClick={() => del.mutate()}>
             <Trash2 /> {t('remove.submit')}
           </Button>
         </>
@@ -76,6 +77,9 @@ export function DeleteMediaDialog({
       {impact.isLoading || !d ? (
         impact.isError ? <p className="text-[13px] text-danger-fg">{errMsg(impact.error)}</p> : <Skeleton className="h-24" />
       ) : (
+        d.media_total === 0 ? (
+          <p className="text-[13px] leading-5 text-fg-2">{t('remove.nothing')}</p>
+        ) : (
         <div className="space-y-4">
           {mustAgree ? (
             <div className="flex gap-3 rounded-lg border border-danger/30 bg-danger-soft px-3.5 py-3 text-[13px] leading-5">
@@ -116,8 +120,10 @@ export function DeleteMediaDialog({
               </div>
             ))}
           </dl>
+          {d.unprocessed > 0 && <p className="text-[12px] leading-5 text-fg-3">{t('remove.unprocessed', d.unprocessed)}</p>}
           {mustAgree && <Checkbox checked={agreed} onCheckedChange={setAgreed} label={t('remove.understand')} />}
         </div>
+        )
       )}
     </Dialog>
   )

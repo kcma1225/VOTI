@@ -78,41 +78,54 @@ def test_annotator_cannot_delete(annotator_client, factory):
     assert annotator_client.get(f"/api/channels/{ch.id}/delete-impact").status_code == 403
 
 
-def test_delete_single_video_keeps_channel_and_others(admin_client, factory, db):
+def test_delete_video_clears_processed_data_and_keeps_the_video(admin_client, factory, db):
     from voti import storage
-    from voti.models import AuditLog, Channel, Job, Media, Segment, Speaker
+    from voti.models import Asset, AuditLog, Job, Media, Segment, Speaker, Track
     objs = _corpus(factory, db)
     ch_id, other_id, dl_id, keep_id, gone_id, mixed_id = (o.id for o in objs)
-    imp = admin_client.post("/api/media/delete-impact", json={"media_ids": [str(dl_id)]}).json()
-    assert imp["media_total"] == 1 and imp["downloaded_media"] == 1 and imp["reviewed_segments"] == 1
-    assert imp["requires_confirmation"] is True and imp["active_jobs"] == 1
+    info = storage.media_key(dl_id, "info.json")
+    storage.put_bytes(b"{}", info, "application/json")
+    factory.add(Asset(media_id=dl_id, kind="info_json", key=info, sha256="1" * 64, bytes=2))
+    factory.add(Track(media_id=dl_id, kind="manual", language="zh-TW", format="json3"))
+    m = db.get(Media, dl_id)
+    m.detailed_at, m.metadata_ = m.created_at, {"download": {"x": 1}, "ocr": {"status": "done"}, "keep": 1}
+    db.commit()
+    listed = db.scalar(select(Media.id).where(Media.channel_id == ch_id, Media.status == "listed"))
+    imp = admin_client.post("/api/media/delete-impact", json={"media_ids": [str(dl_id), str(listed)]}).json()
+    assert imp["media_total"] == 1 and imp["unprocessed"] == 1 and imp["downloaded_media"] == 1
+    assert imp["reviewed_segments"] == 1 and imp["requires_confirmation"] is True and imp["storage_bytes"] == 8
     r = admin_client.post("/api/media/delete", json={"media_ids": [str(dl_id)]})
     assert r.status_code == 409 and r.json()["code"] == "confirmation_required"
-    r = admin_client.post("/api/media/delete", json={"media_ids": [str(dl_id)], "confirm": True})
+    r = admin_client.post("/api/media/delete", json={"media_ids": [str(dl_id), str(listed)], "confirm": True})
     assert r.status_code == 200, r.text
-    assert r.json()["objects_deleted"] == 1
+    assert r.json()["objects_deleted"] == 1 and r.json()["media_total"] == 1
     db.expire_all()
-    assert db.get(Media, dl_id) is None and db.get(Channel, ch_id) is not None
-    assert db.scalar(select(func.count()).select_from(Media).where(Media.channel_id == ch_id)) == 1  # listed one
-    assert db.scalar(select(func.count()).select_from(Segment).where(Segment.media_id == dl_id)) == 0
-    assert db.scalar(select(func.count()).select_from(Job).where(Job.media_id == dl_id)) == 0
-    assert storage.head(storage.media_key(dl_id, "normalized.wav")) is None
+    m = db.get(Media, dl_id)
+    assert m is not None and m.channel_id == ch_id and m.status == "detailed" and m.stage is None
+    assert m.metadata_ == {"keep": 1}
+    assert db.get(Media, listed).status == "listed"  # never processed: untouched
+    for model in (Segment, Track, Job):
+        assert db.scalar(select(func.count()).select_from(model).where(model.media_id == dl_id)) == 0
+    assert [a.kind for a in db.scalars(select(Asset).where(Asset.media_id == dl_id))] == ["info_json"]
+    assert storage.head(storage.media_key(dl_id, "normalized.wav")) is None and storage.head(info) is not None
     assert storage.head(storage.media_key(keep_id, "normalized.wav")) is not None
     assert db.get(Speaker, gone_id) is None and db.get(Speaker, mixed_id).segment_count == 1
-    assert db.scalar(select(AuditLog).where(AuditLog.action == "media.delete")) is not None
+    assert db.scalar(select(AuditLog).where(AuditLog.action == "media.clear")) is not None
+    # the video can be downloaded again
+    r = admin_client.post("/api/media/download", json={"media_ids": [str(dl_id)]})
+    assert r.status_code == 200 and r.json()["queued"] == 1
 
 
 def test_delete_videos_by_filter_and_permissions(admin_client, annotator_client, factory, db):
     from voti.models import Media
     ch = factory.channel(title="批次")
-    ms = [factory.media(channel_id=ch.id, status="listed").id for _ in range(3)]
-    other = factory.media(status="listed").id
+    ms = [factory.media(channel_id=ch.id, status=st).id for st in ("ready", "skipped", "listed")]
     body = {"filter": {"channel_id": str(ch.id)}}
     assert annotator_client.post("/api/media/delete-impact", json=body).status_code == 403
     assert annotator_client.post("/api/media/delete", json=body).status_code == 403
     assert admin_client.post("/api/media/delete", json={}).status_code == 400
     imp = admin_client.post("/api/media/delete-impact", json=body).json()
-    assert imp["media_total"] == 3 and imp["requires_confirmation"] is False
+    assert imp["media_total"] == 1 and imp["unprocessed"] == 2 and imp["requires_confirmation"] is False
     assert admin_client.post("/api/media/delete", json=body).status_code == 200  # nothing downloaded: no confirm
     db.expire_all()
-    assert all(db.get(Media, m) is None for m in ms) and db.get(Media, other) is not None
+    assert [db.get(Media, i).status for i in ms] == ["listed", "skipped", "listed"]
