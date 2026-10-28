@@ -431,3 +431,64 @@ def test_align_run_refines_cut_boundaries(db, factory, monkeypatch):  # noqa: AN
     db.expire_all()
     ga = db.get(Segment, a.id)
     assert ga.start_sec >= 2.0 - 2 * align.REACH_SEC - 1e-6 and ga.end_sec <= 4.0 + 2 * align.REACH_SEC + 1e-6
+
+
+# ───────────────────────────── speaker-change split ─────────────────────────────
+
+def test_plan_split_runs_and_small_parts():
+    timed = [(0.0 + 0.3 * i, 0.3 + 0.3 * i) for i in range(10)]
+    assert align.plan_split(timed, ["A"] * 4 + ["B"] * 6) == [(0, 3, "A"), (4, 9, "B")]
+    # a one-character blip of another speaker is not split off
+    assert align.plan_split(timed, ["A"] * 5 + ["B"] + ["A"] * 4) is None
+    # a short part (< SPLIT_MIN_SEC) joins its neighbour
+    assert align.plan_split(timed, ["A"] + ["B"] * 9) is None
+    assert align.plan_split(timed, ["A"] * 3 + ["B"] * 3 + ["C"] * 4) == [(0, 2, "A"), (3, 5, "B"), (6, 9, "C")]
+    assert align.plan_split(timed, ["A"] * 10) is None and align.plan_split([], []) is None
+    turns = [("A", 0.0, 1.2), ("B", 1.25, 3.0)]
+    assert align.unit_speakers([(0.1, 0.4), (1.0, 1.3), (1.3, 1.6), (5.0, 5.2)], turns) == ["A", "A", "B", "B"]
+
+
+def test_align_run_splits_multi_speaker_segment(db, factory, fake_aligner):  # noqa: ANN001
+    from voti.models import DiarizationTurn, Segment, WordAlignment
+    m = _media_with_audio(factory, status="ready")
+    db.add_all([DiarizationTurn(media_id=m.id, local_speaker="SPEAKER_04", start_sec=1.0, end_sec=4.0, model_id="t"),
+                DiarizationTurn(media_id=m.id, local_speaker="SPEAKER_00", start_sec=4.0, end_sec=8.0, model_id="t")])
+    g = factory.segment(m, 2.0, 6.0, original_text="一個恫嚇而，從李登輝時", language="zh-TW",
+                        local_speaker="SPEAKER_00", speaker_state="multiple", flags=["multi_speaker"])
+    keep = factory.segment(m, 10.0, 12.0, original_text="大家好呀", language="zh-TW",
+                           speaker_state="multiple", flags=["multi_speaker"], review_status="passed")
+    db.commit()
+    res = align.run(m.id)
+    assert res["speaker_split"] == {"split": 1, "parts": 2}
+    db.expire_all()
+    assert db.get(Segment, g.id).active is False and db.get(Segment, keep.id).active is True
+    parts = db.scalars(select(Segment).where(Segment.media_id == m.id, Segment.active.is_(True),
+                                             Segment.id != keep.id).order_by(Segment.start_sec)).all()
+    assert [(p.start_sec, p.end_sec) for p in parts] == [(2.0, 4.0), (4.0, 6.0)]
+    assert [p.original_text for p in parts] == ["一個恫嚇而，", "從李登輝時"]
+    assert [p.local_speaker for p in parts] == ["SPEAKER_04", "SPEAKER_00"]
+    assert all(p.speaker_state == "single" and "speaker_split" in p.flags and "multi_speaker" not in p.flags
+               for p in parts)
+    rows = [db.get(WordAlignment, p.id) for p in parts]
+    assert all(r.status == "aligned" and r.text_hash == align.text_hash(p.original_text) for r, p in zip(rows, parts))
+    # idempotent
+    assert align.run(m.id)["speaker_split"] == {"split": 0, "parts": 0}
+
+
+def test_split_backfill_queues_embedding_and_profile(db, factory, fake_aligner):  # noqa: ANN001
+    from voti.models import DiarizationTurn, Job
+    from voti.queue import enqueue, run_one
+    import voti.pipeline.handlers  # noqa: F401
+    m = _media_with_audio(factory, status="ready")
+    factory.segment(m, 2.0, 6.0, original_text="一個恫嚇而從李登輝時", language="zh-TW",
+                    speaker_state="multiple", flags=["multi_speaker"])
+    assert align.run(m.id)["speaker_split"] == {"split": 0, "parts": 0}  # aligned; no diarization yet
+    db.add_all([DiarizationTurn(media_id=m.id, local_speaker="A", start_sec=1.0, end_sec=4.0, model_id="t"),
+                DiarizationTurn(media_id=m.id, local_speaker="B", start_sec=4.0, end_sec=8.0, model_id="t")])
+    job = enqueue(db, "media.align", media_id=m.id, payload={"refine_only": True, "chain": False})
+    db.commit()
+    run_one(str(job.id), "test")
+    db.expire_all()
+    assert db.get(Job, job.id).status == "completed"
+    kinds = sorted(j.kind for j in db.scalars(select(Job).where(Job.parent_id == job.id)))
+    assert kinds == ["media.embed", "media.profile", "media.validate"]

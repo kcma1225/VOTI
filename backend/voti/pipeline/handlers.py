@@ -231,13 +231,18 @@ def h_align(ctx: JobContext) -> dict:
         log.warning("media.align skipped for %s: %s %s", ctx.media_id, e.code, e.message[:200])
         res = {"skipped": True, "code": e.code, "message": e.message[:500]}
     if chained:
-        _chain(ctx)  # → media.validate
+        _chain(ctx)  # → media.validate (→ embed → profile: new speaker-split segments included)
     else:
         # text/boundaries changed or a backfill: the caption check depends on the alignment → re-validate
         payload = {"chain": False, "reason": ctx.payload.get("reason") or "realign"}
-        if ctx.payload.get("segment_ids"):
+        split = (res.get("speaker_split") or {}).get("split") if isinstance(res, dict) else None
+        if ctx.payload.get("segment_ids") and not split:
             payload["segment_ids"] = list(ctx.payload["segment_ids"])
         ctx.then("media.validate", payload, media_id=ctx.media_id, channel_id=ctx.channel_id)
+        if split:  # new single-speaker segments need a speaker embedding and a voice profile
+            lazy = {"only_missing": True, "chain": False, "reason": "speaker_split"}
+            ctx.then("media.embed", lazy, media_id=ctx.media_id, channel_id=ctx.channel_id)
+            ctx.then("media.profile", lazy, media_id=ctx.media_id, channel_id=ctx.channel_id)
     return res
 
 

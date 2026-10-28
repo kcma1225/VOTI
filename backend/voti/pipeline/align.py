@@ -57,7 +57,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from ..config import get_config
 from ..db import session_scope
-from ..models import Segment, WordAlignment, utcnow
+from ..models import DiarizationTurn, Segment, WordAlignment, utcnow
 from ..queue import JobError
 from .common import SR, load_normalized, work_dir
 
@@ -520,6 +520,163 @@ def refine(media_id: uuid.UUID, audio: np.ndarray, align_fn: Callable[[np.ndarra
     return stats
 
 
+# ───────────────────────────── speaker-change split ─────────────────────────────
+
+SPLIT_FLAG = "speaker_split"
+SPLIT_MIN_SEC = 0.5      # a speaker part shorter than this (aligned speech) is not split off
+SPLIT_MIN_UNITS = 2      # …nor one with fewer timed units
+
+
+def unit_speakers(timed: Sequence[tuple[float, float]], turns: Sequence[tuple[str, float, float]]) -> list:
+    """Per timed unit (start, end): the diarization speaker covering most of it (None: no turn nearby)."""
+    out = []
+    for a, b in timed:
+        if b - a < 0.1:
+            c = (a + b) / 2
+            a, b = c - 0.05, c + 0.05
+        cov: dict[str, float] = {}
+        for spk, x, y in turns:
+            ov = min(b, y) - max(a, x)
+            if ov > 0:
+                cov[spk] = cov.get(spk, 0.0) + ov
+        out.append(max(cov, key=cov.get) if cov else None)
+    for i in range(1, len(out)):  # gaps take the previous speaker…
+        if out[i] is None:
+            out[i] = out[i - 1]
+    for i in range(len(out) - 2, -1, -1):  # …or the next one at the start
+        if out[i] is None:
+            out[i] = out[i + 1]
+    return out
+
+
+def plan_split(timed: Sequence[tuple[float, float]], speakers: Sequence) -> list[tuple[int, int, str]] | None:
+    """Timed units + their speakers → [(first, last unit index, speaker)] runs (pure), or None when the segment
+    has no clean speaker change (parts shorter than SPLIT_MIN_SEC / SPLIT_MIN_UNITS are merged into a neighbour)."""
+    if not timed or any(x is None for x in speakers):
+        return None
+    runs: list[list] = []
+    for i, spk in enumerate(speakers):
+        if runs and runs[-1][2] == spk:
+            runs[-1][1] = i
+        else:
+            runs.append([i, i, spk])
+
+    def small(r: list) -> bool:
+        return timed[r[1]][1] - timed[r[0]][0] < SPLIT_MIN_SEC or r[1] - r[0] + 1 < SPLIT_MIN_UNITS
+
+    def size(r: list) -> float:
+        return timed[r[1]][1] - timed[r[0]][0]
+    while len(runs) > 1:
+        bad = [k for k, r in enumerate(runs) if small(r)]
+        if not bad:
+            break
+        k = min(bad, key=lambda j: size(runs[j]))
+        if k == 0:
+            n = 1
+        elif k == len(runs) - 1:
+            n = k - 1
+        else:
+            n = k - 1 if size(runs[k - 1]) >= size(runs[k + 1]) else k + 1
+        lo, hi = min(k, n), max(k, n)
+        runs[lo] = [runs[lo][0], runs[hi][1], runs[n][2]]
+        del runs[hi]
+        merged: list[list] = []  # neighbours with the same speaker join
+        for r in runs:
+            if merged and merged[-1][2] == r[2]:
+                merged[-1][1] = r[1]
+            else:
+                merged.append(r)
+        runs = merged
+    return [(a, b, spk) for a, b, spk in runs] if len(runs) > 1 else None
+
+
+def split_speakers(media_id: uuid.UUID, load_audio: Callable[[], np.ndarray]) -> dict:
+    """Multi-speaker segments (flag multi_speaker) whose aligned text changes speaker between two units are
+    replaced by one segment per speaker: cut at the quietest point between the parts, text split at the unit
+    boundary (punctuation stays with the left part), alignment rows sliced, quality re-measured (DNSMOS copied
+    from the parent), flag speaker_split. The parent becomes inactive. Protected (human-touched) segments are kept.
+    Idempotent: children ids are uuid5(media, start, end) as in voti.pipeline.segment."""
+    from .common import load_frames
+    from .segment import _protected, quality_snapshot, segment_id, speaker_info
+    stats = {"split": 0, "parts": 0}
+    with session_scope() as s:
+        cands = [g for g in s.scalars(select(Segment).where(Segment.media_id == media_id, Segment.active.is_(True))
+                                      .order_by(Segment.start_sec))
+                 if "multi_speaker" in (g.flags or []) and not _protected(g)]
+        if not cands:
+            return stats
+        audio = load_audio()
+        rows = {r.segment_id: r for r in s.scalars(select(WordAlignment).where(
+            WordAlignment.segment_id.in_([g.id for g in cands])))}
+        turns = [(t.local_speaker, t.start_sec, t.end_sec, t.is_overlap) for t in s.scalars(
+            select(DiarizationTurn).where(DiarizationTurn.media_id == media_id).order_by(DiarizationTurn.start_sec))]
+        plain = [(spk, a, b) for spk, a, b, ov in turns if not ov]
+        frames = load_frames(s, media_id)
+        for g in s.scalars(select(Segment).where(Segment.id.in_([c.id for c in cands])).with_for_update()):
+            row = rows.get(g.id)
+            if row is None or row.status != "aligned" or not _valid(row, g):
+                continue
+            units_rows = row.units or []
+            idx = [k for k, u in enumerate(units_rows) if len(u) > 3 and u[1] is not None and u[3] is not None]
+            timed = [(float(units_rows[k][1]), float(units_rows[k][2])) for k in idx]
+            plan = plan_split(timed, unit_speakers(timed, plain))
+            if plan is None:
+                continue
+            # row ranges: part j ends after its last timed unit (+ following untimed units), the last part at the end
+            ends = [idx[b] + 1 for _, b, _ in plan[:-1]]
+            while True:  # untimed units (punctuation) after a part's last unit stay with it
+                moved = False
+                for j, e in enumerate(ends):
+                    nxt = ends[j + 1] if j + 1 < len(ends) else len(units_rows)
+                    if e < nxt and e < len(units_rows) and units_rows[e][1] is None:
+                        ends[j] = e + 1
+                        moved = True
+                if not moved:
+                    break
+            bounds = [0] + ends + [len(units_rows)]
+            cuts = [quietest(audio, timed[plan[j][1]][1], max(timed[plan[j][1]][1], timed[plan[j + 1][0]][0]))
+                    for j in range(len(plan) - 1)]
+            times = [g.start_sec] + [round(c, 3) for c in cuts] + [g.end_sec]
+            if any(times[j + 1] - times[j] < 0.3 for j in range(len(times) - 1)):
+                continue
+            for j in range(len(plan)):
+                a, b = times[j], times[j + 1]
+                part_rows = units_rows[bounds[j]:bounds[j + 1]]
+                text = "".join(u[0] for u in part_rows)
+                cid = segment_id(media_id, a, b)
+                c = s.get(Segment, cid) or Segment(id=cid, media_id=media_id, start_sec=a, end_sec=b,
+                                                   revision=1, review_status="unchecked")
+                if c not in s:
+                    s.add(c)
+                c.start_sec, c.end_sec, c.active = a, b, True
+                c.original_text, c.corrected_text = text, None
+                c.track_id, c.cue_ids, c.text_source, c.language = g.track_id, list(g.cue_ids or []), \
+                    g.text_source, g.language
+                spk, state = speaker_info(a, b, turns, True)
+                c.local_speaker, c.speaker_state = (spk or plan[j][2])[:32], state
+                c.repeated_overlap = g.repeated_overlap
+                for k in ("dnsmos_sig", "dnsmos_bak", "dnsmos_ovrl", "dnsmos_p808"):
+                    setattr(c, k, getattr(g, k))
+                if frames is not None:
+                    for k, v in quality_snapshot(a, b, frames, audio).items():
+                        setattr(c, k, v)
+                keep = set(g.flags or []) - {"multi_speaker", "overlap", "too_short", "too_long", REFINED}
+                c.flags = sorted(keep | {SPLIT_FLAG} | ({"multi_speaker"} if state == "multiple" else set()))
+                c.validity, c.invalid_reason, c.validity_source, c.validation = "unknown", None, None, None
+                s.flush()
+                stmt = insert(WordAlignment).values(segment_id=cid, media_id=media_id, revision=c.revision or 1,
+                                                    text_hash=text_hash(text), status="aligned", reason=None,
+                                                    model_id=row.model_id, units=part_rows, created_at=utcnow())
+                s.execute(stmt.on_conflict_do_update(
+                    index_elements=["segment_id"],
+                    set_={k: stmt.excluded[k] for k in ("revision", "text_hash", "status", "reason", "model_id",
+                                                        "units", "created_at")}))
+                stats["parts"] += 1
+            g.active = False
+            stats["split"] += 1
+    return stats
+
+
 def run(media_id: uuid.UUID, progress: Callable[[float, str], None] = lambda f, p: None,
         segment_ids: Sequence[str] | None = None, force: bool = False, pending_only: bool = False,
         refine_only: bool = False) -> dict:
@@ -601,6 +758,13 @@ def run(media_id: uuid.UUID, progress: Callable[[float, str], None] = lambda f, 
                         return fallback.call(lambda dev: load_aligner(dev).align(samples, words))
                 progress(0.97, "refine")
                 stats["refine"] = refine(media_id, audio, wide_align, aligned_ids)
+            # speaker changes inside a caption (needs current alignments; cheap, no model): every job checks all
+            def media_audio() -> np.ndarray:
+                if audio is not None:
+                    return audio
+                with session_scope() as s:
+                    return load_normalized(s, media_id, wd)
+            stats["speaker_split"] = split_speakers(media_id, media_audio)
     finally:
         free_cuda()
     stats.update(rounds=rounds, device=fallback.device if fallback else None,
