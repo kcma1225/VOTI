@@ -39,6 +39,14 @@ export function MediaStatusBadge({
         </Badge>
       </Tooltip>
     )
+  if (failureCode === 'no_subtitles' && status === 'skipped')
+    return (
+      <Tooltip content={`${t('labels.noSubtitles')} — ${t('labels.noSubtitlesHint')}`}>
+        <Badge tone="warning" className={className} aria-label={`${t('labels.noSubtitles')}: ${t('labels.noSubtitlesHint')}`} data-status="no_subtitles">
+          <CaptionsOff className="size-3" /> {compact ? t('labels.noSubtitlesShort') : t('labels.noSubtitles')}
+        </Badge>
+      </Tooltip>
+    )
   const s = mediaStatus[status] ?? { label: status, tone: 'neutral' as Tone }
   const active = status === 'downloading' || status === 'processing'
   return (

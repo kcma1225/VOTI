@@ -315,7 +315,8 @@ export default function MediaDetail() {
   const recheckAsButton = ['listed', 'detailed', 'skipped', 'blocked'].includes(m.status)
   const recheckActive = m.jobs.some((j) => j.kind === 'media.detail' && (j.status === 'queued' || j.status === 'running'))
   const ocrTrack = m.tracks.some((tr) => tr.kind === 'ocr')
-  const canDownload = !membersOnly && m.failure_code !== 'empty_captions' && ['listed', 'detailed', 'skipped', 'blocked', 'failed'].includes(m.status) && !m.jobs.some((j) => j.kind !== 'media.download' && ['queued', 'running'].includes(j.status)) && m.segment_count === 0
+  const noSubtitles = m.status === 'skipped' && m.failure_code === 'no_subtitles'
+  const canDownload = !membersOnly && !noSubtitles && m.failure_code !== 'empty_captions' && ['listed', 'detailed', 'skipped', 'blocked', 'failed'].includes(m.status) && !m.jobs.some((j) => j.kind !== 'media.download' && ['queued', 'running'].includes(j.status)) && m.segment_count === 0
   return (
     <Page wide>
       {m.channel ? <BackLink to={`/channels/${m.channel.id}`}>{m.channel.title}</BackLink> : <BackLink to="/channels">{t('common.back')}</BackLink>}
@@ -460,8 +461,8 @@ export default function MediaDetail() {
             <Card>
               <EmptyState
                 icon={hasPipeline ? <Loader2 className="animate-spin" /> : <Minus />}
-                title={hasPipeline ? (m.status === 'failed' ? t('process.media.stoppedMidway') : t('process.media.processing')) : t('process.media.notDownloaded')}
-                description={hasPipeline ? t('process.media.processingDesc') : membersOnly ? t('process.media.notDownloadableDesc') : m.failure_code === 'empty_captions' ? t('labels.emptyCaptionsHint') : t('process.media.notDownloadedDesc')}
+                title={hasPipeline ? (m.status === 'failed' ? t('process.media.stoppedMidway') : t('process.media.processing')) : noSubtitles ? t('labels.noSubtitles') : t('process.media.notDownloaded')}
+                description={hasPipeline ? t('process.media.processingDesc') : noSubtitles ? t('labels.noSubtitlesHint') : membersOnly ? t('process.media.notDownloadableDesc') : m.failure_code === 'empty_captions' ? t('labels.emptyCaptionsHint') : t('process.media.notDownloadedDesc')}
                 action={
                   canDownload && !hasPipeline ? (
                     <Button variant="primary" onClick={() => setDlOpen(true)}>

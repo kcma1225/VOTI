@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react'
 import type { ReviewStatus, Timeline } from '@/api/types'
 import { fmtClock, fmtTimestamp } from '@/lib/format'
 import { reviewStatus } from '@/lib/labels'
-import { speakerColor, timelineSpeakers } from './speaker-color'
+import { localSpeakerName, speakerColor, timelineSpeakers } from './speaker-color'
 import { cn } from '@/lib/cn'
 import { localized, msgs, t as tr } from '@/i18n'
 
@@ -224,7 +224,7 @@ export function SpeakerLegend({ t }: { t: Timeline }) {
       {speakers.map((s, i) => (
         <span key={s} className="flex items-center gap-1.5">
           <span className="size-2.5 rounded-sm" style={{ background: speakerColor(i) }} />
-          <span className="font-mono">{s}</span>
+          <span>{localSpeakerName(i)}</span>
         </span>
       ))}
       {(['passed', 'needs_fix', 'excluded', 'unchecked'] as ReviewStatus[]).map((r) => (

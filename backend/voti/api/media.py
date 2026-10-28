@@ -674,19 +674,34 @@ def aggregate_media_profile(items: list[tuple[float, VoiceProfile]]) -> S.MediaS
 
 
 def media_speaker_labels(s: Session, media_id: uuid.UUID) -> list[str]:
-    """Every diarization label of a media (turns ∪ segment local_speaker) in label order — the colour order of the
-    timeline speaker lane, speaker cards and transcript highlights."""
-    labels = set(s.scalars(select(DiarizationTurn.local_speaker).where(DiarizationTurn.media_id == media_id)
-                           .distinct()).all())
-    labels |= set(s.scalars(select(Segment.local_speaker).where(Segment.media_id == media_id,
-                                                               Segment.active.is_(True),
-                                                               Segment.local_speaker.isnot(None)).distinct()).all())
-    return sorted(x for x in labels if x)
+    """Every diarization label of a media (turns ∪ segment local_speaker), most data first: usable (not invalid)
+    segment seconds, then diarized seconds, then label. 語者 1 is the speaker with the most data; this is also
+    the colour order of the timeline speaker lane, speaker cards and transcript highlights (the frontend's
+    timelineSpeakers uses the same key)."""
+    diar: dict[str, float] = {}
+    for lab, sec in s.execute(select(DiarizationTurn.local_speaker,
+                                     func.sum(DiarizationTurn.end_sec - DiarizationTurn.start_sec))
+                              .where(DiarizationTurn.media_id == media_id).group_by(DiarizationTurn.local_speaker)):
+        if lab:
+            diar[lab] = float(sec or 0)
+    usable: dict[str, float] = {}
+    for lab, sec in s.execute(select(Segment.local_speaker, func.sum(Segment.end_sec - Segment.start_sec))
+                              .where(Segment.media_id == media_id, Segment.active.is_(True),
+                                     Segment.local_speaker.isnot(None),
+                                     func.coalesce(Segment.validity, "unknown") != "invalid")
+                              .group_by(Segment.local_speaker)):
+        usable[lab] = float(sec or 0)
+    labels = set(diar) | set(usable)
+    labels |= {x for x in s.scalars(select(Segment.local_speaker).where(Segment.media_id == media_id,
+                                                                       Segment.active.is_(True),
+                                                                       Segment.local_speaker.isnot(None))
+                                    .distinct()).all() if x}
+    return sorted(labels, key=lambda x: (-round(usable.get(x, 0.0), 3), -round(diar.get(x, 0.0), 3), x))
 
 
 @router.get("/{media_id}/speakers", response_model=list[S.MediaSpeaker])
 def media_speakers(media_id: uuid.UUID, _: User = Depends(current_user), s: Session = Depends(get_session)):
-    """The diarized speakers of one media (SPEAKER_00, …) with speaking time, segment counts, aggregated
+    """The diarized speakers of one media, most data first (see media_speaker_labels), with speaking time, segment counts, aggregated
     Vox-Profile estimates, the cross-video candidate speaker (cluster) their segments are assigned to and a few
     representative segments. Invalid segments (validity = invalid) are excluded from every number."""
     from .settings import get_setting

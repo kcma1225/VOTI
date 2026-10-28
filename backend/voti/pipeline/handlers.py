@@ -155,6 +155,16 @@ def h_diarize(ctx: JobContext) -> dict:
     return res
 
 
+NO_SUBTITLES = "no_subtitles"  # no CC and no usable on-screen subtitles (media.ocr found nothing to pair)
+
+
+def _no_text_source(media_id: uuid.UUID) -> bool:
+    """No caption track other than OCR (manual / auto / uploaded) for this media?"""
+    from ..models import Track
+    with session_scope() as s:
+        return s.scalar(select(Track.id).where(Track.media_id == media_id, Track.kind != "ocr").limit(1)) is None
+
+
 @handler("media.ocr")
 def h_ocr(ctx: JobContext) -> dict:
     """Hard-subtitle OCR (voti.pipeline.ocr). Chained after media.diarize when an `ocr_video` asset exists; payload
@@ -168,6 +178,16 @@ def h_ocr(ctx: JobContext) -> dict:
         if not ctx.will_retry(e):
             ocr.mark_failed(ctx.media_id, e.code, e.message)
         raise
+    if not res.get("paired") and _no_text_source(ctx.media_id):
+        # Not every video without CC has burned-in subtitles: nothing to segment, so stop here (quality and
+        # diarization stay stored) and show the media as skipped instead of "ready" with no segments.
+        with session_scope() as s:
+            m = s.get(Media, ctx.media_id)
+            if m is not None:
+                m.status, m.stage, m.failure_code = "skipped", None, NO_SUBTITLES
+                m.failure_message = ("沒有 CC 字幕，畫面上也沒有偵測到可配對語音的字幕"
+                                     if res.get("events") else "沒有 CC 字幕，畫面上也沒有偵測到字幕")
+        return res
     if ctx.payload.get("rerun"):
         with session_scope() as s:
             m = s.get(Media, ctx.media_id)

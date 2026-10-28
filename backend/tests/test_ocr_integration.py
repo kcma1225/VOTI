@@ -86,6 +86,27 @@ def test_ocr_job_stores_track_and_deletes_video(db, ocr_media, monkeypatch):  # 
     assert sum(meta["rejected"].values()) == 2 and set(meta["rejected"]) <= {"no_speech", "little_speech"}
 
 
+def test_ocr_without_subtitles_skips_media(db, ocr_media, monkeypatch):  # noqa: ANN001
+    """Not every video without CC has burned-in subtitles: nothing found → media skipped (no_subtitles), no chain."""
+    from voti.models import Job, Media
+    from voti.pipeline import ocr
+    from voti.queue import enqueue, run_one
+    import voti.pipeline.handlers  # noqa: F401
+
+    monkeypatch.setattr(ocr, "load_engine", lambda kind, device: (lambda rgb, t, dx=0.0, dy=0.0: []))
+    m = ocr_media
+    job = enqueue(db, "media.ocr", media_id=m.id)
+    db.commit()
+    run_one(str(job.id), "test")
+    db.expire_all()
+    job = db.get(Job, job.id)
+    assert job.status == "completed", job.error_message
+    assert db.scalar(select(Job).where(Job.parent_id == job.id)) is None
+    m = db.get(Media, m.id)
+    assert m.status == "skipped" and m.failure_code == "no_subtitles"
+    assert m.metadata_["ocr"]["status"] == "no_subtitles" and not ocr.needed(db, m.id)
+
+
 def test_ocr_api(db, ocr_media, admin_client, monkeypatch):  # noqa: ANN001
     from voti import storage
     from voti.models import Job

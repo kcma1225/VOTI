@@ -11,6 +11,9 @@ export const zh = {
   emptyCaptions: '已略過・字幕為空',
   emptyCaptionsShort: '字幕為空',
   emptyCaptionsHint: '上傳者字幕軌沒有內容，無法用來切分語句；字幕補上後可重新檢查。',
+  noSubtitles: '已略過・無任何字幕',
+  noSubtitlesShort: '無字幕',
+  noSubtitlesHint: '沒有 CC 字幕，畫面上也沒有偵測到可與語音配對的字幕（OCR），所以沒有可用的語句。音質與語者分析仍保留。',
   membersOnlyHint: '此影片僅限頻道會員觀看，本系統不支援下載。',
   jobStatus: {
     queued: '排隊中', running: '執行中', completed: '完成', failed: '失敗', blocked: '受阻', cancelled: '已取消', interrupted: '中斷',
@@ -113,6 +116,9 @@ export const en: Shape<typeof zh> = {
   emptyCaptions: 'Skipped · empty captions',
   emptyCaptionsShort: 'Empty captions',
   emptyCaptionsHint: 'The uploader caption tracks have no content, so there is nothing to segment; re-check once captions are added.',
+  noSubtitles: 'Skipped · no subtitles',
+  noSubtitlesShort: 'No subtitles',
+  noSubtitlesHint: 'No CC captions, and OCR found no on-screen subtitles that pair with speech, so there are no usable sentences. Quality and speaker analysis are kept.',
   membersOnlyHint: 'This video is for channel members only and cannot be downloaded.',
   jobStatus: {
     queued: 'Queued', running: 'Running', completed: 'Done', failed: 'Failed', blocked: 'Blocked', cancelled: 'Cancelled', interrupted: 'Interrupted',

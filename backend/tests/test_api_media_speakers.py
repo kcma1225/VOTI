@@ -21,7 +21,7 @@ def _vp(segment, sex="male", sex_prob=0.9, age=40.0, age_group="40-49", emotion=
 def diarized(factory, db):
     from voti.models import ClusterRun, DiarizationTurn, Speaker, SpeakerAssignment
     m = factory.media(title="podcast", status="ready")
-    # label order (not appearance order) decides colours: SPEAKER_01 speaks first
+    # equal usable speech (8 s each): more diarized time wins, so SPEAKER_00 comes first though SPEAKER_01 speaks first
     db.add_all([
         DiarizationTurn(media_id=m.id, local_speaker="SPEAKER_01", start_sec=0, end_sec=10, model_id="pyannote"),
         DiarizationTurn(media_id=m.id, local_speaker="SPEAKER_00", start_sec=10, end_sec=30, model_id="pyannote"),
@@ -106,3 +106,22 @@ def test_media_speakers_empty_and_404(annotator_client, factory):
     r = annotator_client.get(f"/api/media/{m.id}/speakers")
     assert r.status_code == 200 and r.json() == []
     assert annotator_client.get(f"/api/media/{uuid.uuid4()}/speakers").status_code == 404
+
+
+def test_media_speakers_most_data_first(annotator_client, factory, db):
+    """語者 1 is the speaker with the most usable speech, not SPEAKER_00 (invalid segments don't count)."""
+    from voti.models import DiarizationTurn
+    m = factory.media(title="interview", status="ready")
+    db.add_all([
+        DiarizationTurn(media_id=m.id, local_speaker="SPEAKER_00", start_sec=0, end_sec=1, model_id="pyannote"),
+        DiarizationTurn(media_id=m.id, local_speaker="SPEAKER_01", start_sec=1, end_sec=40, model_id="pyannote"),
+        DiarizationTurn(media_id=m.id, local_speaker="SPEAKER_02", start_sec=40, end_sec=60, model_id="pyannote"),
+    ])
+    db.commit()
+    factory.segment(m, 0.0, 1.0, local_speaker="SPEAKER_00")
+    factory.segment(m, 1.0, 10.0, local_speaker="SPEAKER_01")
+    factory.segment(m, 10.0, 40.0, local_speaker="SPEAKER_01", validity="invalid", invalid_reason="text_mismatch")
+    factory.segment(m, 40.0, 60.0, local_speaker="SPEAKER_02")
+    out = annotator_client.get(f"/api/media/{m.id}/speakers").json()
+    assert [x["local_speaker"] for x in out] == ["SPEAKER_02", "SPEAKER_01", "SPEAKER_00"]
+    assert [x["color_index"] for x in out] == [0, 1, 2]

@@ -3,6 +3,7 @@ import type * as T from '@/api/types'
 import { buildDB, genSegments, newJob, rngFor, summary, tick, topKey, wordsFor, PIPE, type DB, type MockMedia } from './data'
 import { synthWav } from './audio'
 import { cropSvg, ocrResult } from './ocr'
+import { timelineSpeakers } from '@/components/domain/speaker-color'
 
 let db: DB
 const SESSION_KEY = 'voti-mock-logged-out'
@@ -358,10 +359,10 @@ function timeline(m: MockMedia): T.Timeline {
   }
 }
 
-/** GET /media/{id}/speakers from the generated segments (same rules as the API: label order, invalid excluded). */
+/** GET /media/{id}/speakers from the generated segments (same rules as the API: most data first, invalid excluded). */
 function mediaSpeakers(m: MockMedia): T.MediaSpeaker[] {
   const segs = m.status === 'ready' || getDB().segments.has(m.id) ? genSegments(getDB(), m) : []
-  const labels = [...new Set(segs.map((s) => s.local_speaker).filter((x): x is string => !!x))].sort()
+  const labels = timelineSpeakers({ diarization: [], segments: segs })
   const norm = (d: Record<string, number>) => {
     const tot = Object.values(d).reduce((a, v) => a + v, 0)
     return tot > 0 ? Object.fromEntries(Object.entries(d).sort((a, b) => b[1] - a[1]).map(([k, v]) => [k, Math.round((v / tot) * 1e4) / 1e4])) : {}
