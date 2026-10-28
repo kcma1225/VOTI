@@ -487,3 +487,23 @@ def test_real_models_on_real_segments(db, factory):  # noqa: ANN001
         exp = g["expect"]
         assert (got[g["key"]].validity, got[g["key"]].invalid_reason) == (
             ("valid", None) if exp == "valid" else ("invalid", exp)), (g["key"], report[g["key"]])
+
+
+def test_decide_english_sentence_in_chinese_track():
+    """An English sentence (English text) inside a zh-TW track is judged by its text, not the track language."""
+    en = "Thank you so much for watching"
+    assert validate.text_script(en) == "latin"
+    assert validate.text_script("中文字幕內容") == "han"
+    assert validate.text_script("這個reel就有") == "han"
+    assert validate.text_script("我覺得 deep learning model 很好") == "mixed"
+    v = _d(text=en, lid=[("en", 0.97)], score=0.7)
+    assert v.validity == "valid" and v.details["expected"] == "latin"
+    # Chinese speech under an English subtitle is still a mismatch
+    v = _d(text=en, lid=[("zh", 0.95)], score=0.2)
+    assert (v.validity, v.reason) == ("invalid", "language_mismatch")
+    for lang in ("nan-TW", None):
+        assert _d(text=en, lang=lang, lid=[("en", 0.97)], score=0.7).validity == "valid"
+    # code-switched sentence heard as English: not a language mismatch (alignment still decides)
+    assert _d(text="我覺得 deep learning model 很好", lid=[("en", 0.9)], score=0.7).validity == "valid"
+    # mostly-Chinese sentence heard as English stays a mismatch
+    assert _d(text="這個reel就有將近十萬點贊", lid=[("en", 0.9)], score=0.2).reason == "language_mismatch"

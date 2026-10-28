@@ -91,6 +91,20 @@ def expected_language(language: str | None, text: str = "") -> tuple[str | None,
     return LID_CODE.get(base, base), False
 
 
+CJK = frozenset({"zh", "ja", "ko"})  # VoxLingua107 codes of Han / kana / hangul text
+MIXED_LATIN_SHARE = 0.3              # Latin words / (Han characters + Latin words) for a code-switched sentence
+
+
+def text_script(text: str) -> str:
+    """"latin" (Latin words, no Han), "mixed" (Han with ≥ MIXED_LATIN_SHARE Latin words), "han" or "other"."""
+    from .align import HAN, LATIN_WORD
+    han = len(HAN.findall(text or ""))
+    words = len(LATIN_WORD.findall(text or ""))
+    if not han:
+        return "latin" if words >= 2 or sum(len(w) for w in LATIN_WORD.findall(text or "")) >= 4 else "other"
+    return "mixed" if words / (han + words) >= MIXED_LATIN_SHARE else "han"
+
+
 def settings_value(raw: dict | None) -> dict:
     out = dict(DEFAULTS)
     out.update({k: v for k, v in (raw or {}).items() if k in DEFAULTS and v is not None})
@@ -127,13 +141,23 @@ def decide(*, text: str, text_source: str | None, language: str | None, lid: lis
         return Verdict("unknown", None, {"note": "no_text"})
     expected, lenient = expected_language(language, text)
     details["expected"] = expected or ("sinitic" if lenient else None)
+    script = text_script(text)
+    if script == "latin" and (lenient or expected in CJK):
+        # an English sentence inside a Chinese / Taiwanese track: the text, not the track, says what is spoken —
+        # only a confident CJK language ID then means a mismatch (e.g. Chinese speech with an English subtitle)
+        expected, lenient = None, False
+        details["expected"] = "latin"
     if lid:
         top, prob = lid[0]
         mismatch = False
-        if lenient:
+        if details["expected"] == "latin":
+            mismatch = top in CJK and prob >= cfg["lid_min_prob"]
+        elif lenient:
             mismatch = top in CLEARLY_DIFFERENT and prob >= cfg["lid_min_prob"]
         elif expected is not None:
             mismatch = top != expected and prob >= cfg["lid_min_prob"]
+            if mismatch and script == "mixed" and expected in CJK and top == "en":
+                mismatch = False  # code-switched sentence (lots of English words): English speech is plausible
         if mismatch:
             return Verdict("invalid", "language_mismatch", details)
     if align_score is not None and align_units >= cfg["align_min_units"] and not lenient:
