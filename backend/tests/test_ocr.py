@@ -232,6 +232,33 @@ def test_concurrent_tracks_are_rejected():
     assert any(p["status"] == "paired" for p in ex["pairs"])
 
 
+def test_centred_track_wins_over_side_track():
+    """Live chat beside the picture overlaps the subtitles all the time: only the side events are rejected."""
+    ev = [H.Event(0.0, 2.0, "這是字幕第一句", [], 0, (300, 540, 900, 620), 0.99, 10, 1.0),
+          H.Event(0.5, 3.0, "@someone 哈哈哈", [], 0, (920, 400, 1200, 430), 0.99, 10, 1.0),
+          H.Event(5.0, 6.0, "主持人與片中片", [], 0, (300, 540, 900, 620), 0.99, 10, 1.0),
+          H.Event(5.2, 6.0, "片中片的字幕喔", [], 0, (300, 300, 900, 360), 0.99, 10, 1.0)]
+    ev[0].track, ev[1].track, ev[2].track, ev[3].track = 0, 1, 0, 2
+    assert H.concurrent(ev, {0}) == {1, 3}       # centred track 0 beats side tracks 1 and 2
+    assert H.concurrent(ev, {0, 2}) == {1, 2, 3}  # two centred tracks at once: both rejected
+    assert H.concurrent(ev) == {0, 1, 2, 3}
+
+
+def test_chat_rows_rejected():
+    """@handles mark a style as chat; non-centred styles stacked in the same column are a chat panel."""
+    def st(i, cy, h, x0, centered=0.0, reasons=None):
+        s = H.Style(id=i, cy=cy, h=h, fill=(255, 255, 255), edge=(0, 0, 0))
+        s.stats = {"centered_share": centered, "x0_rel": x0 / 1280, "x1_rel": (x0 + 250) / 1280}
+        s.accepted, s.reasons = not reasons, reasons or []
+        return s
+    styles = [st(0, 582, 80, 300, centered=1.0), st(1, 392, 22, 1035, reasons=["chat"]), st(2, 444, 21, 1035),
+              st(3, 539, 20, 1036), st(4, 578, 17, 40)]
+    H._reject_panels(styles, 1280, H.DISCOVERY_DEFAULTS)
+    assert [s.accepted for s in styles] == [True, False, False, False, True]
+    assert styles[2].reasons == ["chat_panel"]
+    assert H._HANDLE.search("@Sophieeeeeee上吹還在看") and not H._HANDLE.search("email me @ home")
+
+
 # ───────────────────────────── segmentation / validation rules ─────────────────────────────
 
 def test_segment_uses_only_paired_ocr_cues():

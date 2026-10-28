@@ -278,7 +278,11 @@ DISCOVERY_DEFAULTS = {
     "max_multi_share": 0.35,     # appearances with several far-apart boxes in the band (tables, UI, charts)
     "min_relative_frames": 0.12, # appearances relative to the strongest accepted style (separate positions)
     "min_variant_frames": 0.02,  # … for a colour variant at the position of a strong style
+    "max_handle_share": 0.15,    # appearances containing an @handle (live chat / comment overlays)
+    "min_panel_rows": 3,         # non-centred styles stacked in one column (same left edge) = a chat / comment panel
 }
+
+_HANDLE = re.compile(r"@[\w.\-]{3,}")
 
 
 def _lcs_sub(a: str, b: str) -> tuple[int, int, int]:
@@ -370,6 +374,9 @@ def score_styles(styles: list[Style], sample_times: list[float], step: float, fr
             "median_han": float(np.median([han_count(x) for x in texts])) if texts else 0.0,
             "multi_share": multi / max(1, len(seq)),
             "y_rel": s.cy / frame_h, "h_rel": s.h / frame_h,
+            "handle_share": sum(bool(_HANDLE.search(x)) for x in texts) / max(1, len(texts)),
+            "x0_rel": float(np.median(x0s)) / frame_w if x0s else None,
+            "x1_rel": float(np.median(x1s)) / frame_w if x1s else None,
         }
         s.stats = st
         r = []
@@ -393,8 +400,11 @@ def score_styles(styles: list[Style], sample_times: list[float], step: float, fr
             r.append("short_texts")
         if st["multi_share"] > c["max_multi_share"]:
             r.append("scattered")
+        if st["handle_share"] > c["max_handle_share"]:
+            r.append("chat")
         s.reasons = r
         s.accepted = not r
+    _reject_panels(styles, frame_w, c)
     # weak styles: a style seen much less often than the strongest one is accepted only when it shares the line
     # position of a strong style (colour variants of the same subtitle: other speaker colour, bright background)
     top = max([s.stats["frames"] for s in styles if s.accepted] or [0])
@@ -406,6 +416,24 @@ def score_styles(styles: list[Style], sample_times: list[float], step: float, fr
             if not near or s.stats["frames"] < c["min_variant_frames"] * top:
                 s.accepted, s.reasons = False, ["minor"]
     return styles
+
+
+def _reject_panels(styles: list[Style], frame_w: float, c: dict) -> None:
+    """Live-chat / comment panels: rows of small text that keep changing beside the picture. Each row looks like a
+    left-aligned subtitle on its own; together they are several non-centred styles stacked in one column (same
+    left or right edge, similar glyph height, different line positions). Reject every style of such a column."""
+    # rows already rejected as chat (@handles) still mark their column
+    cand = [s for s in styles if (s.accepted or s.reasons == ["chat"]) and s.stats.get("x0_rel") is not None
+            and s.stats.get("centered_share", 1.0) < c["min_centered_share"]]
+    for edge in ("x0_rel", "x1_rel"):
+        for s in cand:
+            col = [x for x in cand if abs(x.stats[edge] - s.stats[edge]) * frame_w <= 1.5 * max(s.h, x.h)
+                   and abs(x.h - s.h) <= 0.35 * max(s.h, x.h)]
+            rows = sorted({round(x.cy / max(1.0, x.h)) for x in col})
+            if len(rows) >= c["min_panel_rows"] or any(x.reasons == ["chat"] for x in col):
+                for x in col:
+                    if x.accepted:
+                        x.accepted, x.reasons = False, ["chat_panel"]
 
 
 def merge_lines(styles: list[Style]) -> list[list[int]]:
@@ -460,10 +488,13 @@ def fix_brackets(t: str) -> str:
     return "".join(out)
 
 
-def concurrent(events: list) -> set[int]:
+def concurrent(events: list, centered_tracks: set[int] | None = None) -> set[int]:
     """Indices of events of different tracks (Event.track) that overlap in time by ≥ 0.3 s: two subtitle tracks on
-    screen at once (host commentary over a clip) cannot be paired with one stream of speech reliably."""
+    screen at once (host commentary over a clip) cannot be paired with one stream of speech reliably. When exactly
+    one of the two tracks is centred (`centered_tracks`), the centred one is taken as the subtitles and only the
+    other event is marked (side overlays: chat, captions of a picture-in-picture)."""
     out: set[int] = set()
+    ct = centered_tracks or set()
     order = sorted(range(len(events)), key=lambda i: events[i].start)
     for a_i, i in enumerate(order):
         for j in order[a_i + 1:]:
@@ -471,7 +502,11 @@ def concurrent(events: list) -> set[int]:
                 break
             if events[i].track != events[j].track and \
                     min(events[i].end, events[j].end) - max(events[i].start, events[j].start) >= 0.3:
-                out.update((i, j))
+                ci, cj = events[i].track in ct, events[j].track in ct
+                if ci != cj:
+                    out.add(j if ci else i)
+                else:
+                    out.update((i, j))
     return out
 
 
@@ -654,13 +689,14 @@ PAIR_DEFAULTS = {"slack_sec": 0.4,          # subtitle timing vs speech toleranc
                  "max_event_sec": 12.0}     # longer on-screen text is a title / caption card, not a subtitle
 
 
-def pair_events(events: list[Event], regions: list[tuple[float, float]], cfg: dict | None = None) -> list[dict]:
+def pair_events(events: list[Event], regions: list[tuple[float, float]], cfg: dict | None = None,
+                centered_tracks: set[int] | None = None) -> list[dict]:
     """→ one dict per event: {"event": i, "status": "paired"|"rejected", "reason", "start", "end", "speech_sec"}.
     Paired spans are snapped to the speech inside [event.start − slack, event.end + slack]."""
     c = {**PAIR_DEFAULTS, **(cfg or {})}
     out = []
     starts = np.array([r[0] for r in regions]) if regions else np.zeros(0)
-    both = concurrent(events)
+    both = concurrent(events, centered_tracks)
     for i, e in enumerate(events):
         a, b = e.start - c["slack_sec"], e.end + c["slack_sec"]
         k0 = int(np.searchsorted(starts, a, side="left")) - 1

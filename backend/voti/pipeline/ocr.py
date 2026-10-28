@@ -434,7 +434,10 @@ def extract(source, engine, regions_speech: list[tuple[float, float]], cfg: dict
                 e.track = gi
             events += evs
     events.sort(key=lambda e: e.start)
-    pairs = H.pair_events(events, regions_speech, {"min_event_conf": cfg["min_event_conf"]})
+    mcs = H.DISCOVERY_DEFAULTS["min_centered_share"]
+    centered = {gi for gi, g in enumerate(groups)
+                if any(st.stats.get("centered_share", 0) >= mcs for st in styles if st.id in g)}
+    pairs = H.pair_events(events, regions_speech, {"min_event_conf": cfg["min_event_conf"]}, centered)
     stats.update(tracking_frames=ocr_frames + reused, ocr_frames=ocr_frames, reused_frames=reused,
                  tracking_sec=round(time.monotonic() - t1, 1), events=len(events),
                  paired=sum(p["status"] == "paired" for p in pairs),
