@@ -71,10 +71,13 @@ export function KaraokeText({
   onSeek,
   focusable,
   seekLabel,
+  marks,
   className,
 }: {
   units: Unit[]
   time: number | null
+  /** per unit: part of a search match (hl-match) */
+  marks?: boolean[] | null
   onSeek?: (t: number) => void
   focusable?: boolean
   /** accessible name prefix for focusable units, e.g. "Play from" */
@@ -113,6 +116,7 @@ export function KaraokeText({
               st === 'upcoming' && 'text-fg-3',
               st === 'current' && 'hl-current',
               seekable && 'hl-seek',
+              marks?.[i] && 'hl-match',
             )}
           >
             {u.t}

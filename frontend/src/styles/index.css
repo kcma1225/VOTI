@@ -302,6 +302,12 @@
     -webkit-box-decoration-break: clone;
     box-decoration-break: clone;
   }
+  /* full-text search match in the media transcript (an underline + tint: still readable under karaoke states) */
+  .hl-match:not(.hl-current) {
+    background-color: var(--warning-soft);
+    box-shadow: 0 0 0 1px color-mix(in oklab, var(--warning) 55%, transparent);
+    color: var(--fg);
+  }
   /* clickable (seekable) characters */
   .hl-seek {
     cursor: pointer;

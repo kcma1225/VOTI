@@ -1,10 +1,10 @@
 /* Media page transcript: every sentence plays in place (only that sentence), shows karaoke highlighting while it
  * plays, and can be reviewed (pass / needs fix / exclude) or corrected inline — no navigation. */
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type KeyboardEvent } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { ArrowUpRight, AudioWaveform, Check, ChevronDown, CircleSlash, Loader2, MoreHorizontal, Pause, Pencil, Play, ShieldX, TriangleAlert, Undo2, Wand2 } from 'lucide-react'
+import { ArrowUpRight, AudioWaveform, Check, ChevronDown, CircleSlash, Loader2, MoreHorizontal, Pause, Pencil, Play, SearchX, ShieldX, TriangleAlert, Undo2, Wand2, X } from 'lucide-react'
 import { api } from '@/api/client'
 import { onErr, qk, useMediaSegments, useMediaWords, useSegmentPatch } from '@/api/queries'
 import type { MediaWordsResponse, ReviewStatus, SegmentSummary } from '@/api/types'
@@ -15,7 +15,7 @@ import { useT } from '@/i18n'
 import { useSentencePlayer } from '@/hooks/useSentencePlayer'
 import { Button } from '@/components/ui/button'
 import { Badge, Card, CardHeader, Tag } from '@/components/ui/primitives'
-import { Textarea } from '@/components/ui/form'
+import { SearchInput, Select, Textarea } from '@/components/ui/form'
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger, Tooltip } from '@/components/ui/overlay'
 import { EmptyState, ListSkeleton } from '@/components/ui/states'
 import { ReviewBadge } from '@/components/domain/status'
@@ -91,10 +91,51 @@ function AlignStatus({ mediaId, words }: { mediaId: string; words: MediaWordsRes
 
 /** Sentence text: karaoke when timed units exist, else a sentence-level highlight while active (both in the speaker
  * colour). Timed characters are clickable on every row, playing or not: play this sentence from that character. */
-function SentenceText({ s, units, active, player }: { s: SegmentSummary; units: Unit[] | null; active: boolean; player: Player }) {
+function SentenceText({ s, units, active, player, query }: { s: SegmentSummary; units: Unit[] | null; active: boolean; player: Player; query?: string }) {
   const time = useClock(player.clock, active)
-  if (units) return <KaraokeText units={units} time={time} onSeek={(at) => player.play(s, at)} className="text-[15px] leading-7 break-cjk" />
-  return <span className={cn('rounded-[3px] text-[15px] leading-7 break-cjk transition-colors', active && 'hl-sentence')}>{s.text}</span>
+  const ranges = useMemo(() => matchRanges(s.text, query ?? ''), [s.text, query])
+  const marks = useMemo(() => (units && ranges.length ? unitMarks(units, ranges) : null), [units, ranges])
+  if (units && (marks || !ranges.length)) return <KaraokeText units={units} time={time} marks={marks} onSeek={(at) => player.play(s, at)} className="text-[15px] leading-7 break-cjk" />
+  return (
+    <span className={cn('rounded-[3px] text-[15px] leading-7 break-cjk transition-colors', active && 'hl-sentence')}>
+      <Marked text={s.text} ranges={ranges} />
+    </span>
+  )
+}
+
+/** Case-insensitive occurrences of `q` in `text` → [start, end) string offsets. */
+function matchRanges(text: string, q: string): [number, number][] {
+  const needle = q.trim().toLowerCase()
+  if (!needle) return []
+  const hay = text.toLowerCase()
+  if (hay.length !== text.length) return []
+  const out: [number, number][] = []
+  for (let i = hay.indexOf(needle); i >= 0; i = hay.indexOf(needle, i + needle.length)) out.push([i, i + needle.length])
+  return out
+}
+
+/** Per karaoke unit: does it overlap a match? null when the units do not spell the text (stale alignment). */
+function unitMarks(units: Unit[], ranges: [number, number][]): boolean[] | null {
+  let pos = 0
+  const out = units.map((u) => {
+    const a = pos
+    pos += u.t.length
+    return ranges.some(([x, y]) => a < y && pos > x)
+  })
+  return out.some(Boolean) ? out : null
+}
+
+function Marked({ text, ranges }: { text: string; ranges: [number, number][] }) {
+  if (!ranges.length) return <>{text}</>
+  const parts = []
+  let at = 0
+  ranges.forEach(([a, b], i) => {
+    if (a > at) parts.push(text.slice(at, a))
+    parts.push(<mark key={i} className="hl-match rounded-[3px] bg-transparent">{text.slice(a, b)}</mark>)
+    at = b
+  })
+  if (at < text.length) parts.push(text.slice(at))
+  return <>{parts}</>
 }
 
 /** Thin progress line along the bottom of the playing row (sentence-level position). */
@@ -110,8 +151,8 @@ export interface RowHandle {
 
 const Row = forwardRef<
   RowHandle,
-  { s: SegmentSummary; units: Unit[] | null; player: Player; mediaId: string; speakerIdx: number | null; onMove: (d: number) => void }
->(function Row({ s, units, player, mediaId, speakerIdx, onMove }, ref) {
+  { s: SegmentSummary; units: Unit[] | null; player: Player; mediaId: string; speakerIdx: number | null; onMove: (d: number) => void; query?: string }
+>(function Row({ s, units, player, mediaId, speakerIdx, onMove, query }, ref) {
   const t = useT()
   const patch = useSegmentPatch()
   const navigate = useNavigate()
@@ -225,7 +266,7 @@ const Row = forwardRef<
           </div>
         ) : (
           <div className={cn(invalid && !active && 'text-fg-3')}>
-            <SentenceText s={s} units={units} active={active} player={player} />
+            <SentenceText s={s} units={units} active={active} player={player} query={query} />
           </div>
         )}
         <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-fg-3">
@@ -356,7 +397,29 @@ export function TranscriptCard({
   const spIdx = useSpeakerIndex(mediaId)
   const items = segs.data?.items ?? []
   const invalidCount = items.filter((x) => x.validity === 'invalid').length
-  const all = onlyInvalid ? items.filter((x) => x.validity === 'invalid') : items
+  const [q, setQ] = useState('')
+  const [spk, setSpk] = useState('')
+  const [rev, setRev] = useState<ReviewStatus | ''>('')
+  const [flag, setFlag] = useState('')
+  const needle = q.trim().toLowerCase()
+  const speakers = useMemo(() => {
+    const labels = [...new Set(items.map((x) => x.local_speaker ?? ''))]
+    return labels.sort((a, b) => (spIdx(a || null) ?? 999) - (spIdx(b || null) ?? 999) || a.localeCompare(b))
+  }, [items, spIdx])
+  const flags = useMemo(() => [...new Set(items.flatMap((x) => x.flags ?? []))].sort(), [items])
+  const filtering = !!needle || !!spk || !!rev || !!flag
+  const all = items.filter(
+    (x) =>
+      (!onlyInvalid || x.validity === 'invalid') &&
+      (!needle || x.text.toLowerCase().includes(needle)) &&
+      (!spk || (x.local_speaker ?? '') === (spk === '-' ? '' : spk)) &&
+      (!rev || x.review_status === rev) &&
+      (!flag || (x.flags ?? []).includes(flag)),
+  )
+  const clearFilters = () => (setQ(''), setSpk(''), setRev(''), setFlag(''))
+  // a new filter starts from the top again
+  const fKey = `${needle}|${spk}|${rev}|${flag}|${onlyInvalid}`
+  useEffect(() => setShown(STEP), [fKey])
   // keep a sentence played from the timeline renderable
   const focusIdx = focusId ? all.findIndex((x) => x.id === focusId) : -1
   const limit = Math.max(shown, focusIdx + 20)
@@ -406,9 +469,53 @@ export function TranscriptCard({
           <span className="ml-auto hidden lg:inline">{t('process.media.rowKeys')}</span>
         </div>
       )}
+      {segs.data && segs.data.total > 0 && (
+        <div className="grid grid-cols-2 gap-2 px-4 pt-3 sm:flex sm:flex-wrap sm:items-center sm:px-5" data-shot="transcript-filters">
+          <SearchInput value={q} onChange={setQ} placeholder={t('transcript.search')} className="col-span-2 sm:min-w-56 sm:flex-1" />
+          <Select value={spk} onChange={(e) => setSpk(e.target.value)} aria-label={t('transcript.speaker')} className="sm:w-36">
+            <option value="">{t('transcript.allSpeakers')}</option>
+            {speakers.map((l) => {
+              const i = spIdx(l || null)
+              return (
+                <option key={l || '-'} value={l || '-'}>
+                  {l ? (i != null ? `${localSpeakerName(i)} · ${l}` : l) : t('transcript.noSpeaker')}
+                </option>
+              )
+            })}
+          </Select>
+          <Select value={rev} onChange={(e) => setRev(e.target.value as ReviewStatus | '')} aria-label={t('transcript.review')} className="sm:w-36">
+            <option value="">{t('transcript.allReview')}</option>
+            {(['unchecked', 'passed', 'needs_fix', 'excluded'] as ReviewStatus[]).map((st) => (
+              <option key={st} value={st}>
+                {reviewStatus[st].label}
+              </option>
+            ))}
+          </Select>
+          {flags.length > 0 && (
+            <Select value={flag} onChange={(e) => setFlag(e.target.value)} aria-label={t('transcript.flag')} className="col-span-2 sm:col-span-1 sm:w-40">
+              <option value="">{t('transcript.allFlags')}</option>
+              {flags.map((f) => (
+                <option key={f} value={f}>
+                  {flagLabel[f] ?? f}
+                </option>
+              ))}
+            </Select>
+          )}
+          {filtering && (
+            <div className="col-span-2 flex items-center gap-2 text-xs text-fg-3 sm:col-span-1">
+              <span className="tabular" aria-live="polite">{t('transcript.matches', all.length, items.length)}</span>
+              <Button size="sm" variant="ghost" onClick={clearFilters}>
+                <X /> {t('transcript.clear')}
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
       <div className="mt-3 border-t border-border">
         {!segs.data ? (
           <ListSkeleton rows={6} />
+        ) : !rows.length && filtering ? (
+          <EmptyState compact icon={<SearchX />} title={t('transcript.noMatch')} description={t('transcript.noMatchDesc')} action={<Button onClick={clearFilters}>{t('transcript.clear')}</Button>} />
         ) : !rows.length && onlyInvalid ? (
           <EmptyState compact icon={<ShieldX />} title={t('validate.noInvalid')} />
         ) : !rows.length ? (
@@ -428,6 +535,7 @@ export function TranscriptCard({
                   mediaId={mediaId}
                   speakerIdx={spIdx(s.local_speaker)}
                   onMove={(d) => move(i, d)}
+                  query={needle}
                 />
               ))}
             </div>

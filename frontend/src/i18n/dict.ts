@@ -12,6 +12,7 @@ import * as validate from './messages/validate'
 import * as ocr from './messages/ocr'
 import * as ytapi from './messages/ytapi'
 import * as remove from './messages/remove'
+import * as transcript from './messages/transcript'
 
 export const zh = {
   common: common.zh,
@@ -34,6 +35,8 @@ export const zh = {
   ytapi: ytapi.zh,
   /** Deleting videos */
   remove: remove.zh,
+  /** Media transcript search + filters */
+  transcript: transcript.zh,
 }
 
 export const en: Shape<typeof zh> = {
@@ -49,4 +52,5 @@ export const en: Shape<typeof zh> = {
   ocr: ocr.en,
   ytapi: ytapi.en,
   remove: remove.en,
+  transcript: transcript.en,
 }
