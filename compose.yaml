@@ -128,6 +128,8 @@ services:
   worker-audio:
     <<: *backend
     command: ["python", "-m", "voti.workers.run", "--queues", "audio,export"]
+    deploy:
+      replicas: ${AUDIO_WORKERS:-2}
 
   worker-ml:
     <<: *backend

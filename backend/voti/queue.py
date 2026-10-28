@@ -157,8 +157,10 @@ def worker_key(name: str) -> str:
 
 def enqueue(s: Session, kind: str, *, media_id: uuid.UUID | None = None, channel_id: uuid.UUID | None = None,
             payload: dict | None = None, created_by: uuid.UUID | None = None, parent_id: uuid.UUID | None = None,
-            priority: int = 0) -> Job:
-    """Insert a job (or return the active one for the same kind+media) and push its id after commit."""
+            priority: int = 0, front: bool = False) -> Job:
+    """Insert a job (or return the active one for the same kind+media) and push its id after commit.
+    front=True puts it next in line on its queue (pipeline follow-ups: a media runs through all its steps
+    before the next media starts, instead of every media waiting behind the whole backlog at every step)."""
     if kind not in KINDS:
         raise ValueError(f"unknown job kind {kind}")
     if media_id is not None:
@@ -175,18 +177,18 @@ def enqueue(s: Session, kind: str, *, media_id: uuid.UUID | None = None, channel
     except IntegrityError:  # raced with another producer
         return s.scalar(select(Job).where(Job.kind == kind, Job.media_id == media_id,
                                           Job.status.in_(("queued", "running"))))
-    _push_after_commit(s, job)
+    _push_after_commit(s, job, front)
     return job
 
 
-def _push_after_commit(s: Session, job: Job) -> None:
+def _push_after_commit(s: Session, job: Job, front: bool = False) -> None:
     from sqlalchemy import event
 
     job_id, queue = str(job.id), job.queue
 
     @event.listens_for(s, "after_commit", once=True)
     def _push(_session):  # noqa: ANN001
-        push(job_id, queue)
+        push(job_id, queue, front=front)
 
 
 def push(job_id: str | uuid.UUID, queue: str, run_after: datetime | None = None, front: bool = False) -> bool:
@@ -423,7 +425,9 @@ def _finish(ctx: JobContext, status: str, result: dict | None = None, code: str 
         if status == "completed":
             job.progress = 1.0
             for kind, payload, ids in ctx._followups:
-                enqueue(s, kind, payload=payload, parent_id=ctx.job_id, created_by=ctx.created_by, **ids)
+                step = kind in PIPELINE and ctx.kind in PIPELINE
+                enqueue(s, kind, payload=payload, parent_id=ctx.job_id, created_by=ctx.created_by,
+                        priority=1 if step else 0, front=step, **ids)
         job.error_code, job.error_message = code, message
         return True
 

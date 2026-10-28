@@ -504,3 +504,17 @@ def test_init_db_adds_run_after_to_existing_table(db, db_engine):  # noqa: ANN00
     init_db()  # idempotent
     assert "run_after" in {c["name"] for c in inspect(db_engine).get_columns("jobs")}
     assert "jobs_running_heartbeat" in {i["name"] for i in inspect(db_engine).get_indexes("jobs")}
+
+
+def test_pipeline_followup_runs_next(q, db):  # noqa: ANN001
+    """A pipeline step's follow-up goes to the run-next end of its queue, ahead of jobs already waiting there,
+    so each media flows through all its steps instead of waiting behind the whole backlog at every step."""
+    q.redis_client().delete("voti:q:ml")
+    waiting = _job(db, "media.quality", media_id=_media(db).id)
+    m = _media(db)
+    q.HANDLERS["media.quality"] = lambda ctx: ctx.then("media.diarize", media_id=ctx.media_id)
+    first = _job(db, "media.quality", media_id=m.id)
+    q.run_one(str(first), "testhost:1")
+    nxt = db.scalar(select(Job.id).where(Job.kind == "media.diarize", Job.media_id == m.id))
+    ids = _list("ml")
+    assert ids[-1] == str(nxt) and str(waiting) in ids  # BRPOP takes from the right: diarize runs next
