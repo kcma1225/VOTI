@@ -732,6 +732,18 @@ export const handlers = [
     const xs = sortMedia(db.media.filter((m) => matchMedia(m, f)), url.searchParams.get('sort'))
     return json({ ...page(xs.map(mediaSummary), url), facets: facets(f) })
   }),
+  http.post(`${A}/media/selection-captions`, async ({ request }) => {
+    const b = (await request.json()) as { media_ids?: string[]; filter?: MF }
+    const targets = b.media_ids ? b.media_ids.map((id) => db.mediaById.get(id)!).filter(Boolean) : db.media.filter((m) => matchMedia(m, b.filter ?? {}))
+    const langs: Record<string, number> = {}
+    let withManual = 0
+    for (const m of targets) {
+      if (!m.has_manual_captions || m.captions_empty) continue
+      withManual++
+      for (const l of new Set(m.manual_caption_langs)) langs[l] = (langs[l] ?? 0) + 1
+    }
+    return json({ total: targets.length, with_manual: withManual, langs } satisfies T.SelectionCaptions)
+  }),
   http.post(`${A}/media/download`, async ({ request }) => {
     const b = (await request.json()) as T.DownloadRequest & { filter?: MF }
     const targets = b.media_ids ? b.media_ids.map((id) => db.mediaById.get(id)!).filter(Boolean) : db.media.filter((m) => matchMedia(m, b.filter ?? {}))

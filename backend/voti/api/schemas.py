@@ -170,6 +170,12 @@ class QueuedOut(BaseModel):
     queued: int
 
 
+class SelectionCaptionsOut(BaseModel):
+    total: int                # media in the selection
+    with_manual: int          # of those: with uploader (manual) captions that are not empty
+    langs: dict[str, int] = {}  # uploader caption language → media count
+
+
 class DownloadOut(BaseModel):
     queued: int
     skipped: int

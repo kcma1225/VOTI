@@ -474,6 +474,12 @@ export interface OcrResult {
   video_available: boolean
 }
 /** POST /media/download */
+/** POST /media/selection-captions: uploader caption languages over a whole selection (all pages) */
+export interface SelectionCaptions {
+  total: number
+  with_manual: number
+  langs: Record<string, number>
+}
 export interface DownloadRequest {
   media_ids?: UUID[]
   filter?: MediaQuery

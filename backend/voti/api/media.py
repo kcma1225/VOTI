@@ -262,6 +262,32 @@ def _usable_captions(m: Media, langs: list[str], include_auto: bool) -> bool | N
     return False
 
 
+class SelectionIn(BaseModel):
+    media_ids: list[uuid.UUID] | None = None
+    filter: MediaFilter | None = None
+
+
+@router.post("/selection-captions", response_model=S.SelectionCaptionsOut)
+def selection_captions(body: SelectionIn, _: User = Depends(current_user), s: Session = Depends(get_session)):
+    """Uploader caption languages over a whole selection (explicit ids or every media matching a filter, across
+    pages), for the download dialog: how many selected media have each language."""
+    if body.media_ids is None and body.filter is None:
+        raise ApiError(400, "no_selection", "請指定 media_ids 或 filter")
+    cond = [Media.id.in_(body.media_ids)] if body.media_ids is not None else list(media_conditions(body.filter))
+    rows = s.execute(select(Media.has_manual_captions, Media.captions_empty, Media.manual_caption_langs)
+                     .where(*cond)).all()
+    langs: dict[str, int] = {}
+    with_manual = 0
+    for has_manual, empty, codes in rows:
+        if not has_manual or empty:
+            continue
+        with_manual += 1
+        for c in set(codes or []):
+            langs[c] = langs.get(c, 0) + 1
+    return S.SelectionCaptionsOut(total=len(rows), with_manual=with_manual,
+                                  langs=dict(sorted(langs.items(), key=lambda kv: -kv[1])))
+
+
 @router.post("/download", response_model=S.DownloadOut)
 def download(body: DownloadIn, user: User = Depends(current_user), s: Session = Depends(get_session)):
     if body.media_ids is None and body.filter is None:

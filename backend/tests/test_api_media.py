@@ -287,3 +287,17 @@ def test_channels(annotator_client, corpus, db):
     assert r.json() == {"queued": 1}
     assert len(db.scalars(select(Job).where(Job.kind == "media.detail")).all()) == 2
     assert annotator_client.post(f"/api/channels/{ch1.id}/dedup").json()["kind"] == "channel.dedup"
+
+
+def test_selection_captions_counts_whole_selection(annotator_client, factory):
+    ch = factory.channel()
+    a = factory.media(channel_id=ch.id, has_manual_captions=True, manual_caption_langs=["zh-TW", "nan"])
+    b = factory.media(channel_id=ch.id, has_manual_captions=True, manual_caption_langs=["zh-Hans"])
+    factory.media(channel_id=ch.id, has_manual_captions=True, manual_caption_langs=["zh-TW"], captions_empty=True)
+    factory.media(channel_id=ch.id, has_manual_captions=False, manual_caption_langs=[])
+    r = annotator_client.post("/api/media/selection-captions", json={"filter": {"channel_id": str(ch.id)}})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"total": 4, "with_manual": 2, "langs": {"zh-TW": 1, "nan": 1, "zh-Hans": 1}}
+    r = annotator_client.post("/api/media/selection-captions", json={"media_ids": [str(a.id), str(b.id)]})
+    assert r.json()["total"] == 2 and r.json()["langs"]["zh-Hans"] == 1
+    assert annotator_client.post("/api/media/selection-captions", json={}).status_code == 400

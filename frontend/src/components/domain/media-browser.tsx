@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { AlertTriangle, Captions, Download, Film, Info, ListFilter, Smartphone, X } from 'lucide-react'
 import { api } from '@/api/client'
@@ -271,13 +271,21 @@ export function DownloadDialog({
 }) {
   const qc = useQueryClient()
   const t = useT()
-  // Only languages the selected videos actually have (from the loaded rows), with how many videos have each.
+  // Only languages the selected videos actually have, counted over the whole selection (every page) by the server;
+  // the loaded rows stand in until it answers.
+  const sel = useQuery({
+    queryKey: ['selectionCaptions', selection.ids ?? null, selection.filter ?? null],
+    queryFn: () => api.selectionCaptions({ media_ids: selection.ids, filter: selection.filter }),
+    enabled: open,
+    staleTime: 30_000,
+  })
   const langCounts = useMemo(() => {
+    if (sel.data) return new Map(Object.entries(sel.data.langs))
     const s = new Map<string, number>()
     const rows = selection.ids ? sample.filter((m) => selection.ids!.includes(m.id)) : sample
     rows.forEach((m) => m.manual_caption_langs.forEach((l) => s.set(l, (s.get(l) ?? 0) + 1)))
     return s
-  }, [sample, selection.ids])
+  }, [sel.data, sample, selection.ids])
   // preferred languages first (Traditional/Taiwan Chinese, Taiwanese, Hakka, Simplified), then by frequency
   const langs = useMemo(
     () => [...langCounts.entries()].sort((a, b) => langRank(a[0]) - langRank(b[0]) || b[1] - a[1]).map(([l]) => l),
@@ -296,7 +304,7 @@ export function DownloadDialog({
       setOcr('auto')
     }
   }, [open, langs, query.include_auto])
-  const withManual = selection.ids ? sample.filter((m) => selection.ids!.includes(m.id) && m.has_manual_captions).length : (manualCount ?? null)
+  const withManual = sel.data ? sel.data.with_manual : selection.ids ? sample.filter((m) => selection.ids!.includes(m.id) && m.has_manual_captions).length : (manualCount ?? null)
   const m = useMutation({
     mutationFn: () =>
       api.download({ media_ids: selection.ids, filter: selection.filter, caption_langs: picked, include_auto: includeAuto, ocr: ocr === 'auto' ? null : ocr === 'always' }),

@@ -100,7 +100,8 @@ function ThemedToaster() {
   return (
     <Toaster
       theme={resolved}
-      position={phone ? 'top-center' : 'bottom-right'}
+      // top: bottom-right toasts covered the pager / next-page controls
+      position={phone ? 'top-center' : 'top-right'}
       richColors={false}
       closeButton
       toastOptions={{ className: 'voti-toast' }}
