@@ -178,6 +178,8 @@ def channel_summaries(s: Session, channels: Sequence[Channel]) -> list[S.Channel
                    func.count().filter(Media.status.in_(FAILED_STATES)),
                    func.count().filter(new_condition(now)),
                    func.count().filter(Media.detailed_at.is_(None), Media.status.in_(FAILED_STATES)),
+                   func.count().filter(Media.detailed_at.is_(None), Media.api_checked_at.isnot(None),
+                                       Media.has_manual_captions.is_(True)),
                    func.sum(dur),
                    func.sum(case((Media.status == "ready", dur), else_=0.0)),
                    func.sum(func.coalesce(MediaQuality.speech_sec, 0.0)))
@@ -191,9 +193,16 @@ def channel_summaries(s: Session, channels: Sequence[Channel]) -> list[S.Channel
                    func.sum(sd).filter(Segment.validity == "invalid"))
             .select_from(Segment).join(Media, Media.id == Segment.media_id)
             .where(Media.channel_id.in_(ids), Segment.active.is_(True)).group_by(Media.channel_id)).all()}
-        detail_active = set(s.scalars(select(Job.channel_id).where(Job.channel_id.in_(ids), Job.kind == "media.detail",
+        detail_active = set(s.scalars(select(Job.channel_id).where(Job.channel_id.in_(ids),
+                                                                   Job.kind.in_(("media.detail", "media.api_detail")),
                                                                    Job.status.in_(("queued", "running")))
                                       .distinct()))
+        # the global YouTube API backfill counts for every channel it still has media to look at
+        if s.scalar(select(Job.id).where(Job.kind == "media.api_detail", Job.channel_id.is_(None),
+                                         Job.status.in_(("queued", "running"))).limit(1)) is not None:
+            from ..sources.handlers import api_pending
+            detail_active |= set(s.scalars(select(Media.channel_id).where(Media.channel_id.in_(ids), *api_pending())
+                                           .distinct()))
     jobs = listing_jobs(s, ids)
     interval = refresh_interval(s)
     attempts = last_list_attempts(s, ids) if interval is not None else {}
@@ -203,8 +212,8 @@ def channel_summaries(s: Session, channels: Sequence[Channel]) -> list[S.Channel
         counts = S.ChannelCounts(**dict(zip(("listed", "detailed", "with_manual_captions", "downloaded", "ready",
                                              "failed", "new"), st[:7]))) if st else S.ChannelCounts()
         sh = seg_hours.get(c.id, (0.0, 0.0))
-        hours = S.ChannelHours(listed=round((st[8] or 0) / 3600, 3), ready=round((st[9] or 0) / 3600, 3),
-                               speech=round((st[10] or 0) / 3600, 3), segments=round(sh[0] / 3600, 3),
+        hours = S.ChannelHours(listed=round((st[9] or 0) / 3600, 3), ready=round((st[10] or 0) / 3600, 3),
+                               speech=round((st[11] or 0) / 3600, 3), segments=round(sh[0] / 3600, 3),
                                invalid=round(sh[1] / 3600, 3)) if st else S.ChannelHours()
         job = jobs.get(c.id)
         out.append(S.ChannelSummary(
@@ -214,8 +223,12 @@ def channel_summaries(s: Session, channels: Sequence[Channel]) -> list[S.Channel
             listing_job=S.ListingJob(id=job.id, kind=job.kind, status=job.status, progress=job.progress or 0.0,
                                      phase=job.phase or "", message=job.message or "", run_after=job.run_after)
             if job is not None else None,
-            detail_progress=S.DetailProgress(detailed=counts.detailed, total=counts.listed,
-                                             failed=int(st[7] or 0) if st else 0, active=c.id in detail_active),
+            # caption info is known for detailed media and for those the YouTube API found uploader captions on
+            # (only their languages are still pending: langs_pending)
+            detail_progress=S.DetailProgress(detailed=counts.detailed + (int(st[8] or 0) if st else 0),
+                                             total=counts.listed, failed=int(st[7] or 0) if st else 0,
+                                             active=c.id in detail_active,
+                                             langs_pending=int(st[8] or 0) if st else 0),
             next_refresh_at=next_refresh_at(c.last_listed_at, attempts.get(c.id), interval, now)))
     return out
 

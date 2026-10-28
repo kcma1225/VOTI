@@ -66,7 +66,7 @@ class YoutubeSettings(BaseModel):
     sleep_between_downloads_sec: float = Field(default=5, ge=0, le=3600)
     max_concurrent_downloads: int = Field(default=2, ge=1, le=16)
     cookies_enabled: bool = False
-    sleep_between_requests_sec: float = Field(default=0.75, ge=0, le=3600)  # listing/detail job spacing
+    sleep_between_requests_sec: float = Field(default=2.0, ge=0, le=3600)  # listing/detail job spacing
     auto_refresh_hours: float = Field(default=24, ge=0, le=24 * 365)  # scheduled channel re-listing; 0 = off
     # media.detail fetches the preferred manual caption track to confirm it is not empty (≤3 small requests)
     verify_captions: bool = True
@@ -124,6 +124,69 @@ class CookiesStatus(BaseModel):
     updated_at: datetime | None = None
 
 
+class YoutubeApiKeyOut(BaseModel):
+    """One YouTube Data API key as the UI sees it — never the key itself."""
+    id: str
+    masked: str                          # e.g. "AIza…x9Qk"
+    label: str = ""
+    source: Literal["settings", "env"] = "settings"   # env = YOUTUBE_API_KEY (not removable here)
+    status: Literal["ok", "untested", "quota_exceeded", "invalid"] = "untested"
+    until: datetime | None = None        # quota_exceeded: the next Pacific midnight (quota reset)
+    last_used_at: datetime | None = None
+    last_ok_at: datetime | None = None
+    last_error: str | None = None
+    units_today: int = 0                 # estimate (videos.list = 1 unit per call), Pacific day
+    added_at: datetime | None = None
+
+
+class YoutubeApiBackfill(BaseModel):
+    pending: int = 0                     # media the API pass has not seen yet that still need caption info
+    active: bool = False                 # the global backfill job is queued/running
+    job_id: uuid.UUID | None = None
+    langs_pending: int = 0               # uploader captions found by the API, languages still to be fetched
+
+
+class YoutubeApiOut(BaseModel):
+    keys: list[YoutubeApiKeyOut] = []
+    usable: int = 0
+    daily_quota: int = 10_000            # per Google Cloud project; 1 unit = one call of ≤ 50 videos
+    backfill: YoutubeApiBackfill = YoutubeApiBackfill()
+    backfill_queued: bool = False        # (PUT) the first key(s) were saved: the backfill was started
+
+
+class YoutubeApiKeyIn(BaseModel):
+    """Keep an existing key ({id}, optionally a new label) or add one ({key})."""
+    model_config = ConfigDict(extra="forbid")
+    id: str | None = Field(default=None, max_length=32)
+    key: str | None = Field(default=None, max_length=200)
+    label: str | None = Field(default=None, max_length=80)
+
+
+class YoutubeApiKeysIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    keys: list[YoutubeApiKeyIn] = Field(default_factory=list, max_length=50)
+
+
+class YoutubeApiTestIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str | None = Field(default=None, max_length=32)
+    key: str | None = Field(default=None, max_length=200)
+
+
+class YoutubeApiTestOut(BaseModel):
+    ok: bool
+    status: Literal["ok", "invalid", "quota_exceeded", "unavailable"]
+    reason: str | None = None
+    message: str = ""
+    key: YoutubeApiKeyOut | None = None
+
+
+class YoutubeApiBackfillOut(BaseModel):
+    queued: int                          # media the backfill will look at
+    already_active: bool = False
+    job_id: uuid.UUID | None = None
+
+
 class SettingsOut(BaseModel):
     youtube: YoutubeSettings
     pipeline: PipelineSettings
@@ -132,6 +195,7 @@ class SettingsOut(BaseModel):
     validation: ValidationSettings = ValidationSettings()
     ocr: OcrSettings = OcrSettings()
     cookies: CookiesStatus
+    youtube_api: YoutubeApiOut = YoutubeApiOut()
 
 
 # ───────────────────────────── jobs ─────────────────────────────
@@ -174,6 +238,7 @@ class SelectionCaptionsOut(BaseModel):
     total: int                # media in the selection
     with_manual: int          # of those: with uploader (manual) captions that are not empty
     langs: dict[str, int] = {}  # uploader caption language → media count
+    langs_unknown: int = 0    # of with_manual: uploader captions known (YouTube API), languages not fetched yet
 
 
 class DownloadOut(BaseModel):
@@ -207,11 +272,15 @@ class ListingJob(BaseModel):
 
 
 class DetailProgress(BaseModel):
-    """Caption-info (media.detail) progress of a channel's videos."""
+    """Caption-info progress of a channel's videos (media.detail / media.api_detail). `detailed` = media whose
+    caption availability is known: detailed (yt-dlp, or the YouTube API found no uploader captions) + those the API
+    found uploader captions on whose languages are still being fetched (`langs_pending`)."""
     detailed: int = 0
     total: int = 0
     failed: int = 0       # not detailed and failed/blocked (will not be retried by the sweep)
-    active: bool = False  # a media.detail job for the channel is queued/running
+    active: bool = False  # a media.detail / media.api_detail job for the channel is queued/running
+    # of `detailed`: uploader captions found by the YouTube API, caption languages not fetched yet (yt-dlp)
+    langs_pending: int = 0
 
 
 class ChannelHours(BaseModel):

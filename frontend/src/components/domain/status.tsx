@@ -137,7 +137,7 @@ export function CaptionBadges({
     <div className="flex min-w-0 flex-wrap items-center gap-1">
       {emptyBadge}
       {manual && !empty ? (
-        <Tooltip content={t('process.status.manualTip', manualLangs.map(lang).join(t('common.listSep')) || '—')}>
+        <Tooltip content={manualLangs.length ? t('process.status.manualTip', manualLangs.map(lang).join(t('common.listSep'))) : t('ytapi.langsUnknownTip')}>
           <Tag className="border-success/30 bg-success-soft text-success-fg">
             <Captions className="size-3" />
             {compact ? t('process.status.manualShort') : manualLangs.slice(0, 2).join(' · ') || t('process.status.manualShort')}

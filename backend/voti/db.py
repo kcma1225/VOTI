@@ -69,6 +69,10 @@ MIGRATIONS: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS segments_invalid ON segments (media_id) WHERE validity = 'invalid'",
     # 2026-10-28: caption verification — a listed CC track whose content is empty (voti.sources.youtube)
     "ALTER TABLE media ADD COLUMN IF NOT EXISTS captions_empty BOOLEAN NOT NULL DEFAULT false",
+    # 2026-10-28: YouTube Data API fast metadata pass (media.api_detail, voti.sources.ytapi)
+    "ALTER TABLE media ADD COLUMN IF NOT EXISTS api_checked_at TIMESTAMPTZ",
+    "CREATE INDEX IF NOT EXISTS media_api_pending ON media (channel_id) "
+    "WHERE detailed_at IS NULL AND api_checked_at IS NULL",
 )
 
 

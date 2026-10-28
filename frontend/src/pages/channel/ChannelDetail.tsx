@@ -413,7 +413,7 @@ function BackgroundBanner({ c }: { c: TChannel }) {
           <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" />
           <span className="tabular">{t('collect.channel.detailBanner', dp.detailed, dp.total)}</span>
         </span>
-        <span className="text-xs text-fg-3">{t('collect.channel.detailBannerDesc')}</span>
+        <span className="text-xs text-fg-3">{dp.langs_pending ? t('ytapi.langsPending', dp.langs_pending) : t('collect.channel.detailBannerDesc')}</span>
       </div>
       <Progress className="mt-2 h-1" value={dp.detailed / dp.total} />
     </div>

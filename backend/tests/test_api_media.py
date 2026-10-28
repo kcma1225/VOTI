@@ -323,7 +323,8 @@ def test_selection_captions_counts_whole_selection(annotator_client, factory):
     factory.media(channel_id=ch.id, has_manual_captions=False, manual_caption_langs=[])
     r = annotator_client.post("/api/media/selection-captions", json={"filter": {"channel_id": str(ch.id)}})
     assert r.status_code == 200, r.text
-    assert r.json() == {"total": 4, "with_manual": 2, "langs": {"zh-TW": 1, "nan": 1, "zh-Hans": 1}}
+    assert r.json() == {"total": 4, "with_manual": 2, "langs": {"zh-TW": 1, "nan": 1, "zh-Hans": 1},
+                        "langs_unknown": 0}
     r = annotator_client.post("/api/media/selection-captions", json={"media_ids": [str(a.id), str(b.id)]})
     assert r.json()["total"] == 2 and r.json()["langs"]["zh-Hans"] == 1
     assert annotator_client.post("/api/media/selection-captions", json={}).status_code == 400

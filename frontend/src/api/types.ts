@@ -81,6 +81,46 @@ export interface CookiesState {
   present: boolean
   updated_at: ISODate | null
 }
+/** YouTube Data API v3 keys (GET /settings/youtube-api; never the full key) */
+export type YoutubeApiKeyStatus = 'ok' | 'untested' | 'quota_exceeded' | 'invalid'
+export interface YoutubeApiKey {
+  id: string
+  /** e.g. "AIza…x9Qk" */
+  masked: string
+  label: string
+  /** env = YOUTUBE_API_KEY from .env (not removable here) */
+  source: 'settings' | 'env'
+  status: YoutubeApiKeyStatus
+  /** quota_exceeded: next Pacific midnight (quota reset) */
+  until: ISODate | null
+  last_used_at: ISODate | null
+  last_ok_at: ISODate | null
+  last_error: string | null
+  /** estimate: 1 unit per videos.list call (≤ 50 videos), Pacific day */
+  units_today: number
+  added_at: ISODate | null
+}
+export interface YoutubeApiState {
+  keys: YoutubeApiKey[]
+  usable: number
+  daily_quota: number
+  backfill: { pending: number; active: boolean; job_id: UUID | null; langs_pending: number }
+  /** PUT: the first key(s) were saved and the backfill was started */
+  backfill_queued?: boolean
+}
+/** PUT /settings/youtube-api/keys item: keep `{id}` (label may change) or add `{key}` */
+export interface YoutubeApiKeyIn {
+  id?: string
+  key?: string
+  label?: string
+}
+export interface YoutubeApiTest {
+  ok: boolean
+  status: 'ok' | 'invalid' | 'quota_exceeded' | 'unavailable'
+  reason: string | null
+  message: string
+  key: YoutubeApiKey | null
+}
 export interface Settings {
   youtube: YoutubeSettings
   pipeline: PipelineSettings
@@ -89,6 +129,7 @@ export interface Settings {
   validation?: ValidationSettings
   ocr?: OcrSettings
   cookies: CookiesState
+  youtube_api?: YoutubeApiState
 }
 
 // ─────────────── jobs ───────────────
@@ -99,6 +140,7 @@ export type JobKind =
   | 'channel.list'
   | 'playlist.list'
   | 'media.detail'
+  | 'media.api_detail'
   | 'media.download'
   | 'media.normalize'
   | 'media.quality'
@@ -178,6 +220,8 @@ export interface DetailProgress {
   total: number
   failed?: number
   active: boolean
+  /** of `detailed`: uploader captions found by the YouTube API, languages still being fetched */
+  langs_pending?: number
 }
 export interface ChannelSummary {
   id: UUID
@@ -479,6 +523,8 @@ export interface SelectionCaptions {
   total: number
   with_manual: number
   langs: Record<string, number>
+  /** of with_manual: uploader captions known (YouTube API), languages not fetched yet */
+  langs_unknown?: number
 }
 export interface DownloadRequest {
   media_ids?: UUID[]

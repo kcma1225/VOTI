@@ -377,6 +377,7 @@ export function DownloadDialog({
               </Chip>
             ))}
           </div>
+          {sel.data?.langs_unknown ? <p className="mt-2 text-xs leading-5 text-fg-3" data-langs-unknown>{t('ytapi.dlLangsUnknown', sel.data.langs_unknown)}</p> : null}
         </Field>
         <div className={cn('rounded-xl border p-3.5', includeAuto ? 'border-warning/40 bg-warning-soft/60' : 'border-border')}>
           <Switch

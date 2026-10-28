@@ -28,6 +28,11 @@ docker compose -f compose.yaml -f compose.gpu.yaml up -d --build  # GPU（需 nv
 
 - 初始管理員：`.env` 的 `ADMIN_USERNAME`／`ADMIN_PASSWORD`，**只在資料庫還沒有任何使用者時套用一次**。
 - `HF_TOKEN`：pyannote `speaker-diarization-community-1` 需要先在 Hugging Face 同意條款。
+- YouTube Data API v3 金鑰（選用，強烈建議）：在網頁「設定 → YouTube → YouTube Data API 金鑰」加入，可加多把輪流使用；
+  有金鑰時列出頻道後一次查 50 部影片的資訊，沒有上傳者字幕的影片不必再逐部用 yt-dlp 檢查。`.env` 的
+  `YOUTUBE_API_KEY` 仍可用（當作額外一把，只能在伺服器上改）。取得方式：Google Cloud Console 建立專案 →「API 和服務 →
+  程式庫」啟用 **YouTube Data API v3** →「憑證 → 建立憑證 → API 金鑰」→ 編輯金鑰，「API 限制」只允許 YouTube Data
+  API v3。每個專案每天 10,000 單位（1 單位 = 一次查 50 部），同一專案的多把金鑰共用配額。
 - 模型快取在 `./models`（首次使用會下載；Vox-Profile Whisper 組約 37 GB、WavLM 組約 9 GB）。
 - 只有 nginx 對外（`${BIND_ADDR}:${HTTP_PORT}`，預設 `0.0.0.0:8080`）。應用程式只接受 `PUBLIC_HOSTS` 與 localhost 的 Host；proxy 需保留原始 `Host` 並送 `X-Forwarded-Proto: https`。建議防火牆只允許 proxy 連 8080。
 
@@ -35,7 +40,7 @@ docker compose -f compose.yaml -f compose.gpu.yaml up -d --build  # GPU（需 nv
 |---|---|
 | `nginx` | 前端 SPA＋`/api` 反向代理 |
 | `api` | FastAPI |
-| `worker-scan` ×6 | 解析網址、列出頻道／播放清單、抓字幕資訊（多個同時進行，大頻道不會卡住其他頻道） |
+| `worker-scan` ×3 | 解析網址、列出頻道／播放清單、YouTube API 快速取得影片資訊、抓字幕資訊（多個同時進行，大頻道不會卡住其他頻道） |
 | `worker-download` ×2 | 下載音訊與字幕（獨立進行，不受頻道掃描影響） |
 | `worker-audio` ×2 | 正規化、切音段、資料集匯出（CPU） |
 | `worker-ml` | 音質、語者分段、語者向量、重複偵測、分群（GPU） |

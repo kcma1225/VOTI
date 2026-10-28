@@ -88,6 +88,10 @@ export const api = {
     return request<T.CookiesState>('PUT', '/settings/cookies', fd)
   },
   deleteCookies: () => del<void>('/settings/cookies'),
+  youtubeApi: () => get<T.YoutubeApiState>('/settings/youtube-api'),
+  putYoutubeApiKeys: (keys: T.YoutubeApiKeyIn[]) => put<T.YoutubeApiState>('/settings/youtube-api/keys', { keys }),
+  testYoutubeApiKey: (b: { id?: string; key?: string }) => post<T.YoutubeApiTest>('/settings/youtube-api/test', b),
+  youtubeApiBackfill: () => post<{ queued: number; already_active: boolean; job_id: string | null }>('/settings/youtube-api/backfill'),
   // sources
   resolve: (url: string) => post<T.ResolveResult>('/sources/resolve', { url }),
   // channels

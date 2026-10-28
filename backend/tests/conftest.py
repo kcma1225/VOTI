@@ -226,3 +226,11 @@ def _no_caption_network(monkeypatch):  # noqa: ANN001
     # the API's inline channel lookup must not reach YouTube: behave as if it failed (→ background job path)
     from voti.api import sources as api_sources
     monkeypatch.setattr(api_sources, "_resolve_channel_now", lambda target: None)
+    # the YouTube Data API (voti.sources.ytapi) is never reached either: tests install an httpx.MockTransport
+    import httpx
+
+    from voti.sources import ytapi
+
+    def _no_network(request):  # noqa: ANN001, ANN202
+        raise httpx.ConnectError("no network in tests", request=request)
+    monkeypatch.setattr(ytapi, "_TRANSPORT", httpx.MockTransport(_no_network))

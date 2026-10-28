@@ -102,7 +102,7 @@ def test_review_history_and_reviewed_by_shape(annotator_client, factory):
 
 
 def test_youtube_sleep_between_requests(admin_client):
-    assert admin_client.get("/api/settings").json()["youtube"]["sleep_between_requests_sec"] == 0.75
+    assert admin_client.get("/api/settings").json()["youtube"]["sleep_between_requests_sec"] == 2.0
     full = {"rate_limit_kbps": 0, "sleep_between_downloads_sec": 5, "sleep_between_requests_sec": 3.5,
             "max_concurrent_downloads": 1, "cookies_enabled": False}
     r = admin_client.put("/api/settings/youtube", json=full)

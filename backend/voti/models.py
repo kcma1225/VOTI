@@ -181,6 +181,10 @@ class Media(Base):
     failure_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
     failure_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     detailed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # YouTube Data API fast pass (media.api_detail) looked at this media: metadata + "has uploader captions" known.
+    # Without uploader captions it is also `detailed_at` (no yt-dlp detail needed); with them the yt-dlp
+    # media.detail still runs for the caption languages (manual_caption_langs stays [] until then).
+    api_checked_at: Mapped[datetime | None] = mapped_column(nullable=True)
     # set when a re-listing (scheduled or manual refresh, not the channel's first listing) found this video
     discovered_at: Mapped[datetime | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = created()

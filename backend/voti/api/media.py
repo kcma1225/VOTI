@@ -243,6 +243,8 @@ def _usable_captions(m: Media, langs: list[str], include_auto: bool) -> bool | N
     """True/False when caption availability is known, None when the media has not been detailed yet."""
     if m.has_manual_captions is None:
         return None
+    if m.has_manual_captions and not m.manual_caption_langs and not m.captions_empty and langs:
+        return None  # uploader captions known from the YouTube API, languages not fetched yet: the download decides
 
     def ok(available: list[str] | None) -> bool:
         available = list(available or [])
@@ -277,14 +279,16 @@ def selection_captions(body: SelectionIn, _: User = Depends(current_user), s: Se
     rows = s.execute(select(Media.has_manual_captions, Media.captions_empty, Media.manual_caption_langs)
                      .where(*cond)).all()
     langs: dict[str, int] = {}
-    with_manual = 0
+    with_manual = unknown = 0
     for has_manual, empty, codes in rows:
         if not has_manual or empty:
             continue
         with_manual += 1
+        if not codes:
+            unknown += 1  # YouTube API: has uploader captions, languages not fetched yet
         for c in set(codes or []):
             langs[c] = langs.get(c, 0) + 1
-    return S.SelectionCaptionsOut(total=len(rows), with_manual=with_manual,
+    return S.SelectionCaptionsOut(total=len(rows), with_manual=with_manual, langs_unknown=unknown,
                                   langs=dict(sorted(langs.items(), key=lambda kv: -kv[1])))
 
 

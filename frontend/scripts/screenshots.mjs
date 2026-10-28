@@ -179,6 +179,11 @@ function screens(ids, lang) {
     { name: '70-ocr-settings', path: '/settings/pipeline', act: async (p) => { await scrollTop(p, '[data-shot="ocr-settings-card"]') } },
     { name: '71-ocr-dataset-off', path: '/datasets/new', act: async (p) => { await p.waitForTimeout(600); await centerOn(p, '[data-shot="dataset-ocr-source"]') } },
     { name: '72-ocr-dataset-on', path: '/datasets/new', act: async (p) => { await p.locator('[data-shot="dataset-ocr-source"] button[role="switch"]').click(); await p.waitForTimeout(900); await centerOn(p, '[data-shot="dataset-ocr-source"]') } },
+    // YouTube Data API keys (Settings → YouTube) + two-stage caption info
+    { name: '75-ytapi-keys', path: '/settings/youtube', act: async (p) => { await p.waitForSelector('[data-shot="ytapi-card"] [data-key-status]'); await scrollTop(p, '[data-shot="ytapi-card"]') } },
+    { name: '76-ytapi-backfill-how', path: '/settings/youtube', act: async (p) => { await p.locator('[data-shot="ytapi-card"] details summary').click(); await p.waitForTimeout(150); await centerOn(p, '[data-shot="ytapi-card"] details') } },
+    { name: '77-ytapi-remove-confirm', path: '/settings/youtube', act: async (p) => { await p.locator('[data-shot="ytapi-card"] [data-key-status] button').nth(1).click(); await p.waitForSelector('[role="dialog"]') } },
+    { name: '78-ytapi-dl-langs-unknown', path: `/channels/${ids.ch}`, act: async (p) => { await p.locator('[data-shot="select-all-page"]:visible').first().click(); await p.locator('[data-shot="select-all-matching"]').first().click(); await p.locator('[data-shot="open-download"]').first().click(); await p.waitForSelector('[data-langs-unknown]'); await p.evaluate(() => document.querySelector('[data-langs-unknown]')?.scrollIntoView({ block: 'center' })) } },
     { name: '33-add-video-new-channel', path: '/sources/new', act: async (p) => { await p.fill('input[name="url"]', 'https://youtu.be/dQw4w9WgXcQ'); await p.locator('form button[type="submit"]').click(); await p.waitForTimeout(1600) } },
   ]
 }

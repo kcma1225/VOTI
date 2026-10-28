@@ -437,13 +437,24 @@ export function buildDB(): DB {
       { id: r.uuid(), username: 'yating', display_name: '張雅婷', role: 'annotator', is_active: false, created_at: iso(NOW - 200 * DAY), last_login_at: iso(NOW - 80 * DAY), password: 'voti' },
     ],
     settings: {
-      youtube: { rate_limit_kbps: 0, sleep_between_downloads_sec: 5, sleep_between_requests_sec: 0.75, max_concurrent_downloads: 1, cookies_enabled: false, auto_refresh_hours: 12, verify_captions: true },
+      youtube: { rate_limit_kbps: 0, sleep_between_downloads_sec: 5, sleep_between_requests_sec: 2, max_concurrent_downloads: 1, cookies_enabled: false, auto_refresh_hours: 12, verify_captions: true },
       pipeline: { voxprofile_backbone: 'whisper-large-v3', diarization_enabled: true, segment_min_sec: 1.0, segment_max_sec: 20.0, edge_pad_sec: 0.1 },
       quality_thresholds: { low_speech_ratio: 0.5, low_snr_db: 10, clipping_ratio: 0.001 },
       text: { convert_simplified: true, opencc_config: 's2twp' },
       validation: { enabled: true, lid_min_prob: 0.7, lid_min_speech_sec: 1.0, align_min_score: 0.4, align_min_units: 4 },
       ocr: { enabled: true, auto_when_no_captions: true, fps: 5, discovery_step_sec: 2, max_discovery_frames: 900, model: 'server', cpu_model: 'mobile', keep_crops: true, min_event_conf: 0.85 },
       cookies: { present: true, updated_at: iso(NOW - 9 * DAY) },
+      youtube_api: {
+        usable: 2,
+        daily_quota: 10_000,
+        keys: [
+          { id: 'k3f9a01c2d4', masked: 'AIza…x9Qk', label: 'voti-collector', source: 'settings', status: 'ok', until: null, last_used_at: iso(NOW - 4 * 60_000), last_ok_at: iso(NOW - 4 * 60_000), last_error: null, units_today: 1284, added_at: iso(NOW - 6 * DAY) },
+          { id: 'k77b2e9f310', masked: 'AIza…P2mE', label: 'lab account 2', source: 'settings', status: 'quota_exceeded', until: iso(NOW + 9 * 3600_000), last_used_at: iso(NOW - 2 * 3600_000), last_ok_at: iso(NOW - 2 * 3600_000), last_error: 'quotaexceeded: The request cannot be completed because you have exceeded your quota.', units_today: 10_000, added_at: iso(NOW - 6 * DAY) },
+          { id: 'k0c41d8a6b2', masked: 'AIza…7wLs', label: '', source: 'settings', status: 'invalid', until: null, last_used_at: iso(NOW - DAY), last_ok_at: null, last_error: 'api_key_invalid: API key not valid. Please pass a valid API key.', units_today: 0, added_at: iso(NOW - DAY) },
+          { id: 'k5e0b7c9a11', masked: 'AIza…Qe3T', label: 'YOUTUBE_API_KEY', source: 'env', status: 'untested', until: null, last_used_at: null, last_ok_at: null, last_error: null, units_today: 0, added_at: null },
+        ],
+        backfill: { pending: 41_236, active: false, job_id: null, langs_pending: 812 },
+      },
     },
     channels,
     playlists,
@@ -716,7 +727,13 @@ export function buildDB(): DB {
       })
     }
   })
-  channels[0].detail_progress = { detailed: channels[0].counts.detailed, total: channels[0].counts.listed, active: true }
+  // two-stage caption info: the YouTube API knows which videos have uploader captions; their languages are pending
+  const lp = Math.min(6, Math.max(0, channels[0].counts.listed - channels[0].counts.detailed))
+  channels[0].detail_progress = { detailed: channels[0].counts.detailed + lp, total: channels[0].counts.listed, active: true, langs_pending: lp }
+  media
+    .filter((m) => m.channel?.id === channels[0].id && m.status === 'listed' && m.has_manual_captions === null)
+    .slice(0, lp)
+    .forEach((m) => Object.assign(m, { has_manual_captions: true, manual_caption_langs: [] }))
   for (const m of media) {
     if (m.status !== 'ready') continue
     const taiwaneseOnly = m.manual_caption_langs.length > 0 && m.manual_caption_langs.every((l) => l === 'nan')

@@ -134,7 +134,8 @@ def test_channel_listing_lifecycle_and_api(db, h, monkeypatch, factory, annotato
     d = annotator_client.get(f"/api/channels/{ch.id}").json()
     assert d["list_status"] == "listed" and d["listing_job"] is None and d["title"] == "呆呆伙伴"
     # listing done → videos visible; caption details continue in the background
-    assert d["detail_progress"] == {"detailed": 0, "total": 2, "failed": 0, "active": True}
+    assert d["detail_progress"] == {"detailed": 0, "total": 2, "failed": 0, "active": True,
+                                    "langs_pending": 0}
     assert d["next_refresh_at"] is not None
     # first listing: nothing is "new"
     assert all(m.discovered_at is None for m in db.scalars(select(Media)))

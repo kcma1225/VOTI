@@ -2,7 +2,7 @@
 
 Rate limiting
   * Every YouTube extraction job first takes a global Redis "start slot" so job starts are spaced across all
-    fetch workers: `sleep_between_requests_sec` (default 0.75) for listing/detail, `sleep_between_downloads_sec`
+    fetch workers: `sleep_between_requests_sec` (default 2) for listing/detail, `sleep_between_downloads_sec`
     for downloads. Inside one extraction yt-dlp sleeps between HTTP requests (sleep_interval_requests).
   * `max_concurrent_downloads` is enforced with Redis slots; `rate_limit_kbps` maps to yt-dlp `ratelimit`.
   * Cookies: only when settings.youtube.cookies_enabled and S3 `system/cookies.txt` exists (copied to a temp
@@ -19,6 +19,19 @@ media.detail modes (payload / ids)
   /channels/{id}/recheck-captions): re-fetch metadata and re-verify captions even when detailed before.
   "verify" overrides settings.youtube.verify_captions. A re-detail never moves downloaded/processed media:
   status only changes for listed / failed / blocked → detailed and skipped(empty_captions) → detailed.
+
+YouTube Data API fast pass (media.api_detail, voti.sources.ytapi; scan queue, no yt-dlp throttle)
+  When an API key is usable, listings (channel.list incl. scheduled refreshes, playlist.list) and a resolved
+  single video queue media.api_detail instead of the yt-dlp sweep. One videos.list call fills ≤ 50 media
+  (metadata, exact date, license, counts, contentDetails.caption):
+    caption false → has_manual_captions = False (has_auto_captions stays null: the API does not say), detailed
+                    (`metadata.detail_source = "ytapi"`), no yt-dlp detail at all (queued single-media detail
+                    jobs for it are cancelled; batch / sweep jobs skip it);
+    caption true  → has_manual_captions = True, manual_caption_langs [] until the yt-dlp media.detail (still
+                    queued per channel, normal pace) lists the tracks, auto captions, members-only, verification;
+    missing       → failed / `unavailable` like the yt-dlp path.
+  While a key is usable the yt-dlp channel sweep only takes media the API has seen (api_checked_at); without a
+  usable key (none configured, all over quota / invalid) everything falls back to the yt-dlp path unchanged.
 
 Caption verification (settings.youtube.verify_captions, default on)
   YouTube metadata sometimes lists an uploader caption track that is empty or 404s. media.detail fetches the
@@ -38,7 +51,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from .. import storage
@@ -50,6 +63,7 @@ from ..queue import (Cancelled, JobContext, JobError, active_list_job, enqueue, 
 from .. import subtitles as subs_mod
 from .. import textconv
 from . import youtube as yt
+from . import ytapi
 
 log = logging.getLogger("voti.sources")
 
@@ -59,7 +73,7 @@ YT_DEFAULTS = {"rate_limit_kbps": 0, "sleep_between_downloads_sec": 5, "max_conc
                # re-list every channel this often to find new videos (voti.scheduler); 0 disables
                "auto_refresh_hours": 24,
                # optional (not in the admin form yet): spacing between listing/detail job starts
-               "sleep_between_requests_sec": 0.75,
+               "sleep_between_requests_sec": 2.0,
                # media.detail fetches the preferred manual caption track (≤3 tracks) to confirm it is not empty
                "verify_captions": True}
 DETAIL_BATCH = 20
@@ -371,7 +385,7 @@ def apply_detail(s, m: Media, d: dict, ctx: JobContext | None = None, caption_ch
             if f == "language" and v:
                 v = str(v)[:16]
             setattr(m, f, v)
-    m.metadata_ = {**(m.metadata_ or {}), **(d.get("metadata") or {})}
+    m.metadata_ = {**(m.metadata_ or {}), **(d.get("metadata") or {}), "detail_source": "yt-dlp"}
     if caption_check is not None:
         m.metadata_ = {**m.metadata_, "caption_check": caption_check}
     apply_caption_state(m)
@@ -411,6 +425,53 @@ def _active_detail_sweep(s, channel_id: uuid.UUID | None) -> bool:
                                          Job.status.in_(("queued", "running"))).limit(1)) is not None
 
 
+def _detail_pending(channel_id: uuid.UUID | None, api_only: bool) -> list:
+    """WHERE clauses of the yt-dlp channel sweep. api_only (a YouTube API key is usable): only media the API pass
+    has seen — the others get their caption info from the API first (it decides whether yt-dlp is needed)."""
+    c = [Media.channel_id == channel_id, Media.detailed_at.is_(None), Media.status == "listed"]
+    if api_only:
+        c.append(Media.api_checked_at.isnot(None))
+    return c
+
+
+def api_pending() -> list:
+    """WHERE clauses: media the YouTube API pass has not seen yet and that still need caption info."""
+    return [Media.platform == "youtube", Media.detailed_at.is_(None), Media.api_checked_at.is_(None),
+            Media.status.in_(("listed", "failed", "blocked")),
+            func.coalesce(Media.failure_code, "") != "members_only"]
+
+
+def active_api_job(s, channel_id: uuid.UUID | None = None) -> Job | None:  # noqa: ANN001
+    """The queued/running media.api_detail sweep of a channel (no media_ids), or with channel_id None the global
+    backfill. A channel's own sweep is queued even while the backfill runs (a backfill run that already
+    collected its media would miss a listing that finishes meanwhile); both skip media the other did."""
+    q = select(Job).where(Job.kind == "media.api_detail", Job.status.in_(("queued", "running")),
+                          ~Job.payload.has_key("media_ids"))
+    q = q.where(Job.channel_id.is_(None) if channel_id is None else Job.channel_id == channel_id)
+    return s.scalars(q.order_by(Job.created_at).limit(1)).first()
+
+
+def queue_caption_info(s, channel_id: uuid.UUID, *, parent_id: uuid.UUID | None = None,  # noqa: ANN001
+                       created_by: uuid.UUID | None = None, use_api: bool | None = None) -> str | None:
+    """After a listing: get caption info for the channel's undetailed media. With a usable YouTube API key the
+    API pass (media.api_detail channel sweep) for media it has not seen, plus the yt-dlp sweep for those it found
+    uploader captions on; otherwise the yt-dlp sweep for every undetailed media. → "api" | "detail" | None."""
+    if use_api is None:
+        use_api = ytapi.has_usable_key(s)
+    queued = None
+    if use_api and s.scalar(select(Media.id).where(Media.channel_id == channel_id, *api_pending()).limit(1)):
+        if active_api_job(s, channel_id) is None:
+            enqueue(s, "media.api_detail", channel_id=channel_id, parent_id=parent_id, created_by=created_by,
+                    payload={})
+            queued = "api"
+    pending = s.scalar(select(Media.id).where(*_detail_pending(channel_id, use_api)).limit(1)) is not None
+    if pending and not _active_detail_sweep(s, channel_id):
+        enqueue(s, "media.detail", channel_id=channel_id, payload={"batch_size": DETAIL_BATCH},
+                parent_id=parent_id, created_by=created_by)
+        queued = queued or "detail"
+    return queued
+
+
 # ───────────────────────────── source.resolve ─────────────────────────────
 
 @handler("source.resolve")
@@ -429,7 +490,10 @@ def resolve(ctx: JobContext) -> dict:
             if c.get("kind_hint") == "short" and m.detailed_at is None:
                 m.kind = "short"
             media_id = m.id
-        ctx.then("media.detail", media_id=media_id)
+        if ytapi.has_usable_key():
+            ctx.then("media.api_detail", payload={"media_ids": [str(media_id)]})
+        else:
+            ctx.then("media.detail", media_id=media_id)
         return {"type": "video", "media_id": str(media_id), "created": created}
 
     if c["type"] == "playlist":
@@ -523,14 +587,10 @@ def channel_list(ctx: JobContext) -> dict:
         ch.list_status = "listed"
         ch.last_listed_at = now
         ch.metadata_ = {**(ch.metadata_ or {}), "listed_tabs": res["tabs"]}
-        pending = s.scalar(select(Media.id).where(Media.channel_id == channel_id, Media.detailed_at.is_(None),
-                                                  Media.status == "listed").limit(1)) is not None
-        detail_queued = False
-        if ctx.payload.get("detail", True) and pending and not _active_detail_sweep(s, channel_id):
-            enqueue(s, "media.detail", channel_id=channel_id, payload={"batch_size": DETAIL_BATCH},
-                    parent_id=ctx.job_id, created_by=ctx.created_by)
-            detail_queued = True
-        result = {"tabs": res["tabs"], "total": len(rows), "new": len(new), "detail_queued": detail_queued,
+        queued = queue_caption_info(s, channel_id, parent_id=ctx.job_id, created_by=ctx.created_by) \
+            if ctx.payload.get("detail", True) else None
+        result = {"tabs": res["tabs"], "total": len(rows), "new": len(new), "detail_queued": queued is not None,
+                  "caption_info": queued,
                   "first_listing": first_listing, "scheduled": bool(ctx.payload.get("scheduled")),
                   "warnings": res.get("warnings", [])[:10]}
     ctx.progress(1.0, "done", f"共 {len(rows)} 支（新增 {len(new)}）")
@@ -599,9 +659,19 @@ def playlist_list(ctx: JobContext) -> dict:
         todo = [str(m.id) for m in rows if m.detailed_at is None and m.status == "listed"]
         detail_queued = False
         if ctx.payload.get("detail", True) and todo:
-            enqueue(s, "media.detail", channel_id=p.channel_id,
-                    payload={"media_ids": todo, "batch_size": DETAIL_BATCH, "playlist_id": str(p.id)},
-                    parent_id=ctx.job_id, created_by=ctx.created_by)
+            if ytapi.has_usable_key(s):
+                todo_api = [str(m.id) for m in rows if m.detailed_at is None and m.api_checked_at is None
+                            and m.status == "listed"]
+                if todo_api:
+                    enqueue(s, "media.api_detail", channel_id=p.channel_id,
+                            payload={"media_ids": todo_api, "playlist_id": str(p.id)},
+                            parent_id=ctx.job_id, created_by=ctx.created_by)
+                todo = [str(m.id) for m in rows if m.detailed_at is None and m.api_checked_at is not None
+                        and m.status == "listed"]
+            if todo:
+                enqueue(s, "media.detail", channel_id=p.channel_id,
+                        payload={"media_ids": todo, "batch_size": DETAIL_BATCH, "playlist_id": str(p.id)},
+                        parent_id=ctx.job_id, created_by=ctx.created_by)
             detail_queued = True
         result = {"playlist_id": str(p.id), "total": len(rows), "new": len(new), "detail_queued": detail_queued}
     ctx.progress(1.0, "done", f"共 {len(rows)} 支（新增 {len(new)}）")
@@ -665,18 +735,23 @@ def media_detail(ctx: JobContext) -> dict:
     batch_size = int(ctx.payload.get("batch_size") or DETAIL_BATCH)
     ids: list[str] = list(ctx.payload.get("media_ids") or [])
     sweep = not ids
+    force = bool(ctx.payload.get("force"))
+    api_only = False
     if sweep:
         if ctx.channel_id is None:
             raise JobError("bad_payload", "media.detail 需要 media_id、media_ids 或 channel_id", retryable=False)
+        api_only = ytapi.has_usable_key()
         with session_scope() as s:
             ids = [str(x) for x in s.scalars(
-                select(Media.id).where(Media.channel_id == ctx.channel_id, Media.detailed_at.is_(None),
-                                       Media.status == "listed")
+                select(Media.id).where(*_detail_pending(ctx.channel_id, api_only))
                 .order_by(Media.published_at.desc().nulls_last(), Media.created_at).limit(batch_size))]
     batch, rest = ids[:batch_size], ids[batch_size:]
-    done, failed, results = 0, [], []
+    done, failed, results, skipped = 0, [], [], 0
     with fetch_options(settings) as fo:
         for i, mid in enumerate(batch):
+            if not force and _known_from_api(uuid.UUID(mid)):
+                skipped += 1  # the YouTube API found no uploader captions: nothing left for yt-dlp to tell
+                continue
             throttle(ctx, "request", gap)
             ctx.progress(i / max(1, len(batch)), "detail", f"{i + 1}/{len(batch)}" +
                          (f"（剩 {len(rest)}）" if rest else ""), force=True)
@@ -702,15 +777,201 @@ def media_detail(ctx: JobContext) -> dict:
     more = bool(rest)
     if sweep and done + len(failed) > 0:
         with session_scope() as s:
-            more = s.scalar(select(Media.id).where(Media.channel_id == ctx.channel_id, Media.detailed_at.is_(None),
-                                                   Media.status == "listed").limit(1)) is not None
+            more = s.scalar(select(Media.id).where(*_detail_pending(ctx.channel_id, api_only)).limit(1)) is not None
+    if sweep and api_only and not more:
+        with session_scope() as s:  # media the API pass has not reached yet: make sure one will
+            if s.scalar(select(Media.id).where(Media.channel_id == ctx.channel_id, *api_pending()).limit(1)) \
+                    and active_api_job(s, ctx.channel_id) is None:
+                enqueue(s, "media.api_detail", channel_id=ctx.channel_id, payload={}, parent_id=ctx.job_id,
+                        created_by=ctx.created_by)
     if more:
         payload = {k: v for k, v in ctx.payload.items() if k != "media_ids"}
         if rest:
             payload["media_ids"] = rest
         ctx.then("media.detail", payload=payload, channel_id=ctx.channel_id)
     return {"detailed": done, "failed": failed, "remaining": len(rest) if not sweep else None, "more": more,
-            "items": results}
+            "items": results, **({"skipped_api": skipped} if skipped else {})}
+
+
+def _known_from_api(media_id: uuid.UUID) -> bool:
+    """Detailed by the YouTube API pass (no uploader captions): a batch / sweep has nothing to add."""
+    with session_scope() as s:
+        m = s.get(Media, media_id)
+        return m is not None and m.detailed_at is not None and \
+            (m.metadata_ or {}).get("detail_source") == "ytapi"
+
+
+# ───────────────────────────── media.api_detail ─────────────────────────────
+
+API_CALLS_PER_RUN = 10   # ≤ 500 videos per job run, then the job re-queues itself (round-robin on the scan queue)
+REPLACED_MESSAGE = "已由 YouTube Data API 取得資訊（沒有上傳者字幕），不需要 yt-dlp 檢查"
+
+
+def apply_api_item(s, m: Media, it: dict, ctx: JobContext | None = None) -> str:  # noqa: ANN001
+    """Copy one videos.list item onto a media. → "no_captions" | "captions" | "pending" (live / upcoming /
+    still processing: caption info not final, left to yt-dlp)."""
+    d = ytapi.summarize_item(it)
+    now = utcnow()
+    for f in ("title", "thumbnail_url"):
+        if d[f]:
+            setattr(m, f, d[f])
+    m.description = d["description"]
+    for f in ("duration_sec", "published_at", "view_count", "like_count", "comment_count", "age_limit"):
+        if d[f] is not None:
+            setattr(m, f, d[f])
+    m.tags, m.categories = d["tags"], d["categories"]
+    m.license, m.language, m.availability, m.was_live = d["license"], d["language"], d["availability"], d["was_live"]
+    if d["was_live"] and m.kind == "video":
+        m.kind = "live"
+    meta = dict(m.metadata_ or {})
+    meta.pop("published_approximate", None)
+    meta.update(published_approximate=False, live_status=d["live_status"],
+                ytapi={"fetched_at": now.isoformat(), "caption": d["caption"], **d["extras"], "item": it})
+    if d["channel_title"]:
+        meta.setdefault("channel", d["channel_title"])
+    m.metadata_ = meta
+    if d["channel_platform_id"]:
+        ch = _minimal_channel(s, d["channel_platform_id"], d["channel_title"],
+                              created_by=ctx.created_by if ctx else None, parent_id=ctx.job_id if ctx else None,
+                              source={"media_id": str(m.id), "video_id": m.platform_media_id})
+        if ch is not None and m.channel_id is None:
+            m.channel_id = ch.id
+    m.api_checked_at = now
+    if d["live_status"] in ("is_live", "is_upcoming") or (d["upload_status"] or "processed") != "processed":
+        return "pending"
+    if d["caption"]:
+        m.has_manual_captions = True   # languages follow from the yt-dlp media.detail (manual_caption_langs)
+        m.captions_empty = False
+        return "captions"
+    m.has_manual_captions, m.manual_caption_langs, m.captions_empty = False, [], False
+    # has_auto_captions stays unknown (null): the API does not report YouTube ASR; the download finds it
+    m.metadata_ = {**m.metadata_, "detail_source": "ytapi"}
+    m.detailed_at = now
+    if not mark_if_members_only(m) and m.status in ("listed", "failed", "blocked"):
+        m.status, m.failure_code, m.failure_message = "detailed", None, None
+    return "no_captions"
+
+
+def _api_unavailable(m: Media) -> None:
+    now = utcnow()
+    m.api_checked_at = now
+    m.metadata_ = {**(m.metadata_ or {}), "ytapi": {"fetched_at": now.isoformat(), "missing": True}}
+    if m.status in ("listed", "detailed", "failed", "blocked"):
+        m.status, m.failure_code, m.failure_message = "failed", "unavailable", ytapi.UNAVAILABLE_MESSAGE
+
+
+def cancel_replaced_detail_jobs(s, media_ids: list[uuid.UUID]) -> int:  # noqa: ANN001
+    """Queued single-media yt-dlp media.detail jobs of media the API pass fully detailed are no longer needed
+    (caption re-checks — payload force/verify — are kept)."""
+    if not media_ids:
+        return 0
+    n = 0
+    for j in s.scalars(select(Job).where(Job.kind == "media.detail", Job.status == "queued",
+                                         Job.media_id.in_(media_ids))):
+        p = j.payload or {}
+        if p.get("force") or p.get("verify") or p.get("recheck"):
+            continue
+        j.status, j.finished_at, j.error_code, j.error_message = "cancelled", utcnow(), "replaced", REPLACED_MESSAGE
+        n += 1
+    return n
+
+
+def _api_fallback(s, ctx: JobContext, ids: list[str] | None) -> None:  # noqa: ANN001
+    """No usable key any more: the yt-dlp path takes over (unchanged)."""
+    if ids:
+        enqueue(s, "media.detail", channel_id=ctx.channel_id, parent_id=ctx.job_id, created_by=ctx.created_by,
+                payload={"media_ids": ids, "batch_size": DETAIL_BATCH})
+        return
+    chs = [ctx.channel_id] if ctx.channel_id else list(s.scalars(
+        select(Media.channel_id).where(Media.channel_id.isnot(None), Media.detailed_at.is_(None),
+                                       Media.status == "listed").distinct()))
+    for cid in chs:
+        if not _active_detail_sweep(s, cid):
+            enqueue(s, "media.detail", channel_id=cid, payload={"batch_size": DETAIL_BATCH}, parent_id=ctx.job_id,
+                    created_by=ctx.created_by)
+
+
+@handler("media.api_detail")
+def media_api_detail(ctx: JobContext) -> dict:
+    """YouTube Data API fast pass. payload {media_ids: [...]} (explicit: playlist, resolved video), channel_id
+    without media_ids (the channel's media the API has not seen), or neither ({all: true}: every such media —
+    the backfill). ≤ API_CALLS_PER_RUN calls of ≤ 50 videos per run; re-queues itself while more remain."""
+    explicit: list[str] = [str(x) for x in ctx.payload.get("media_ids") or []]
+    limit = ytapi.MAX_IDS * API_CALLS_PER_RUN
+    with session_scope() as s:
+        q = select(Media.id, Media.platform_media_id).where(*api_pending())
+        if explicit:
+            q = q.where(Media.id.in_([uuid.UUID(x) for x in explicit]))
+        elif ctx.channel_id is not None:
+            q = q.where(Media.channel_id == ctx.channel_id)
+        rows = [(str(a), b) for a, b in s.execute(
+            q.order_by(Media.published_at.desc().nulls_last(), Media.id).limit(limit + 1)).all()]
+    batch, more = rows[:limit], len(rows) > limit
+    counts = {"no_captions": 0, "captions": 0, "pending": 0, "unavailable": 0}
+    caption_media: list[tuple[str, uuid.UUID | None]] = []
+    replaced = 0
+    calls = 0
+    for i in range(0, len(batch), ytapi.MAX_IDS):
+        chunk = batch[i:i + ytapi.MAX_IDS]
+        ctx.progress(i / max(1, len(batch)), "ytapi", f"YouTube API {i + len(chunk)}/{len(batch)}" +
+                     ("（還有更多）" if more else ""), force=True)
+        try:
+            items, _kid = ytapi.videos_list([vid for _, vid in chunk])
+        except ytapi.NoUsableKey:
+            with session_scope() as s:
+                left = [mid for mid, _ in batch[i:]] if explicit else None
+                _api_fallback(s, ctx, left)
+            log.warning("media.api_detail: no usable YouTube API key; falling back to yt-dlp detail")
+            return {**counts, "calls": calls, "fallback": True, "replaced": replaced}
+        except ytapi.ApiUnavailable as e:
+            if calls:  # keep what was done; the next run continues with the rest
+                ctx.then("media.api_detail", payload=dict(ctx.payload), channel_id=ctx.channel_id)
+                return {**counts, "calls": calls, "more": True, "error": str(e)[:300], "replaced": replaced}
+            raise JobError("ytapi_unavailable", f"YouTube Data API 暫時無法使用：{e}", retryable=True) from None
+        calls += 1
+        done_ids: list[uuid.UUID] = []
+        with session_scope() as s:
+            for mid, vid in chunk:
+                m = s.get(Media, uuid.UUID(mid))
+                if m is None:
+                    continue
+                it = items.get(vid)
+                if it is None:
+                    _api_unavailable(m)
+                    counts["unavailable"] += 1
+                    continue
+                r = apply_api_item(s, m, it, ctx)
+                counts[r] += 1
+                if r == "no_captions":
+                    done_ids.append(m.id)
+                elif m.status == "listed":
+                    caption_media.append((mid, m.channel_id))
+            s.flush()
+            replaced += cancel_replaced_detail_jobs(s, done_ids)
+    # uploader captions (or live / processing): the yt-dlp detail still gives languages, ASR, members-only, …
+    with session_scope() as s:
+        if explicit and len(caption_media) <= 5:
+            for mid, cid in caption_media:
+                enqueue(s, "media.detail", media_id=uuid.UUID(mid), channel_id=cid, parent_id=ctx.job_id,
+                        created_by=ctx.created_by)
+        else:
+            for cid in sorted({c for _, c in caption_media if c is not None}, key=str):
+                if not _active_detail_sweep(s, cid):
+                    enqueue(s, "media.detail", channel_id=cid, payload={"batch_size": DETAIL_BATCH},
+                            parent_id=ctx.job_id, created_by=ctx.created_by)
+            orphans = [mid for mid, c in caption_media if c is None]
+            if orphans:
+                enqueue(s, "media.detail", payload={"media_ids": orphans, "batch_size": DETAIL_BATCH},
+                        parent_id=ctx.job_id, created_by=ctx.created_by)
+    if more:
+        payload = dict(ctx.payload)
+        if explicit:
+            seen = {mid for mid, _ in batch}
+            payload["media_ids"] = [x for x in explicit if x not in seen]
+        ctx.then("media.api_detail", payload=payload, channel_id=ctx.channel_id)
+    ctx.progress(1.0, "done", f"YouTube API：{len(batch)} 支（無上傳者字幕 {counts['no_captions']}、"
+                              f"有字幕 {counts['captions']}、無法取得 {counts['unavailable']}）")
+    return {**counts, "calls": calls, "more": more, "replaced": replaced}
 
 
 # ───────────────────────────── media.download ─────────────────────────────

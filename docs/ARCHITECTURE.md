@@ -8,7 +8,7 @@ This document is the contract between the backend API, workers and the frontend.
 |---|---|---|
 | `nginx` | nginx-unprivileged | Only public entry: `0.0.0.0:8080`. Serves the built SPA, proxies `/api/` to `api`. |
 | `api` | `voti-backend` | FastAPI (`voti.api.app:app`) on 8000, internal only |
-| `worker-scan` ×6 | `voti-backend` | `--queues scan,detail`: URL resolve, channel/playlist listing, caption details (scan first; `SCAN_WORKERS`) |
+| `worker-scan` ×3 | `voti-backend` | `--queues scan,detail`: URL resolve, channel/playlist listing, YouTube Data API metadata pass (`media.api_detail`, scan queue), caption details (scan first; `SCAN_WORKERS`) |
 | `worker-download` ×2 | `voti-backend` | `--queues download`: audio + caption downloads (`DOWNLOAD_WORKERS`, `youtube.max_concurrent_downloads`) |
 | `worker-audio` | `voti-backend` | `--queues audio,export` |
 | `worker-ml` | `voti-backend` | `--queues ml` (torch; GPU via compose.gpu.yaml) |
@@ -30,7 +30,8 @@ index `jobs_running_heartbeat`, `media.discovered_at` (+ partial index `media_di
 columns of `segments` (`validity` NOT NULL DEFAULT 'unknown' — metadata-only in Postgres ≥ 11, `invalid_reason`,
 `validity_source`, `lid_lang`, `lid_prob`, `align_score`, `validation` JSONB) + partial index `segments_invalid`
 on `segments (media_id) WHERE validity = 'invalid'`, `media.captions_empty` (BOOLEAN NOT NULL DEFAULT false; caption
-verification). Hard-subtitle OCR needs no migration (new values only: `tracks.kind = 'ocr'`, `segments.text_source =
+verification), `media.api_checked_at` (TIMESTAMPTZ, YouTube Data API pass) + partial index `media_api_pending` on
+`media (channel_id) WHERE detailed_at IS NULL AND api_checked_at IS NULL`. Hard-subtitle OCR needs no migration (new values only: `tracks.kind = 'ocr'`, `segments.text_source =
 'ocr_caption'`, asset kinds `ocr_video` / `ocr_events`, `media.metadata.ocr`, settings key `ocr`). New tables
 (e.g. `word_alignments`) come from `create_all` and need no migration.
 
@@ -45,6 +46,7 @@ backend/voti/
                                                        segments, speakers, quality, datasets, jobs, stats, audio
   sources/youtube.py                                 ← yt-dlp wrapper: resolve/list/detail/download
   sources/handlers.py                                ← job handlers for fetch queue
+  sources/ytapi.py                                   ← YouTube Data API v3: key store/rotation/status, videos.list
   pipeline/audio.py                                  ← ffmpeg normalize/probe, bandwidth, loudness, clipping
   pipeline/vad.py                                    ← silero
   pipeline/dnsmos.py
@@ -98,7 +100,8 @@ shorter than 1 s: result null).
 
 | key | value |
 |---|---|
-| `youtube` | `{"rate_limit_kbps": 0, "sleep_between_downloads_sec": 5, "sleep_between_requests_sec": 0.75, "max_concurrent_downloads": 2, "cookies_enabled": false, "auto_refresh_hours": 24, "verify_captions": true}` — `auto_refresh_hours`: re-list every channel this often to find new videos (0 = off; see "Channel listing & scheduled refresh"). `verify_captions`: `media.detail` fetches the preferred manual caption track to confirm it is not empty (see "Caption verification"); off = trust YouTube's track list (download still drops empty tracks) |
+| `youtube` | `{"rate_limit_kbps": 0, "sleep_between_downloads_sec": 5, "sleep_between_requests_sec": 2, "max_concurrent_downloads": 2, "cookies_enabled": false, "auto_refresh_hours": 24, "verify_captions": true}` — `auto_refresh_hours`: re-list every channel this often to find new videos (0 = off; see "Channel listing & scheduled refresh"). `verify_captions`: `media.detail` fetches the preferred manual caption track to confirm it is not empty (see "Caption verification"); off = trust YouTube's track list (download still drops empty tracks) |
+| `youtube_api` | `{"keys": [{"id", "key", "label", "added_at", "added_by"}]}` — YouTube Data API v3 keys (see "YouTube Data API fast pass"). **Secret**: own row (the generic `PUT /settings/{key}` does not accept it — 404 — so it is never rewritten or audited in full), edited only through `/settings/youtube-api/*`, never returned in full. |
 | `pipeline` | `{"voxprofile_backbone": "whisper-large-v3", "diarization_enabled": true, "segment_min_sec": 1.0, "segment_max_sec": 20.0, "edge_pad_sec": 0.1}` |
 | `quality_thresholds` | `{"low_speech_ratio": 0.5, "low_snr_db": 10, "clipping_ratio": 0.001}` (used to set segment flags) |
 | `validation` | `{"enabled": true, "lid_min_prob": 0.7, "lid_min_speech_sec": 1.0, "align_min_score": 0.4, "align_min_units": 4}` — caption ↔ audio validation (see "Caption validation"). `enabled: false`: `media.validate` does nothing (existing results stay). |
@@ -147,6 +150,58 @@ WebVTT, json3 with only window events), or no cue contains a letter/digit/CJK ch
   `skipped` + `empty_captions` → `detailed` (when a track is usable now); downloaded/processed media only get their
   metadata/caption fields updated, and a failed re-check never moves them.
 
+## YouTube Data API fast pass (`media.api_detail`, `voti/sources/ytapi.py`)
+
+yt-dlp `media.detail` costs ~5 s per video plus the global request spacing — days for a 50 000-video backlog. With a
+YouTube Data API v3 key one `videos.list?part=snippet,contentDetails,status,statistics,liveStreamingDetails` call
+(1 quota unit) returns 50 videos.
+
+**Keys**: settings row `youtube_api` (admin UI, any number of keys) + the env `YOUTUBE_API_KEY` as an extra key
+(`source: "env"`, not removable in the UI). Key id = `"k" + sha256(key)[:10]`; the UI only sees `mask(key)` =
+`AIza…x9Qk`. The key is sent in the `X-Goog-Api-Key` header (never in a URL); nothing logs it; audit rows hold masked
+keys. Status lives in Redis (`voti:ytapi:st:<id>`, `voti:ytapi:units:<id>:<Pacific day>`, `voti:ytapi:rr`):
+- round-robin: a Redis counter picks the first key of each call; on `quotaExceeded` / `dailyLimitExceeded` /
+  `rateLimitExceeded` / `userRateLimitExceeded` (or HTTP 429) the key is `quota_exceeded` until the next midnight
+  America/Los_Angeles (YouTube's quota reset) and the next key is tried; `keyInvalid` / `keyExpired` /
+  `accessNotConfigured` (API not enabled) / `API_KEY_*_BLOCKED` / other 401/403 → `invalid` until a successful
+  test; network errors / 5xx are not the key's fault (job retried, `ytapi_unavailable`);
+- per key: `status ok|untested|quota_exceeded|invalid`, `until`, `last_used_at`, `units_today` (estimate);
+- no usable key (none configured, all exhausted/invalid) → **fallback**: the yt-dlp path, unchanged.
+
+**Job** `media.api_detail` (queue `scan`: popped before `detail`, so it is never stuck behind yt-dlp jobs; no yt-dlp
+throttle). Payload `{media_ids}` (playlist, a resolved single video), `channel_id` without ids (the channel's media
+the API has not seen), or `{all: true}` (global backfill). Candidates: `detailed_at IS NULL AND api_checked_at IS
+NULL AND status ∈ listed|failed|blocked` (not members-only). ≤ 10 calls × 50 videos per run, then the job re-queues
+itself (round-robin with listings). Per video (`sources.handlers.apply_api_item`): title, description, tags,
+category (name), exact `published_at` (`published_approximate = false`), duration (ISO 8601), license
+(`creativeCommon` → `creative_commons`), view/like/comment counts, `language` (defaultAudioLanguage ‖
+defaultLanguage), `availability` (= privacyStatus), `age_limit` (18 for `ytAgeRestricted`), `was_live` (kind `live`),
+best thumbnail, channel (created + listed like the yt-dlp path when unknown); raw item + hints (embeddable,
+madeForKids, regionRestriction, uploadStatus, definition, …) in `Media.metadata.ytapi`; `api_checked_at` set.
+- `contentDetails.caption == "false"` → `has_manual_captions = false`, `manual_caption_langs = []`,
+  `has_auto_captions` stays **null** (the API does not report YouTube ASR; the download finds it), `detailed_at`
+  set, status `detailed`, `metadata.detail_source = "ytapi"`. No yt-dlp detail ever runs for it: queued single-media
+  `media.detail` jobs (without force/verify/recheck) are cancelled (`error_code = "replaced"`), batch/sweep jobs skip
+  it (`result.skipped_api`). Facets count it as `none`; downloads OCR it per the usual rules.
+- `"true"` → `has_manual_captions = true`, `manual_caption_langs` stays `[]` ("languages not known yet"),
+  `detailed_at` stays null; the yt-dlp `media.detail` still runs at normal pace (caption languages, ASR,
+  members-only, caption verification/empty detection): a channel sweep per channel (or single-media jobs when
+  an explicit list had ≤ 5 such videos). Caption re-checks are untouched.
+- live / upcoming / not yet processed → metadata only, left to yt-dlp. Missing from the answer → `failed`,
+  `failure_code = "unavailable"` (deleted / private), like the yt-dlp path.
+
+**Pipeline integration**: `channel.list` (also scheduled refreshes), `playlist.list` and `source.resolve` (video)
+queue the API pass instead of the yt-dlp sweep while a key is usable (`sources.handlers.queue_caption_info`). While a
+key is usable the yt-dlp channel sweep only takes media the API has seen (`api_checked_at` set); when it runs out it
+queues the API pass for the channel's unseen media. The first save of usable key(s) starts the global backfill
+(`POST /settings/youtube-api/backfill` runs it on demand).
+
+**Consumers of "manual captions, languages not known"** (`has_manual_captions` and `manual_caption_langs = []`, not
+`captions_empty`): facets/filter `captions=manual` include it; `caption_lang` filters do not (no language yet);
+`POST /media/download` with explicit `caption_langs` treats it as unknown (queued; the worker fetches the tracks
+itself); `selection-captions.langs_unknown` counts it; the caption badge shows "CC" with a "languages pending" tip;
+`ChannelSummary.detail_progress.detailed` counts it as known (`langs_pending` = how many).
+
 ## Channel listing & scheduled refresh
 
 `Channel.list_status`: `new` (never queued) → `queued` → `listing` → `listed` | `failed`. It follows the
@@ -166,8 +221,9 @@ Scheduled refresh (`voti/scheduler.py`, run by every fetch worker after each 30 
 `max(last_listed_at, newest channel.list job) + auto_refresh_hours` is past get `channel.list` with payload
 `{"scheduled": true}` — at most 2 per tick and never more than 4 scheduled listings waiting, oldest due first.
 A listing that is not the channel's first sets `Media.discovered_at` on the videos it creates; such videos are
-`is_new` for 7 days while their status is `listed`/`detailed`. Listing always chains the caption-info sweep
-(`media.detail`) for undetailed videos; nothing is downloaded automatically. The tick also re-queues
+`is_new` for 7 days while their status is `listed`/`detailed`. Listing always chains the caption-info sweep for
+undetailed videos — the YouTube Data API pass (`media.api_detail`) while a key is usable, else `media.detail`;
+nothing is downloaded automatically. The tick also re-queues
 `media.align` for segments left `pending` > 2 min without an active align job.
 
 ## Character alignment (`media.align`, `voti/pipeline/align.py`)
@@ -383,6 +439,21 @@ Timestamps ISO-8601 UTC strings. IDs are UUID strings.
   `align_min_units` ∈ [1, 100])
 - `PUT /settings/{key}` body = value (partial ok, merged over the current value; unknown fields → 422) → updated value
 - `PUT /settings/cookies` multipart `file` (Netscape cookies.txt) → `{present: true, updated_at}`; `DELETE /settings/cookies`
+- `GET /settings` also returns `youtube_api: YoutubeApiOut`; `GET /settings/youtube-api` → `YoutubeApiOut`
+  `{keys: [YoutubeApiKey], usable, daily_quota: 10000, backfill: {pending (media the API has not seen that still
+  need caption info), active, job_id, langs_pending (CC found by the API, languages not fetched yet)}}`;
+  `YoutubeApiKey = {id, masked, label, source: settings|env, status: ok|untested|quota_exceeded|invalid, until
+  (quota reset, ISO)|null, last_used_at, last_ok_at, last_error, units_today, added_at}` — **no response ever
+  contains a full key**
+- `PUT /settings/youtube-api/keys` `{keys: [{id, label?} | {key, label?}]}` → `YoutubeApiOut + {backfill_queued}`:
+  the new stored list — `{id}` keeps a stored key (no need to resend it), `{key}` adds one (format
+  `[A-Za-z0-9_-]{20,100}`, else 422 `invalid_api_key`; duplicates collapse), stored keys left out are removed; the
+  env key's id is accepted and ignored; unknown id → 422 `unknown_api_key`. The first usable key(s) start the backfill
+- `POST /settings/youtube-api/test` `{id}` (stored/env key) or `{key}` (unsaved) → `{ok, status: ok|invalid|
+  quota_exceeded|unavailable, reason, message, key: YoutubeApiKey|null}` — one `videos.list?part=id` call (1 unit);
+  updates the stored key's status (a success clears `invalid`)
+- `POST /settings/youtube-api/backfill` → `{queued: n media, already_active, job_id}`: one chained global
+  `media.api_detail {all: true}`; 409 `no_api_key` without a usable key
 
 ### Sources (adding things)
 - `POST /sources/resolve` `{url}` → `{type: "video"|"channel"|"playlist", channel?: Channel, playlist?: Playlist, media?: Media, job: Job}`
@@ -420,10 +491,13 @@ list_status: new|queued|listing|listed|failed, last_listed_at,
 counts: {listed, detailed, with_manual_captions, downloaded, ready, failed, new}, hours: {listed, ready, speech,
 segments (active segments that are not invalid), invalid (invalid segments)},
 listing_job: {id, kind: "channel.list"|"source.resolve", status: queued|running, progress, phase, message, run_after}|null,
-detail_progress: {detailed, total, failed, active: bool}, next_refresh_at: ISO|null}`
+detail_progress: {detailed, total, failed, active: bool, langs_pending}, next_refresh_at: ISO|null}`
 (`counts.listed` = all videos of the channel; `counts.new` = `is_new` videos; `detail_progress`: caption info
-fetched for `detailed` of `total` videos, `failed` = undetailed and failed/blocked, `active` = a media.detail job
-for the channel is queued/running — the UI shows "字幕資訊檢查中 detailed/total" while active. The channel page
+known for `detailed` of `total` videos — detailed media (yt-dlp, or the YouTube API found no uploader captions) plus
+`langs_pending` media the API found uploader captions on whose languages the yt-dlp detail is still fetching;
+`failed` = undetailed and failed/blocked, `active` = a media.detail / media.api_detail job for the channel (or the
+global API backfill while it still has media of the channel) is queued/running — the UI shows "字幕資訊檢查中
+detailed/total" while active, plus "其中 n 部有上傳者字幕，正在確認語言" when `langs_pending`. The channel page
 shows its loading screen while `list_status` is `queued`/`listing` (progress from `listing_job`).
 `next_refresh_at`: null when auto refresh is off; a past time means due at the next tick.)
 `ChannelDetail = ChannelSummary + {description, banner_url, country, tags, notes, metadata,
@@ -442,6 +516,8 @@ media_with_quality}, kind_counts: {video: n, short: n, live?: n, ...}, playlist_
      downloaded: {yes: n, no: n}, new: n}}` (each facet ignores its own dimension)
   `captions_empty` media count as `none` (also when YouTube ASR exists) and never as `manual`/`auto_only`/`unknown`;
   `empty` is the subset of `none` with `captions_empty` (`captions=empty` filters them).
+- `POST /media/selection-captions` `{media_ids?|filter?}` → `{total, with_manual, langs: {lang: n}, langs_unknown}`
+  (download dialog; `langs_unknown` = media with uploader captions known from the YouTube API, languages not yet)
 - `GET /media/{id}` → `MediaDetail`
 - `POST /media/download` `{media_ids?: [...], filter?: <same query object as GET /media>, caption_langs?: ["zh-TW", ...], include_auto: false, ocr?: true|false|null}`
   → `{queued: n, skipped: n, skipped_reasons: {already_downloaded|members_only|empty_captions|no_usable_captions|not_found: n}, ocr: n}`.

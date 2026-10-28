@@ -601,6 +601,52 @@ export const handlers = [
     db.settings.cookies = { present: false, updated_at: null }
     return new HttpResponse(null, { status: 204 })
   }),
+  // YouTube Data API keys (masked only; the mock never stores a full key)
+  http.get(`${A}/settings/youtube-api`, () => json(db.settings.youtube_api)),
+  http.put(`${A}/settings/youtube-api/keys`, async ({ request }) => {
+    const st = db.settings.youtube_api!
+    const b = (await request.json()) as { keys: T.YoutubeApiKeyIn[] }
+    const hadUsable = st.keys.some((k) => k.status === 'ok' || k.status === 'untested')
+    const env = st.keys.filter((k) => k.source === 'env')
+    const out: T.YoutubeApiKey[] = []
+    for (const it of b.keys) {
+      if (it.key) {
+        const key = it.key.trim()
+        if (!/^[A-Za-z0-9_-]{20,100}$/.test(key)) return err(422, 'API 金鑰格式不正確', 'invalid_api_key')
+        const id = `k${Array.from(key).reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7).toString(16).padStart(10, '0').slice(0, 10)}`
+        if (out.some((k) => k.id === id)) continue
+        out.push({ id, masked: `${key.slice(0, 4)}…${key.slice(-4)}`, label: it.label ?? '', source: 'settings', status: 'untested', until: null, last_used_at: null, last_ok_at: null, last_error: null, units_today: 0, added_at: new Date().toISOString() })
+      } else {
+        const k = st.keys.find((x) => x.id === it.id)
+        if (!k) return err(422, '找不到這個 API 金鑰', 'unknown_api_key')
+        if (k.source === 'env') continue
+        out.push({ ...k, ...(it.label !== undefined ? { label: it.label } : {}) })
+      }
+    }
+    st.keys = [...out, ...env]
+    st.usable = st.keys.filter((k) => k.status === 'ok' || k.status === 'untested').length
+    const started = !hadUsable && st.usable > 0 && !st.backfill.active
+    if (started) st.backfill = { ...st.backfill, active: true }
+    return json({ ...st, backfill_queued: started })
+  }),
+  http.post(`${A}/settings/youtube-api/test`, async ({ request }) => {
+    const st = db.settings.youtube_api!
+    const b = (await request.json()) as { id?: string; key?: string }
+    await delay(500)
+    const k = st.keys.find((x) => x.id === b.id)
+    if (!k) return json({ ok: false, status: 'invalid', reason: 'api_key_invalid', message: 'API key not valid.', key: null })
+    if (k.status === 'invalid') return json({ ok: false, status: 'invalid', reason: 'api_key_invalid', message: 'API key not valid. Please pass a valid API key.', key: k })
+    if (k.status === 'quota_exceeded') return json({ ok: true, status: 'quota_exceeded', reason: 'quotaexceeded', message: 'quota', key: k })
+    Object.assign(k, { status: 'ok', units_today: k.units_today + 1, last_used_at: new Date().toISOString(), last_ok_at: new Date().toISOString() })
+    return json({ ok: true, status: 'ok', reason: null, message: '', key: k })
+  }),
+  http.post(`${A}/settings/youtube-api/backfill`, () => {
+    const st = db.settings.youtube_api!
+    if (!st.usable) return err(409, '沒有可用的 YouTube API 金鑰', 'no_api_key')
+    const already = st.backfill.active
+    st.backfill = { ...st.backfill, active: true }
+    return json({ queued: st.backfill.pending, already_active: already, job_id: null })
+  }),
   http.put(`${A}/settings/:key`, async ({ request, params }) => {
     const k = params.key as 'youtube' | 'pipeline' | 'quality_thresholds' | 'text' | 'validation' | 'ocr'
     const cur = (db.settings as unknown as Record<string, object>)[k] ?? {}
@@ -737,12 +783,14 @@ export const handlers = [
     const targets = b.media_ids ? b.media_ids.map((id) => db.mediaById.get(id)!).filter(Boolean) : db.media.filter((m) => matchMedia(m, b.filter ?? {}))
     const langs: Record<string, number> = {}
     let withManual = 0
+    let unknown = 0
     for (const m of targets) {
       if (!m.has_manual_captions || m.captions_empty) continue
       withManual++
+      if (!m.manual_caption_langs.length) unknown++
       for (const l of new Set(m.manual_caption_langs)) langs[l] = (langs[l] ?? 0) + 1
     }
-    return json({ total: targets.length, with_manual: withManual, langs } satisfies T.SelectionCaptions)
+    return json({ total: targets.length, with_manual: withManual, langs, langs_unknown: unknown } satisfies T.SelectionCaptions)
   }),
   http.post(`${A}/media/download`, async ({ request }) => {
     const b = (await request.json()) as T.DownloadRequest & { filter?: MF }

@@ -117,7 +117,7 @@ services:
     <<: *backend
     command: ["python", "-m", "voti.workers.run", "--queues", "scan,detail"]
     deploy:
-      replicas: ${SCAN_WORKERS:-6}
+      replicas: ${SCAN_WORKERS:-3}
 
   worker-download:
     <<: *backend

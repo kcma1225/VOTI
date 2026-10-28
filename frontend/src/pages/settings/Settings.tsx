@@ -1,17 +1,18 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { Navigate, useParams } from 'react-router'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Cookie, FileUp, KeyRound, Languages as LanguagesIcon, Pencil, Plus, RefreshCw, ScanText, ShieldCheck, Trash2, UserRound, Users, Workflow, Youtube } from 'lucide-react'
+import { CircleHelp, Cookie, FileUp, FlaskConical, KeyRound, Languages as LanguagesIcon, Pencil, Plus, RefreshCw, ScanText, ShieldCheck, Trash2, UserRound, Users, Workflow, Youtube, Zap } from 'lucide-react'
 import { api } from '@/api/client'
 import { errMsg, onErr, qk, useMe, useSettings, useUsers } from '@/api/queries'
-import type { OcrModel, OcrSettings, OpenccConfig, PipelineSettings, QualityThresholds, Role, TextSettings, User, ValidationSettings, YoutubeSettings } from '@/api/types'
+import type { OcrModel, OcrSettings, OpenccConfig, PipelineSettings, QualityThresholds, Role, TextSettings, User, ValidationSettings, YoutubeApiKey, YoutubeApiState, YoutubeSettings } from '@/api/types'
+import type { Tone } from '@/lib/labels'
 import { fmtDateTime, fmtRelative } from '@/lib/format'
 import { Page, PageHeader } from '@/components/layout/page'
 import { Button } from '@/components/ui/button'
 import { Avatar, Badge, Card, CardBody, CardHeader, Skeleton } from '@/components/ui/primitives'
 import { Field, Input, NumberInput, Segmented, Switch } from '@/components/ui/form'
-import { Dialog } from '@/components/ui/overlay'
+import { Dialog, Tooltip } from '@/components/ui/overlay'
 import { NavTabs } from '@/components/ui/tabs'
 import { DataTable, type Column } from '@/components/ui/data-table'
 import { ErrorState } from '@/components/ui/states'
@@ -199,6 +200,206 @@ function UsersTab() {
   )
 }
 
+/* ───────────── YouTube Data API keys ───────────── */
+const KEY_TONE: Record<YoutubeApiKey['status'], Tone> = { ok: 'success', untested: 'neutral', quota_exceeded: 'warning', invalid: 'danger' }
+const looksLikeKey = (k: string) => /^[A-Za-z0-9_-]{20,100}$/.test(k)
+
+function ApiKeyRow({ k, quota, onRemove, removing }: { k: YoutubeApiKey; quota: number; onRemove: () => void; removing: boolean }) {
+  const t = useT()
+  const qc = useQueryClient()
+  const test = useMutation({
+    mutationFn: () => api.testYoutubeApiKey({ id: k.id }),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ['youtubeApi'] })
+      if (r.status === 'ok') toast.success(tr('ytapi.settings.testOk'))
+      else if (r.status === 'quota_exceeded') toast.warning(tr('ytapi.settings.testQuota'))
+      else if (r.status === 'invalid') toast.error(tr('ytapi.settings.testInvalid', r.message))
+      else toast.error(tr('ytapi.settings.testUnavailable', r.message))
+    },
+    onError: onErr,
+  })
+  const statusLabel = t(`ytapi.settings.status.${k.status}`)
+  return (
+    <li className="flex flex-col gap-2 py-3 first:pt-0 last:pb-0 sm:flex-row sm:items-center sm:gap-4" data-key-status={k.status}>
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+          <code className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[13px] text-fg">{k.masked}</code>
+          {k.label && <span className="min-w-0 truncate text-[13px] text-fg-2">{k.label}</span>}
+          {k.source === 'env' && (
+            <Tooltip content={t('ytapi.settings.envTip')}>
+              <span>
+                <Badge tone="info">{t('ytapi.settings.envBadge')}</Badge>
+              </span>
+            </Tooltip>
+          )}
+          <Tooltip content={k.status === 'invalid' || k.status === 'quota_exceeded' ? k.last_error : null}>
+            <span className="min-w-0">
+              <Badge tone={KEY_TONE[k.status]} dot>
+                {k.status === 'quota_exceeded' && k.until ? `${statusLabel} · ${t('ytapi.settings.resetAt', fmtDateTime(k.until))}` : statusLabel}
+              </Badge>
+            </span>
+          </Tooltip>
+        </div>
+        <div className="mt-1 text-xs text-fg-3 tabular">
+          {t('ytapi.settings.usage', k.units_today, quota)} · {k.last_used_at ? t('ytapi.settings.lastUsed', fmtRelative(k.last_used_at)) : t('ytapi.settings.neverUsed')}
+        </div>
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        <Button size="sm" onClick={() => test.mutate()} loading={test.isPending}>
+          <FlaskConical /> {t('ytapi.settings.test')}
+        </Button>
+        {k.source !== 'env' && (
+          <Button size="sm" variant="ghost" onClick={onRemove} loading={removing} aria-label={`${t('ytapi.settings.remove')} ${k.masked}`}>
+            <Trash2 /> {t('ytapi.settings.remove')}
+          </Button>
+        )}
+      </div>
+    </li>
+  )
+}
+
+function YoutubeApiCard({ initial }: { initial?: YoutubeApiState }) {
+  const t = useT()
+  const qc = useQueryClient()
+  const q = useQuery({
+    queryKey: ['youtubeApi'],
+    queryFn: api.youtubeApi,
+    initialData: initial,
+    refetchInterval: (x) => (x.state.data?.backfill.active ? 5000 : false),
+  })
+  const [key, setKey] = useState('')
+  const [label, setLabel] = useState('')
+  const [removeK, setRemoveK] = useState<YoutubeApiKey | null>(null)
+  const st = q.data
+  const stored = (st?.keys ?? []).filter((k) => k.source !== 'env')
+  const after = (r: YoutubeApiState) => {
+    qc.setQueryData(['youtubeApi'], r)
+    qc.invalidateQueries({ queryKey: qk.settings })
+    if (r.backfill_queued) toast.success(tr('ytapi.settings.autoStarted'), { description: tr('ytapi.settings.backfillPending', r.backfill.pending) })
+  }
+  const add = useMutation({
+    mutationFn: () => api.putYoutubeApiKeys([...stored.map((k) => ({ id: k.id })), { key: key.trim(), label: label.trim() || undefined }]),
+    onSuccess: (r) => {
+      after(r)
+      setKey('')
+      setLabel('')
+      if (!r.backfill_queued) toast.success(tr('ytapi.settings.added'))
+    },
+    onError: onErr,
+  })
+  const remove = useMutation({
+    mutationFn: (id: string) => api.putYoutubeApiKeys(stored.filter((k) => k.id !== id).map((k) => ({ id: k.id }))),
+    onSuccess: (r) => (after(r), setRemoveK(null), toast.success(tr('ytapi.settings.removed'))),
+    onError: onErr,
+  })
+  const backfill = useMutation({
+    mutationFn: api.youtubeApiBackfill,
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ['youtubeApi'] })
+      qc.invalidateQueries({ queryKey: ['channels'] })
+      if (r.already_active) toast(tr('ytapi.settings.backfillAlready'), { description: tr('ytapi.settings.backfillActive', r.queued) })
+      else toast.success(tr('ytapi.settings.backfillQueued', r.queued))
+    },
+    onError: onErr,
+  })
+  if (q.isError) return <ErrorState error={q.error} />
+  if (!st) return <Skeleton className="h-64 rounded-xl" />
+  const trimmed = key.trim()
+  const badFormat = trimmed.length > 0 && !looksLikeKey(trimmed)
+  const submit = (e: FormEvent) => {
+    e.preventDefault()
+    if (!trimmed || badFormat) return
+    add.mutate()
+  }
+  const bf = st.backfill
+  return (
+    <Card data-shot="ytapi-card">
+      <CardHeader title={t('ytapi.settings.title')} description={t('ytapi.settings.desc')} icon={<KeyRound />} />
+      <CardBody className="space-y-4">
+        {st.keys.length ? (
+          <ul className="divide-y divide-border rounded-lg border border-border px-3.5 py-3">
+            {st.keys.map((k) => (
+              <ApiKeyRow key={k.id} k={k} quota={st.daily_quota} onRemove={() => setRemoveK(k)} removing={remove.isPending && remove.variables === k.id} />
+            ))}
+          </ul>
+        ) : (
+          <div className="rounded-lg bg-surface-2 px-3 py-2.5 text-[13px] text-fg-2">{t('ytapi.settings.empty')}</div>
+        )}
+        <form onSubmit={submit} className="space-y-2" aria-label={t('ytapi.settings.addLabel')}>
+          <div className="text-sm font-medium">{t('ytapi.settings.addLabel')}</div>
+          <div className="grid gap-2 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_auto]">
+            <Input
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              autoCapitalize="none"
+              placeholder={t('ytapi.settings.keyPlaceholder')}
+              aria-label={t('ytapi.settings.keyPlaceholder')}
+              value={key}
+              onChange={(e) => setKey(e.target.value)}
+              invalid={badFormat}
+              className="font-mono"
+            />
+            <Input placeholder={t('ytapi.settings.labelPlaceholder')} aria-label={t('ytapi.settings.labelPlaceholder')} value={label} onChange={(e) => setLabel(e.target.value)} maxLength={80} />
+            <Button type="submit" variant="primary" disabled={!trimmed || badFormat} loading={add.isPending}>
+              <Plus /> {t('ytapi.settings.add')}
+            </Button>
+          </div>
+          {badFormat && <p className="text-xs text-danger-fg">{t('ytapi.settings.invalidFormat')}</p>}
+          <p className="text-xs leading-5 text-fg-3">{t('ytapi.settings.rotationHint', Math.max(1, st.keys.length), st.daily_quota)}</p>
+        </form>
+        <details className="group rounded-lg border border-border px-3.5 py-2.5 text-[13px]">
+          <summary className="flex cursor-pointer list-none items-center gap-2 font-medium text-fg-2 [&::-webkit-details-marker]:hidden">
+            <CircleHelp className="size-4 shrink-0 text-fg-3" /> {t('ytapi.settings.howTitle')}
+          </summary>
+          <ol className="mt-2 list-decimal space-y-1 pl-5 text-xs leading-5 text-fg-2">
+            <li>{t('ytapi.settings.how.s1')}</li>
+            <li>{t('ytapi.settings.how.s2')}</li>
+            <li>{t('ytapi.settings.how.s3')}</li>
+            <li>{t('ytapi.settings.how.s4')}</li>
+            <li>{t('ytapi.settings.how.s5')}</li>
+          </ol>
+        </details>
+      </CardBody>
+      <div className="border-t border-border px-4 py-4 sm:px-5">
+        <Row
+          label={t('ytapi.settings.backfill')}
+          hint={
+            <>
+              {t('ytapi.settings.backfillHint')}
+              {bf.langs_pending > 0 && <span className="mt-0.5 block">{t('ytapi.settings.backfillLangs', bf.langs_pending)}</span>}
+            </>
+          }
+        >
+          <div className="flex flex-col items-stretch gap-1.5 md:items-end">
+            <Button onClick={() => backfill.mutate()} loading={backfill.isPending} disabled={!st.usable || bf.active || bf.pending === 0}>
+              <Zap /> {t('ytapi.settings.backfill')}
+            </Button>
+            <span className={cn('text-xs tabular md:text-right', bf.active ? 'text-primary' : 'text-fg-3')} role="status">
+              {!st.usable ? t('ytapi.settings.backfillNoKey') : bf.active ? t('ytapi.settings.backfillActive', bf.pending) : bf.pending ? t('ytapi.settings.backfillPending', bf.pending) : t('ytapi.settings.backfillNone')}
+            </span>
+          </div>
+        </Row>
+      </div>
+      <Dialog
+        open={!!removeK}
+        onOpenChange={(o) => !o && setRemoveK(null)}
+        title={t('ytapi.settings.removeTitle')}
+        description={removeK ? t('ytapi.settings.removeDesc', removeK.masked) : undefined}
+        size="sm"
+        footer={
+          <>
+            <Button onClick={() => setRemoveK(null)}>{t('common.cancel')}</Button>
+            <Button variant="danger" loading={remove.isPending} onClick={() => removeK && remove.mutate(removeK.id)}>
+              <Trash2 /> {t('ytapi.settings.remove')}
+            </Button>
+          </>
+        }
+      />
+    </Card>
+  )
+}
+
 /* ───────────── YouTube + cookies ───────────── */
 function YoutubeTab() {
   const s = useSettings()
@@ -236,6 +437,7 @@ function YoutubeTab() {
   const ck = s.data.cookies
   return (
     <div className="space-y-4">
+      <YoutubeApiCard initial={s.data.youtube_api} />
       <Card>
         <CardHeader title={t('output.settings.youtube.rateTitle')} description={t('output.settings.youtube.rateDesc')} icon={<Youtube />} />
         <CardBody className="divide-y divide-border">
@@ -246,7 +448,7 @@ function YoutubeTab() {
             <NumberInput value={v.sleep_between_downloads_sec} onChange={(x) => setV({ ...v, sleep_between_downloads_sec: x ?? 0 })} min={0} suffix={t('output.settings.youtube.sec')} />
           </Row>
           <Row label={t('output.settings.youtube.sleepRequests')} hint={t('output.settings.youtube.sleepRequestsHint')}>
-            <NumberInput value={v.sleep_between_requests_sec ?? 0.75} onChange={(x) => setV({ ...v, sleep_between_requests_sec: x ?? 0 })} min={0} step={0.25} suffix={t('output.settings.youtube.sec')} />
+            <NumberInput value={v.sleep_between_requests_sec ?? 2} onChange={(x) => setV({ ...v, sleep_between_requests_sec: x ?? 0 })} min={0} step={0.25} suffix={t('output.settings.youtube.sec')} />
           </Row>
           <Row label={t('output.settings.youtube.concurrent')}>
             <NumberInput value={v.max_concurrent_downloads} onChange={(x) => setV({ ...v, max_concurrent_downloads: Math.max(1, x ?? 1) })} min={1} max={8} suffix={t('output.settings.youtube.videosUnit')} />

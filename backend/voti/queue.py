@@ -12,6 +12,7 @@ A handler may call ctx.then(kind, payload) to enqueue follow-up jobs when it com
 Queues
   scan    : URL resolve, channel / playlist listing (several workers so one huge channel never blocks others)
   detail  : per-video metadata + caption availability (batched per channel, round-robin across channels)
+            (the YouTube Data API pass media.api_detail runs on `scan`: one fast HTTP call per 50 videos)
   download: audio + caption downloads (own workers, so downloads run while channels are being scanned)
   audio : normalize, probe, bandwidth, loudness, silero VAD, segmentation, text conversion (CPU)
   ml    : brouhaha+dnsmos quality, diarization, alignment, embedding, vox-profile, fingerprint dedup, clustering
@@ -65,6 +66,9 @@ KINDS: dict[str, str] = {
     "channel.list": "scan",          # channel_id: list videos + shorts tabs (flat), upsert media rows
     "playlist.list": "scan",         # payload {playlist_id}
     "media.detail": "detail",          # media_id: full metadata + caption availability (+ info.json asset)
+    # YouTube Data API fast pass (≤ 50 videos per call, no yt-dlp throttle): on the scan queue so it is never
+    # stuck behind thousands of yt-dlp detail jobs; payload {media_ids} | channel_id sweep | {all: true}
+    "media.api_detail": "scan",
     "media.download": "download",        # media_id, payload {caption_langs:[...], include_auto:bool}
     "media.normalize": "audio",       # → normalized.wav, ffprobe, bandwidth, loudness, clipping
     "media.quality": "ml",            # brouhaha (legacy-ml) + silero + dnsmos → media_quality, speech_regions
