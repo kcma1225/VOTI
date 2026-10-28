@@ -1,4 +1,4 @@
-"""Channel deletion: impact preview and the delete itself (DB rows + objects in RustFS).
+"""Channel and video deletion: impact preview and the delete itself (DB rows + objects in RustFS).
 
 Deleting a channel removes its playlists, every media row listed under it and — through ON DELETE CASCADE —
 their assets, tracks, cues, quality, VAD/diarization, segments, embeddings, voice profiles, speaker
@@ -94,3 +94,53 @@ def _refresh_run_speakers(s: Session, run_id: uuid.UUID) -> None:
             continue
         sp.segment_count, sp.total_sec, sp.media_count = r.n, round(float(r.sec), 3), r.media
         sp.channel_ids = sorted(str(c) for c in r.channels if c is not None)
+
+
+# ───────────────────────────── single videos ─────────────────────────────
+
+def media_impact(s: Session, media_ids: list[uuid.UUID]) -> dict:
+    """What deleting these media removes (the media-level part of channel_impact)."""
+    ids = list(media_ids)
+    dl_ids = select(Asset.media_id).where(Asset.media_id.in_(ids), Asset.kind.in_(DOWNLOADED_KINDS)).distinct()
+    downloaded, downloaded_sec = s.execute(
+        select(func.count(), func.coalesce(func.sum(Media.duration_sec), 0.0)).where(Media.id.in_(dl_ids))).one()
+    seg_total, seg_reviewed = s.execute(
+        select(func.count(), func.count().filter(Segment.review_status != "unchecked"))
+        .where(Segment.media_id.in_(ids), Segment.active.is_(True))).one()
+    storage_bytes = s.scalar(select(func.coalesce(func.sum(Asset.bytes), 0)).where(Asset.media_id.in_(ids)))
+    active_jobs = s.scalar(select(func.count()).select_from(Job).where(Job.status.in_(ACTIVE),
+                                                                      Job.media_id.in_(ids))) or 0
+    total = s.scalar(select(func.count()).select_from(Media).where(Media.id.in_(ids))) or 0
+    return {"media_total": total, "downloaded_media": downloaded,
+            "downloaded_sec": round(float(downloaded_sec or 0), 1), "segments": seg_total,
+            "reviewed_segments": seg_reviewed, "storage_bytes": int(storage_bytes or 0),
+            "active_jobs": active_jobs, "requires_confirmation": downloaded > 0 or seg_reviewed > 0}
+
+
+def delete_media(s: Session, media_ids: list[uuid.UUID]) -> dict:
+    """Delete media rows (and through ON DELETE CASCADE everything per media: assets, tracks, cues, segments,
+    embeddings, profiles, speaker assignments, jobs…) plus their objects. The channel and its playlists stay; a
+    later channel re-list adds a deleted video again as not downloaded. Caller commits."""
+    ids = list(s.scalars(select(Media.id).where(Media.id.in_(list(media_ids)))))
+    impact = media_impact(s, ids)
+    if not ids:
+        return {**impact, "objects_deleted": 0}
+    s.execute(update(Job).where(Job.status.in_(ACTIVE), Job.media_id.in_(ids))
+              .values(cancel_requested=True, status="cancelled", finished_at=utcnow(),
+                      error_code="cancelled", error_message="影片已刪除"))
+    affected_runs = list(s.scalars(select(SpeakerAssignment.run_id)
+                                   .join(Segment, Segment.id == SpeakerAssignment.segment_id)
+                                   .where(Segment.media_id.in_(ids)).distinct()))
+    s.execute(delete(Media).where(Media.id.in_(ids)))
+    s.flush()
+    for run_id in affected_runs:
+        _refresh_run_speakers(s, run_id)
+    s.flush()
+    objects = 0
+    for mid in ids:
+        try:
+            objects += storage.delete_prefix(f"media/{mid}/")
+        except Exception:  # noqa: BLE001 — DB rows are gone; orphaned objects are harmless and logged
+            log.exception("failed to delete objects of media %s", mid)
+    impact["objects_deleted"] = objects
+    return impact

@@ -120,6 +120,9 @@ export const api = {
   mediaDetail: (id: string) => get<T.MediaDetail>(`/media/${id}`),
   download: (b: T.DownloadRequest) => post<T.DownloadResult>('/media/download', b),
   selectionCaptions: (b: Pick<T.DownloadRequest, 'media_ids' | 'filter'>) => post<T.SelectionCaptions>('/media/selection-captions', b),
+  mediaDeleteImpact: (b: Pick<T.DownloadRequest, 'media_ids' | 'filter'>) => post<T.MediaDeleteImpact>('/media/delete-impact', b),
+  deleteMedia: (b: Pick<T.DownloadRequest, 'media_ids' | 'filter'> & { confirm?: boolean }) =>
+    post<T.MediaDeleteImpact & { objects_deleted: number }>('/media/delete', b),
   retryMedia: (id: string) => post<T.Job>(`/media/${id}/retry`),
   reprocess: (id: string, from_step: string) => post<T.Job>(`/media/${id}/reprocess`, { from_step }),
   timeline: (id: string) => get<T.Timeline>(`/media/${id}/timeline`),

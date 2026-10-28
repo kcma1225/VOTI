@@ -188,6 +188,18 @@ export interface JobList extends Page<Job> {
 }
 
 // ─────────────── channels & playlists ───────────────
+export interface MediaDeleteImpact {
+  media_total: number
+  downloaded_media: number
+  downloaded_sec: number
+  segments: number
+  reviewed_segments: number
+  storage_bytes: number
+  active_jobs: number
+  /** true → POST /media/delete must carry confirm: true */
+  requires_confirmation: boolean
+}
+
 export interface ChannelDeleteImpact {
   media_total: number
   playlists: number

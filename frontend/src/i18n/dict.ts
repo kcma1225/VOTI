@@ -11,6 +11,7 @@ import * as output from './messages/output'
 import * as validate from './messages/validate'
 import * as ocr from './messages/ocr'
 import * as ytapi from './messages/ytapi'
+import * as remove from './messages/remove'
 
 export const zh = {
   common: common.zh,
@@ -31,6 +32,8 @@ export const zh = {
   ocr: ocr.zh,
   /** YouTube Data API keys + fast metadata pass */
   ytapi: ytapi.zh,
+  /** Deleting videos */
+  remove: remove.zh,
 }
 
 export const en: Shape<typeof zh> = {
@@ -45,4 +48,5 @@ export const en: Shape<typeof zh> = {
   validate: validate.en,
   ocr: ocr.en,
   ytapi: ytapi.en,
+  remove: remove.en,
 }

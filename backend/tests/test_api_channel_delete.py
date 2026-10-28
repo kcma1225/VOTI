@@ -76,3 +76,43 @@ def test_annotator_cannot_delete(annotator_client, factory):
     ch = factory.channel()
     assert annotator_client.delete(f"/api/channels/{ch.id}").status_code == 403
     assert annotator_client.get(f"/api/channels/{ch.id}/delete-impact").status_code == 403
+
+
+def test_delete_single_video_keeps_channel_and_others(admin_client, factory, db):
+    from voti import storage
+    from voti.models import AuditLog, Channel, Job, Media, Segment, Speaker
+    objs = _corpus(factory, db)
+    ch_id, other_id, dl_id, keep_id, gone_id, mixed_id = (o.id for o in objs)
+    imp = admin_client.post("/api/media/delete-impact", json={"media_ids": [str(dl_id)]}).json()
+    assert imp["media_total"] == 1 and imp["downloaded_media"] == 1 and imp["reviewed_segments"] == 1
+    assert imp["requires_confirmation"] is True and imp["active_jobs"] == 1
+    r = admin_client.post("/api/media/delete", json={"media_ids": [str(dl_id)]})
+    assert r.status_code == 409 and r.json()["code"] == "confirmation_required"
+    r = admin_client.post("/api/media/delete", json={"media_ids": [str(dl_id)], "confirm": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["objects_deleted"] == 1
+    db.expire_all()
+    assert db.get(Media, dl_id) is None and db.get(Channel, ch_id) is not None
+    assert db.scalar(select(func.count()).select_from(Media).where(Media.channel_id == ch_id)) == 1  # listed one
+    assert db.scalar(select(func.count()).select_from(Segment).where(Segment.media_id == dl_id)) == 0
+    assert db.scalar(select(func.count()).select_from(Job).where(Job.media_id == dl_id)) == 0
+    assert storage.head(storage.media_key(dl_id, "normalized.wav")) is None
+    assert storage.head(storage.media_key(keep_id, "normalized.wav")) is not None
+    assert db.get(Speaker, gone_id) is None and db.get(Speaker, mixed_id).segment_count == 1
+    assert db.scalar(select(AuditLog).where(AuditLog.action == "media.delete")) is not None
+
+
+def test_delete_videos_by_filter_and_permissions(admin_client, annotator_client, factory, db):
+    from voti.models import Media
+    ch = factory.channel(title="批次")
+    ms = [factory.media(channel_id=ch.id, status="listed").id for _ in range(3)]
+    other = factory.media(status="listed").id
+    body = {"filter": {"channel_id": str(ch.id)}}
+    assert annotator_client.post("/api/media/delete-impact", json=body).status_code == 403
+    assert annotator_client.post("/api/media/delete", json=body).status_code == 403
+    assert admin_client.post("/api/media/delete", json={}).status_code == 400
+    imp = admin_client.post("/api/media/delete-impact", json=body).json()
+    assert imp["media_total"] == 3 and imp["requires_confirmation"] is False
+    assert admin_client.post("/api/media/delete", json=body).status_code == 200  # nothing downloaded: no confirm
+    db.expire_all()
+    assert all(db.get(Media, m) is None for m in ms) and db.get(Media, other) is not None

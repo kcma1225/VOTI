@@ -359,6 +359,21 @@ class ChannelDeleteOut(ChannelDeleteImpact):
     objects_deleted: int = 0
 
 
+class MediaDeleteImpact(BaseModel):
+    media_total: int
+    downloaded_media: int
+    downloaded_sec: float
+    segments: int
+    reviewed_segments: int
+    storage_bytes: int
+    active_jobs: int
+    requires_confirmation: bool  # true → POST /media/delete must carry confirm=true
+
+
+class MediaDeleteOut(MediaDeleteImpact):
+    objects_deleted: int = 0
+
+
 class ChannelDetailIn(BaseModel):
     media_ids: list[uuid.UUID] | None = None
 

@@ -532,6 +532,16 @@ const ocrActive = (id: string) => db.jobs.some((j) => j.media_id === id && j.kin
 const mediaWav = new Map<string, ArrayBuffer>()
 
 // ───────────── handlers ─────────────
+function mediaDeleteImpact(ms: { status: string; segment_count?: number | null; duration_sec?: number | null }[]): T.MediaDeleteImpact {
+  const dl = ms.filter((m) => ['downloaded', 'processing', 'ready'].includes(m.status))
+  const segs = dl.reduce((a, m) => a + (m.segment_count ?? 0), 0)
+  return {
+    media_total: ms.length, downloaded_media: dl.length, downloaded_sec: dl.reduce((a, m) => a + (m.duration_sec ?? 0), 0),
+    segments: segs, reviewed_segments: Math.round(segs * 0.18), storage_bytes: dl.reduce((a, m) => a + (m.duration_sec ?? 0) * 210_000, 0),
+    active_jobs: ms.filter((m) => m.status === 'processing').length, requires_confirmation: dl.length > 0,
+  }
+}
+
 export const handlers = [
   http.all(`${A}/*`, async ({ request }) => {
     getDB()
@@ -791,6 +801,20 @@ export const handlers = [
       for (const l of new Set(m.manual_caption_langs)) langs[l] = (langs[l] ?? 0) + 1
     }
     return json({ total: targets.length, with_manual: withManual, langs, langs_unknown: unknown } satisfies T.SelectionCaptions)
+  }),
+  http.post(`${A}/media/delete-impact`, async ({ request }) => {
+    const b = (await request.json()) as { media_ids?: string[]; filter?: MF }
+    return json(mediaDeleteImpact(b.media_ids ? b.media_ids.map((id) => db.mediaById.get(id)!).filter(Boolean) : db.media.filter((m) => matchMedia(m, b.filter ?? {}))))
+  }),
+  http.post(`${A}/media/delete`, async ({ request }) => {
+    const b = (await request.json()) as { media_ids?: string[]; filter?: MF; confirm?: boolean }
+    const targets = b.media_ids ? b.media_ids.map((id) => db.mediaById.get(id)!).filter(Boolean) : db.media.filter((m) => matchMedia(m, b.filter ?? {}))
+    const imp = mediaDeleteImpact(targets)
+    if (imp.requires_confirmation && !b.confirm) return json({ detail: '需要確認', code: 'confirmation_required' }, { status: 409 })
+    const gone = new Set(targets.map((m) => m.id))
+    db.media = db.media.filter((m) => !gone.has(m.id))
+    for (const id of gone) db.mediaById.delete(id)
+    return json({ ...imp, objects_deleted: imp.downloaded_media })
   }),
   http.post(`${A}/media/download`, async ({ request }) => {
     const b = (await request.json()) as T.DownloadRequest & { filter?: MF }

@@ -2,9 +2,9 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { AlertTriangle, Captions, Download, Film, Info, ListFilter, Smartphone, X } from 'lucide-react'
+import { AlertTriangle, Captions, Download, Film, Info, ListFilter, Smartphone, Trash2, X } from 'lucide-react'
 import { api } from '@/api/client'
-import { errMsg, useMedia, usePlaylists } from '@/api/queries'
+import { errMsg, useMe, useMedia, usePlaylists } from '@/api/queries'
 import type { CaptionFilter, MediaKind, MediaQuery, MediaSort, MediaStatus, MediaSummary } from '@/api/types'
 import { fmtClock, fmtCompact, fmtDate, fmtDb, fmtHours, fmtInt, fmtMos } from '@/lib/format'
 import { lang, langRank, licenseLabel, mediaStatus } from '@/lib/labels'
@@ -17,6 +17,7 @@ import { DataTable, Pagination, type Column } from '@/components/ui/data-table'
 import { Dialog, Sheet, Tooltip } from '@/components/ui/overlay'
 import { EmptyState, ErrorState, ListSkeleton } from '@/components/ui/states'
 import { CaptionBadges, MediaStatusBadge } from './status'
+import { DeleteMediaDialog } from './media-delete'
 import { useT } from '@/i18n'
 
 const LIMIT = 50
@@ -463,6 +464,8 @@ export function MediaBrowser({ channelId, kind, captionsPending }: { channelId: 
   const [allMatching, setAllMatching] = useState(false)
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [dlOpen, setDlOpen] = useState(false)
+  const [delOpen, setDelOpen] = useState(false)
+  const isAdmin = useMe().data?.role === 'admin'
   const isDesktop = useIsDesktop()
   const navigate = useNavigate()
   const short = kind.length === 1 && kind[0] === 'short'
@@ -592,6 +595,11 @@ export function MediaBrowser({ channelId, kind, captionsPending }: { channelId: 
               <Button size="sm" variant="ghost" onClick={() => (setSelected(new Set()), setAllMatching(false))}>
                 {t('collect.media.clear')}
               </Button>
+              {isAdmin && (
+                <Button size="sm" variant="ghost" data-shot="open-delete-media" className="text-danger-fg hover:bg-danger-soft" onClick={() => setDelOpen(true)}>
+                  <Trash2 /> {t('remove.batch')}
+                </Button>
+              )}
               <Button size="sm" variant="primary" data-shot="open-download" onClick={() => setDlOpen(true)}>
                 <Download /> {t('collect.media.download')}
               </Button>
@@ -648,6 +656,16 @@ export function MediaBrowser({ channelId, kind, captionsPending }: { channelId: 
         </div>
       </Sheet>
 
+      <DeleteMediaDialog
+        open={delOpen}
+        onOpenChange={setDelOpen}
+        count={selCount}
+        selection={allMatching ? { filter: query } : { ids: [...selected] }}
+        onDone={() => {
+          setSelected(new Set())
+          setAllMatching(false)
+        }}
+      />
       <DownloadDialog
         open={dlOpen}
         onOpenChange={setDlOpen}

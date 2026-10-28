@@ -1,12 +1,13 @@
 import { t } from '@/i18n'
 import { useMemo, useState } from 'react'
 import { DownloadDialog } from '@/components/domain/media-browser'
-import { Link, useParams } from 'react-router'
+import { DeleteMediaDialog } from '@/components/domain/media-delete'
+import { Link, useNavigate, useParams } from 'react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { AlertTriangle, AudioWaveform, CaptionsOff, Check, ChevronDown, ExternalLink, Languages, Loader2, Minus, RotateCw, ShieldCheck, ShieldX, X, ZoomIn, ZoomOut, Download } from 'lucide-react'
+import { AlertTriangle, AudioWaveform, CaptionsOff, Check, ChevronDown, ExternalLink, Languages, Loader2, Minus, RotateCw, ShieldCheck, ShieldX, Trash2, X, ZoomIn, ZoomOut, Download } from 'lucide-react'
 import { api } from '@/api/client'
-import { onErr, qk, useMediaDetail, useTimeline } from '@/api/queries'
+import { onErr, qk, useMe, useMediaDetail, useTimeline } from '@/api/queries'
 import type { Job, MediaDetail as TMedia, MediaQuality, Track } from '@/api/types'
 import { fmtClock, fmtCompact, fmtDate, fmtDateTime, fmtDb, fmtInt, fmtKHz, fmtMos, fmtPct } from '@/lib/format'
 import { jobKind, lang, licenseLabel, pipelineSteps, trackScript } from '@/lib/labels'
@@ -242,6 +243,9 @@ export default function MediaDetail() {
   const qc = useQueryClient()
   const [descOpen, setDescOpen] = useState(false)
   const [dlOpen, setDlOpen] = useState(false)
+  const [delOpen, setDelOpen] = useState(false)
+  const isAdmin = useMe().data?.role === 'admin'
+  const navigate = useNavigate()
   const retry = useMutation({
     mutationFn: () => api.retryMedia(id),
     onSuccess: () => {
@@ -424,7 +428,23 @@ export default function MediaDetail() {
                 YouTube <ExternalLink />
               </a>
             </Button>
+            {isAdmin && (
+              <Button variant="ghost" data-shot="delete-media" className="text-danger-fg hover:bg-danger-soft" onClick={() => setDelOpen(true)}>
+                <Trash2 /> {t('remove.action')}
+              </Button>
+            )}
           </div>
+          <DeleteMediaDialog
+            open={delOpen}
+            onOpenChange={setDelOpen}
+            selection={{ ids: [m.id] }}
+            count={1}
+            title={m.title}
+            onDone={() => {
+              qc.removeQueries({ queryKey: qk.mediaDetail(m.id) })
+              navigate(m.channel ? `/channels/${m.channel.id}` : '/channels', { replace: true })
+            }}
+          />
         </div>
       </div>
 

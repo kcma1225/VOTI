@@ -15,18 +15,18 @@ from sqlalchemy import and_, exists, func, or_, select, true
 from sqlalchemy.orm import Session
 
 from .. import storage
-from ..auth import current_user
+from ..auth import current_user, require_admin
 from ..db import get_session
 from ..models import (Cue, DiarizationTurn, Job, Media, MediaQuality, PlaylistItem, RepeatedRegion, Segment,
                       Speaker, SpeakerAssignment, SpeechRegion, Track, User, VoiceProfile, WordAlignment)
-from .. import textconv
+from .. import deletion, textconv
 from ..sources.youtube import caption_rank
 from ..queue import PIPELINE, enqueue, is_side_job, requeue
 from . import schemas as S
 from .errors import ApiError
 from .settings import get_setting
-from .views import (Paging, _media_base, downloaded_condition, get_or_404, job_out, job_outs, media_summaries,
-                    current_run_id, new_condition, paging, segment_summaries)
+from .views import (Paging, _media_base, audit, downloaded_condition, get_or_404, job_out, job_outs,
+                    media_summaries, current_run_id, new_condition, paging, segment_summaries)
 
 log = logging.getLogger("voti.api.media")
 router = APIRouter(prefix="/media", tags=["media"])
@@ -290,6 +290,40 @@ def selection_captions(body: SelectionIn, _: User = Depends(current_user), s: Se
             langs[c] = langs.get(c, 0) + 1
     return S.SelectionCaptionsOut(total=len(rows), with_manual=with_manual, langs_unknown=unknown,
                                   langs=dict(sorted(langs.items(), key=lambda kv: -kv[1])))
+
+
+class MediaDeleteIn(SelectionIn):
+    confirm: bool = False
+
+
+def _selected_ids(s: Session, body: SelectionIn) -> list[uuid.UUID]:
+    if body.media_ids is None and body.filter is None:
+        raise ApiError(400, "no_selection", "請指定 media_ids 或 filter")
+    cond = [Media.id.in_(body.media_ids)] if body.media_ids is not None else list(media_conditions(body.filter))
+    return list(s.scalars(select(Media.id).where(*cond)))
+
+
+@router.post("/delete-impact", response_model=S.MediaDeleteImpact)
+def media_delete_impact(body: SelectionIn, _: User = Depends(require_admin), s: Session = Depends(get_session)):
+    """Admin only: what deleting the selection (explicit ids or every media matching a filter) would remove."""
+    return deletion.media_impact(s, _selected_ids(s, body))
+
+
+@router.post("/delete", response_model=S.MediaDeleteOut)
+def delete_media(body: MediaDeleteIn, admin: User = Depends(require_admin), s: Session = Depends(get_session)):
+    """Admin only. Deletes the videos completely (audio, captions, segments, analysis, reviews); the channel stays
+    and a later re-list shows them again as not downloaded. Downloaded / reviewed media need confirm=true."""
+    ids = _selected_ids(s, body)
+    impact = deletion.media_impact(s, ids)
+    if impact["requires_confirmation"] and not body.confirm:
+        raise ApiError(409, "confirmation_required",
+                       f"選取的影片中有 {impact['downloaded_media']} 部已下載或處理過，刪除會永久刪除音檔與分析結果")
+    titles = dict(s.execute(select(Media.id, Media.title).where(Media.id.in_(ids[:50]))).all())
+    result = deletion.delete_media(s, ids)
+    audit(s, admin, "media.delete", "media", ids[0] if len(ids) == 1 else f"{len(ids)} media",
+          before={"count": len(ids), "titles": [titles.get(i, "") for i in ids[:50]], **impact}, after=None)
+    s.commit()
+    return result
 
 
 @router.post("/download", response_model=S.DownloadOut)
