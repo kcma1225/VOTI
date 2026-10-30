@@ -12,6 +12,11 @@ Every tick (≈ every 30 s on each scan worker; a Redis lock makes only one work
   * alignment safety net — segments whose re-alignment was requested (word_alignments.status = pending) more
     than ALIGN_PENDING_GRACE ago while no media.align job is active get one (closes the race between an edit and
     a finishing alignment job).
+  * automatic speaker clustering — when embeddings newer than the current clustering run exist (or none ran yet),
+    no media.embed / speakers.cluster job is active and the newest embedding is AUTO_CLUSTER_QUIET old (the batch
+    has settled), a `speakers.cluster` job is queued with the current run's threshold and scope (payload
+    {"auto": true}). During a long backlog that never settles, a run older than AUTO_CLUSTER_MAX_STALE is
+    refreshed anyway.
 """
 from __future__ import annotations
 
@@ -34,6 +39,8 @@ MAX_SCHEDULED_QUEUED = 4
 DEFAULT_REFRESH_HOURS = 24.0
 NEW_WINDOW = timedelta(days=7)  # MediaSummary.is_new: discovered by a refresh within this window
 ALIGN_PENDING_GRACE = timedelta(minutes=2)
+AUTO_CLUSTER_QUIET = timedelta(minutes=10)
+AUTO_CLUSTER_MAX_STALE = timedelta(hours=6)
 
 
 def refresh_hours(s: Session) -> float:
@@ -135,6 +142,31 @@ def realign_pending(s: Session, now: datetime | None = None) -> int:
     return n
 
 
+def auto_cluster(s: Session, now: datetime | None = None) -> bool:
+    from .models import ClusterRun, Embedding
+    from .pipeline.cluster import DEFAULT_THRESHOLD
+    from .queue import enqueue
+    now = now or utcnow()
+    newest = s.scalar(select(func.max(Embedding.created_at)))
+    if newest is None:
+        return False
+    run = s.scalar(select(ClusterRun).where(ClusterRun.is_current.is_(True)).order_by(ClusterRun.created_at.desc()))
+    if run is not None and newest <= run.created_at:
+        return False
+    if s.scalar(select(Job.id).where(Job.kind == "speakers.cluster", Job.status.in_(("queued", "running")))):
+        return False
+    settled = newest < now - AUTO_CLUSTER_QUIET and not s.scalar(
+        select(Job.id).where(Job.kind == "media.embed", Job.status.in_(("queued", "running"))))
+    stale = run is not None and run.created_at < now - AUTO_CLUSTER_MAX_STALE
+    if not (settled or stale):
+        return False
+    payload = {"threshold": run.threshold if run else DEFAULT_THRESHOLD, "scope": dict(run.scope or {}) if run else {},
+               "auto": True}
+    enqueue(s, "speakers.cluster", payload=payload)
+    log.info("auto speaker clustering queued (threshold %.2f)", payload["threshold"])
+    return True
+
+
 def tick(now: datetime | None = None, lock: bool = True) -> dict:
     if lock:
         from .queue import redis_client
@@ -151,4 +183,6 @@ def tick(now: datetime | None = None, lock: bool = True) -> dict:
         out["refresh_queued"] = schedule_refreshes(s, now)
     with session_scope() as s:
         out["realign_queued"] = realign_pending(s, now)
+    with session_scope() as s:
+        out["cluster_queued"] = auto_cluster(s, now)
     return out

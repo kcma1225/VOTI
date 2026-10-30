@@ -848,6 +848,7 @@ class ClusterRunOut(ORM):
     params: dict = {}
     stats: dict = {}
     is_current: bool
+    created_by: uuid.UUID | None = None   # None: queued by the scheduler (automatic clustering)
     created_at: datetime
 
 
@@ -903,6 +904,35 @@ class DiversityOut(BaseModel):
     by_channel: list[DiversityChannel]
     speaker_hours: list[SpeakerHours]
     gini: float
+
+
+class SimilarityNode(BaseModel):
+    id: uuid.UUID
+    label: str
+    display_name: str | None = None
+    verified: bool = False
+    total_sec: float
+    segment_count: int
+    media_count: int
+    sex: str | None = None          # male | female (≥ 0.7) or None
+    x: float
+    y: float
+
+
+class SimilarityEdge(BaseModel):
+    a: int                           # node indices, a < b
+    b: int
+    sim: float
+
+
+class SpeakerSimilarityOut(BaseModel):
+    run_id: uuid.UUID | None = None
+    threshold: float | None = None
+    total: int = 0                   # speakers in the run (before limit / min_sec)
+    nodes: list[SimilarityNode] = []
+    edges: list[SimilarityEdge] = []  # each node's nearest neighbours (≤ k), deduplicated
+    matrix: list[list[float]] = []   # full similarity of the first matrix_n nodes (by total_sec)
+    order: list[int] = []            # those matrix nodes in similarity order (dendrogram leaves)
 
 
 # ───────────────────────────── quality / repeated ─────────────────────────────

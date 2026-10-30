@@ -4,6 +4,7 @@ from __future__ import annotations
 import uuid
 from collections import defaultdict
 
+import numpy as np
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -169,6 +170,105 @@ def diversity(channel_id: uuid.UUID | None = None, run_id: uuid.UUID | None = No
                                       display_name=speakers[sp_id].display_name, total_sec=round(sec, 3))
                        for sp_id, sec in hours],
         gini=gini([sec for _, sec in hours]))
+
+
+# ───────────────────────────── similarity map ─────────────────────────────
+
+SIM_NEIGHBOURS = 6
+SIM_MATRIX_MAX = 60
+SIM_CACHE_MAX = 16
+_sim_cache: dict[tuple, S.SpeakerSimilarityOut] = {}  # a run's speakers never change after clustering; names do
+
+
+def _sex(profile: dict | None) -> str | None:
+    d = _dist((profile or {}).get("sex"))
+    top = max(d, key=d.get) if d else None
+    return top if top in ("male", "female") and d[top] >= 0.7 else None
+
+
+def similarity_layout(cents: np.ndarray, seed: int = 0) -> np.ndarray:
+    """2-D positions in [0, 1] where nearby = similar voices: t-SNE on cosine distance (classical MDS when there are
+    too few speakers for t-SNE). Pure function (unit-tested)."""
+    n = cents.shape[0]
+    if n == 0:
+        return np.zeros((0, 2))
+    if n < 3:
+        xy = np.array([[0.0, 0.0], [1.0, 0.0]])[:n]
+    else:
+        dist = np.clip(1.0 - cents @ cents.T, 0.0, 2.0)
+        np.fill_diagonal(dist, 0.0)
+        if n < 12:
+            j = np.eye(n) - 1.0 / n
+            b = -0.5 * j @ (dist ** 2) @ j
+            w, v = np.linalg.eigh(b)
+            xy = v[:, -2:] * np.sqrt(np.maximum(w[-2:], 1e-12))
+        else:
+            from sklearn.manifold import TSNE
+            xy = TSNE(n_components=2, metric="precomputed", init="random", random_state=seed,
+                      perplexity=min(30.0, (n - 1) / 3.0)).fit_transform(dist)
+    lo, hi = xy.min(axis=0), xy.max(axis=0)
+    return (xy - lo) / np.where(hi - lo > 1e-9, hi - lo, 1.0)
+
+
+def similarity_order(cents: np.ndarray) -> list[int]:
+    n = cents.shape[0]
+    if n < 3:
+        return list(range(n))
+    from scipy.cluster.hierarchy import leaves_list, linkage
+    from scipy.spatial.distance import squareform
+    dist = np.clip(1.0 - cents @ cents.T, 0.0, 2.0)
+    np.fill_diagonal(dist, 0.0)
+    return [int(i) for i in leaves_list(linkage(squareform((dist + dist.T) / 2, checks=False), "average",
+                                                optimal_ordering=True))]
+
+
+@router.get("/similarity", response_model=S.SpeakerSimilarityOut)
+def similarity(run_id: uuid.UUID | None = None, channel_id: uuid.UUID | None = None, limit: int = 120,
+               min_sec: float = 0.0, matrix_n: int = 40, _: User = Depends(current_user),
+               s: Session = Depends(get_session)):
+    rid = _resolve_run(s, run_id)
+    if rid is None:
+        return S.SpeakerSimilarityOut()
+    run = s.get(ClusterRun, rid)
+    c = [Speaker.run_id == rid, Speaker.centroid.isnot(None), Speaker.total_sec >= max(0.0, min_sec)]
+    if channel_id:
+        c.append(Speaker.channel_ids.contains([str(channel_id)]))
+    total = s.scalar(select(func.count()).select_from(Speaker).where(Speaker.run_id == rid)) or 0
+    rows = s.scalars(select(Speaker).where(*c).order_by(Speaker.total_sec.desc(), Speaker.id)
+                     .limit(max(1, min(limit, 400)))).all()
+    if not rows:
+        return S.SpeakerSimilarityOut(run_id=rid, threshold=run.threshold, total=total)
+    key = (rid, channel_id, limit, min_sec, matrix_n)
+    if key in _sim_cache:  # layout cached; names / verified marks are refreshed from the rows
+        out = _sim_cache[key].model_copy(deep=True)
+        for n, r in zip(out.nodes, rows, strict=False):
+            n.display_name, n.verified = r.display_name, r.verified
+        return out
+    cents = np.asarray([np.asarray(r.centroid, dtype=np.float32) for r in rows], dtype=np.float32)
+    cents /= np.maximum(np.linalg.norm(cents, axis=1, keepdims=True), 1e-9)
+    sim = cents @ cents.T
+    xy = similarity_layout(cents)
+    edges: dict[tuple[int, int], float] = {}
+    for i in range(len(rows)):
+        for j in np.argsort(-sim[i])[: SIM_NEIGHBOURS + 1]:
+            j = int(j)
+            if j != i:
+                edges[(min(i, j), max(i, j))] = round(float(sim[i, j]), 4)
+    m = max(0, min(matrix_n, SIM_MATRIX_MAX, len(rows)))
+    nodes = [S.SimilarityNode(id=r.id, label=r.label, display_name=r.display_name, verified=r.verified,
+                              total_sec=round(r.total_sec, 3), segment_count=r.segment_count,
+                              media_count=r.media_count, sex=_sex(r.profile),
+                              x=round(float(xy[i, 0]), 4), y=round(float(xy[i, 1]), 4))
+             for i, r in enumerate(rows)]
+    out = S.SpeakerSimilarityOut(
+        run_id=rid, threshold=run.threshold, total=total, nodes=nodes,
+        edges=[S.SimilarityEdge(a=a, b=b, sim=v) for (a, b), v in sorted(edges.items(), key=lambda e: -e[1])],
+        order=similarity_order(cents[:m]),
+        matrix=[[round(float(v), 3) for v in sim[i, :m]] for i in range(m)])
+    if len(_sim_cache) >= SIM_CACHE_MAX:
+        _sim_cache.pop(next(iter(_sim_cache)))
+    _sim_cache[key] = out
+    return out
 
 
 # ───────────────────────────── single speaker ─────────────────────────────

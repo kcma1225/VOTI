@@ -58,7 +58,8 @@ function useJobsWatcher() {
       if (j.status === 'completed') {
         toast.success(t('shell.jobs.toastDone', label), { description: subject, action: { label: t('common.view'), onClick: () => navigate(go) } })
         if (j.kind === 'dataset.export') qc.invalidateQueries({ queryKey: ['exports'] })
-        if (j.kind === 'speakers.cluster') qc.invalidateQueries({ queryKey: ['speakers'] })
+        if (j.kind === 'speakers.cluster')
+          for (const k of ['speakers', 'clusterRuns', 'speakerSimilarity', 'diversity']) qc.invalidateQueries({ queryKey: [k] })
         if (j.media_id) qc.invalidateQueries({ queryKey: ['mediaDetail', j.media_id] })
       } else if (j.status === 'failed') {
         toast.error(t('shell.jobs.toastFailed', label), { description: j.error_message ?? subject, action: { label: t('common.view'), onClick: () => navigate('/jobs?status=failed') } })

@@ -195,9 +195,11 @@ def test_full_pipeline_three_episodes(infra, tmp_path, monkeypatch):
             assert "repeated" in g.flags
         # override: say the first A-segment of ep0 and the first B-segment of ep1 are "主持人"
         seg_a = s.scalars(select(Segment).where(Segment.media_id == media_ids[0], Segment.local_speaker == "SPEAKER_00",
-                                                Segment.speaker_state == "single")).first()
+                                                Segment.speaker_state == "single",
+                                                Segment.validity != "invalid")).first()
         seg_b = s.scalars(select(Segment).where(Segment.media_id == media_ids[1], Segment.local_speaker == "SPEAKER_01",
-                                                Segment.speaker_state == "single")).first()
+                                                Segment.speaker_state == "single",
+                                                Segment.validity != "invalid")).first()
         s.add(SpeakerOverride(segment_id=seg_a.id, speaker_name="主持人"))
         s.add(SpeakerOverride(segment_id=seg_b.id, speaker_name="主持人"))
         queue.enqueue(s, "speakers.cluster", payload={"threshold": 0.6, "scope": {"channel_ids": [str(channel_id)]}})
@@ -212,6 +214,23 @@ def test_full_pipeline_three_episodes(infra, tmp_path, monkeypatch):
         sp = s.get(Speaker, a.speaker_id)
         assert sp.display_name == "主持人" and sp.profile.get("sex", {}).get("female", 0) > 0.5
         assert all(isinstance(c, str) for c in sp.channel_ids)
+        # a name typed on the other speaker (no override) survives re-clustering
+        other = s.scalars(select(Speaker).where(Speaker.run_id == run.id, Speaker.id != sp.id)
+                          .order_by(Speaker.total_sec.desc())).first()
+        other.display_name, other.verified = "來賓", True
+        other_segs = set(s.scalars(select(SpeakerAssignment.segment_id).where(
+            SpeakerAssignment.speaker_id == other.id)))
+        first_run = run.id
+        queue.enqueue(s, "speakers.cluster", payload={"threshold": 0.6, "scope": {"channel_ids": [str(channel_id)]},
+                                                      "auto": True})
+    _drain()
+    with session_scope() as s:
+        run = s.scalar(select(ClusterRun).where(ClusterRun.is_current.is_(True)))
+        assert run.id != first_run and run.stats["carried_over"] >= 1
+        guest = s.scalar(select(Speaker).where(Speaker.run_id == run.id, Speaker.display_name == "來賓"))
+        assert guest is not None and guest.verified
+        moved = set(s.scalars(select(SpeakerAssignment.segment_id).where(SpeakerAssignment.speaker_id == guest.id)))
+        assert len(moved & other_segs) >= 0.5 * len(other_segs)
 
     # idempotent re-segmentation: same ids, nothing duplicated
     with session_scope() as s:

@@ -26,6 +26,7 @@ export const qk = {
   speaker: (id: string) => ['speaker', id] as const,
   runs: ['clusterRuns'] as const,
   diversity: (cid?: string) => ['diversity', cid ?? ''] as const,
+  similarity: (q: object) => ['speakerSimilarity', q] as const,
   quality: (cid?: string) => ['quality', cid ?? ''] as const,
   datasets: ['datasets'] as const,
   dataset: (id: string) => ['dataset', id] as const,
@@ -190,6 +191,8 @@ export const useSpeakers = (q: { run_id?: string; channel_id?: string; sort?: st
 export const useSpeaker = (id: string | undefined) =>
   useQuery({ queryKey: qk.speaker(id ?? ''), queryFn: () => api.speaker(id!), enabled: !!id })
 export const useClusterRuns = () => useQuery({ queryKey: qk.runs, queryFn: api.clusterRuns })
+export const useSpeakerSimilarity = (q: { channel_id?: string; limit?: number; matrix_n?: number }) =>
+  useQuery({ queryKey: qk.similarity(q), queryFn: () => api.speakerSimilarity(q), placeholderData: keepPreviousData })
 export const useDiversity = (cid?: string) =>
   useQuery({ queryKey: qk.diversity(cid), queryFn: () => api.diversity(cid), placeholderData: keepPreviousData })
 export const useQualitySummary = (cid?: string) =>

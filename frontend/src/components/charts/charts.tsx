@@ -102,7 +102,7 @@ function DataTableView({ columns, rows }: { columns: string[]; rows: (string | n
 }
 
 /* ───────────── shared tooltip ───────────── */
-function HoverTip({ x, y, w, children }: { x: number; y: number; w: number; children: ReactNode }) {
+export function HoverTip({ x, y, w, children }: { x: number; y: number; w: number; children: ReactNode }) {
   const left = Math.min(Math.max(x, 70), w - 70)
   return (
     <div

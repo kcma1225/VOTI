@@ -261,6 +261,52 @@ def test_scheduler_staggers_and_locks(db, h, factory):  # noqa: ANN001
     assert scheduler.tick() == {"skipped": "locked"}
 
 
+def test_auto_cluster_after_batch_settles(db, factory):  # noqa: ANN001
+    from voti import scheduler
+    from voti.models import ClusterRun, Embedding, Job
+    from voti.queue import enqueue
+    now = scheduler.utcnow()
+    m = factory.media(status="ready")
+    seg = factory.segment(m, 0.0, 2.0)
+    assert scheduler.auto_cluster(db, now) is False  # no embeddings yet
+    emb = factory.add(Embedding(segment_id=seg.id, revision=seg.revision, model_id="ecapa", vector=[0.1] * 192))
+    db.commit()
+    assert scheduler.auto_cluster(db, now) is False  # the batch has not settled
+    later = now + scheduler.AUTO_CLUSTER_QUIET + timedelta(minutes=1)
+    embed = enqueue(db, "media.embed", media_id=m.id)
+    db.commit()
+    assert scheduler.auto_cluster(db, later) is False  # embeddings still being computed
+    embed.status = "completed"
+    db.commit()
+
+    # never clustered: the first run uses the default threshold
+    assert scheduler.tick(later, lock=False)["cluster_queued"] is True
+    job = db.scalar(select(Job).where(Job.kind == "speakers.cluster"))
+    assert job.payload == {"threshold": 0.6, "scope": {}, "auto": True}
+    assert scheduler.auto_cluster(db, later) is False  # one at a time
+    job.status = "completed"
+    db.commit()
+
+    # a newer run covers the embeddings: nothing to do; new embeddings → re-cluster with that run's settings
+    run = factory.add(ClusterRun(model_id="ecapa", algorithm="a", threshold=0.72, scope={"channel_ids": ["x"]},
+                                 is_current=True, created_at=emb.created_at + timedelta(seconds=1)))
+    db.commit()
+    assert scheduler.auto_cluster(db, later) is False
+    db.execute(update(Embedding).values(created_at=run.created_at + timedelta(seconds=5)))
+    db.commit()
+    assert scheduler.auto_cluster(db, later) is True
+    job = db.scalar(select(Job).where(Job.kind == "speakers.cluster", Job.status == "queued"))
+    assert job.payload == {"threshold": 0.72, "scope": {"channel_ids": ["x"]}, "auto": True}
+    job.status = "completed"
+    db.commit()
+
+    # a backlog that never settles still refreshes a stale run
+    db.execute(update(Embedding).values(created_at=later))
+    db.execute(update(ClusterRun).values(created_at=later - scheduler.AUTO_CLUSTER_MAX_STALE - timedelta(minutes=1)))
+    db.commit()
+    assert scheduler.auto_cluster(db, later) is True
+
+
 def test_settings_auto_refresh_hours(admin_client):  # noqa: ANN001
     assert admin_client.get("/api/settings").json()["youtube"]["auto_refresh_hours"] == 24
     r = admin_client.put("/api/settings/youtube", json={"auto_refresh_hours": 0})

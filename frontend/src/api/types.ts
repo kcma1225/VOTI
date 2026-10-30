@@ -823,7 +823,29 @@ export interface ClusterRun {
   params: Record<string, unknown>
   stats: { speakers?: number; segments?: number; singletons?: number; [k: string]: unknown }
   is_current: boolean
+  created_by?: UUID | null
   created_at: ISODate
+}
+export interface SimilarityNode {
+  id: UUID
+  label: string
+  display_name: string | null
+  verified: boolean
+  total_sec: number
+  segment_count: number
+  media_count: number
+  sex: 'male' | 'female' | null
+  x: number
+  y: number
+}
+export interface SpeakerSimilarity {
+  run_id: UUID | null
+  threshold: number | null
+  total: number
+  nodes: SimilarityNode[]
+  edges: { a: number; b: number; sim: number }[]
+  matrix: number[][]
+  order: number[]
 }
 export interface Diversity {
   by_sex: Dist

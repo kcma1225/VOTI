@@ -193,6 +193,41 @@ def refresh_profiles_for_media(media_id: uuid.UUID) -> int:
     return refresh_speaker_profiles(run_id)
 
 
+CARRY_MIN_SHARE = 0.5
+
+
+def carry_over_names(s, prev_run_id: uuid.UUID, run_id: uuid.UUID) -> int:  # noqa: ANN001
+    """Names / verified marks set on the previous run's speakers move to the new speaker holding most of their
+    segments (≥ CARRY_MIN_SHARE of those still clustered); when two old speakers land in one new speaker the larger
+    overlap wins. A name already given by a SpeakerOverride is kept. Returns the number of speakers updated."""
+    named = {sp.id: sp for sp in s.scalars(select(Speaker).where(
+        Speaker.run_id == prev_run_id, (Speaker.display_name.isnot(None)) | Speaker.verified.is_(True)))}
+    if not named:
+        return 0
+    old = dict(s.execute(select(SpeakerAssignment.segment_id, SpeakerAssignment.speaker_id).where(
+        SpeakerAssignment.run_id == prev_run_id, SpeakerAssignment.speaker_id.in_(list(named)))).all())
+    new = dict(s.execute(select(SpeakerAssignment.segment_id, SpeakerAssignment.speaker_id).where(
+        SpeakerAssignment.run_id == run_id, SpeakerAssignment.segment_id.in_(list(old)))).all())
+    overlap: dict[tuple, int] = defaultdict(int)
+    kept: dict[uuid.UUID, int] = defaultdict(int)
+    for seg, old_sp in old.items():
+        if seg in new:
+            overlap[(old_sp, new[seg])] += 1
+            kept[old_sp] += 1
+    best: dict[uuid.UUID, tuple[int, uuid.UUID]] = {}  # new speaker → (overlap, old speaker)
+    for (old_sp, new_sp), n in overlap.items():
+        if n >= CARRY_MIN_SHARE * kept[old_sp] and n > best.get(new_sp, (0, None))[0]:
+            best[new_sp] = (n, old_sp)
+    changed = 0
+    for new_sp, (_n, old_sp) in best.items():
+        sp, src = s.get(Speaker, new_sp), named[old_sp]
+        if sp.display_name is None and src.display_name:
+            sp.display_name = src.display_name
+        sp.verified = sp.verified or src.verified
+        changed += 1
+    return changed
+
+
 # ───────────────────────────── job ─────────────────────────────
 
 def run(payload: dict, created_by: uuid.UUID | None = None,
@@ -255,6 +290,8 @@ def run(payload: dict, created_by: uuid.UUID | None = None,
     ordered = sorted(members, key=lambda lab: -total_sec(lab))
     progress(0.7, "save")
     with session_scope() as s:
+        prev_run_id = s.scalar(select(ClusterRun.id).where(ClusterRun.is_current.is_(True))
+                               .order_by(ClusterRun.created_at.desc()).limit(1))
         s.execute(update(ClusterRun).where(ClusterRun.is_current.is_(True)).values(is_current=False))
         run = ClusterRun(model_id=MODEL_ID, algorithm="agglomerative-average-cosine", threshold=threshold,
                          scope={"channel_ids": [str(c) for c in channel_ids]} if channel_ids else {},
@@ -291,6 +328,9 @@ def run(payload: dict, created_by: uuid.UUID | None = None,
         stats = {"segments": len(rows) + sum(len(v) for v in extra.values()), "speakers": len(ordered),
                  "singletons": n_single,
                  "overrides": sum(1 for x in seg_ids if x in overrides) + sum(len(v) for v in extra.values()), "elapsed_sec": round(time.monotonic() - t0, 2)}
+        if prev_run_id is not None:
+            s.flush()
+            stats["carried_over"] = carry_over_names(s, prev_run_id, run.id)
         run.stats = stats
         run_id = run.id
     refresh_speaker_profiles(run_id)

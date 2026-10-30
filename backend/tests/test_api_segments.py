@@ -367,3 +367,46 @@ def test_settings(admin_client, db):
     assert admin_client.get("/api/settings").json()["cookies"]["present"] is False
     actions = db.scalars(select(AuditLog.action).order_by(AuditLog.id)).all()
     assert actions == ["settings.update", "settings.update", "settings.cookies_upload", "settings.cookies_delete"]
+
+
+def test_speaker_similarity_map(annotator_client, factory, db):  # noqa: ANN001
+    from voti.models import ClusterRun, Speaker
+    c = annotator_client
+    assert c.get("/api/speakers/similarity").json()["nodes"] == []  # no run yet
+    ch = factory.channel()
+    run = factory.add(ClusterRun(model_id="ecapa", algorithm="agglomerative", threshold=0.6, is_current=True))
+    rng = np.random.default_rng(0)
+    bases = rng.normal(size=(3, 192))
+    for i in range(15):  # three voice families of five speakers each
+        v = bases[i % 3] + 0.3 * rng.normal(size=192)
+        factory.add(Speaker(run_id=run.id, label=f"cand_{i + 1:03d}", total_sec=100 - i, segment_count=3,
+                            media_count=1, channel_ids=[str(ch.id)] if i < 10 else [],
+                            centroid=(v / np.linalg.norm(v)).tolist(),
+                            profile={"sex": {"female": 0.9, "male": 0.1}} if i == 0 else {}))
+    factory.add(Speaker(run_id=run.id, label="cand_016", total_sec=1, segment_count=1, media_count=1))  # no centroid
+    d = c.get("/api/speakers/similarity", params={"matrix_n": 6}).json()
+    assert d["total"] == 16 and d["threshold"] == 0.6
+    nodes = d["nodes"]
+    assert [n["label"] for n in nodes][:2] == ["cand_001", "cand_002"] and len(nodes) == 15
+    assert nodes[0]["sex"] == "female" and nodes[1]["sex"] is None
+    assert all(0 <= n["x"] <= 1 and 0 <= n["y"] <= 1 for n in nodes)
+    assert len(d["matrix"]) == 6 and d["matrix"][0][0] == pytest.approx(1.0, abs=1e-3)
+    assert sorted(d["order"]) == list(range(6))
+    # nearest neighbours come from the same family; edges are deduplicated and sorted by similarity
+    fam = {(e["a"] % 3, e["b"] % 3) for e in d["edges"][:20]}
+    assert all(a == b for a, b in fam)
+    pairs = [(e["a"], e["b"]) for e in d["edges"]]
+    assert len(pairs) == len(set(pairs)) and all(a < b for a, b in pairs)
+    # same family sits closer on the map than different families
+    xy = np.array([[n["x"], n["y"]] for n in nodes])
+    same = np.mean([np.linalg.norm(xy[i] - xy[j]) for i in range(15) for j in range(i + 1, 15) if i % 3 == j % 3])
+    diff = np.mean([np.linalg.norm(xy[i] - xy[j]) for i in range(15) for j in range(i + 1, 15) if i % 3 != j % 3])
+    assert same < diff
+    assert len(c.get("/api/speakers/similarity", params={"channel_id": str(ch.id)}).json()["nodes"]) == 10
+    assert len(c.get("/api/speakers/similarity", params={"min_sec": 95}).json()["nodes"]) == 6
+    # cached layout, fresh names
+    sp = db.scalar(select(Speaker).where(Speaker.label == "cand_002"))
+    sp.display_name = "阿明"
+    db.commit()
+    again = c.get("/api/speakers/similarity", params={"matrix_n": 6}).json()
+    assert again["nodes"][1]["display_name"] == "阿明" and again["nodes"][1]["x"] == nodes[1]["x"]

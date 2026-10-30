@@ -159,6 +159,8 @@ export const api = {
     get<T.Page<T.Speaker>>('/speakers', q),
   speaker: (id: string) => get<T.SpeakerDetail>(`/speakers/${id}`),
   patchSpeaker: (id: string, b: { display_name?: string | null; verified?: boolean }) => patch<T.Speaker>(`/speakers/${id}`, b),
+  speakerSimilarity: (q: { channel_id?: string; limit?: number; matrix_n?: number }) =>
+    get<T.SpeakerSimilarity>('/speakers/similarity', q),
   diversity: (channel_id?: string) => get<T.Diversity>('/speakers/diversity', { channel_id }),
   // quality
   qualitySummary: (channel_id?: string) => get<T.QualitySummary>('/quality/summary', { channel_id }),
