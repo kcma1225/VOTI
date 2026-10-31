@@ -3,9 +3,12 @@
    encode similarity in one hue. The side panel is the non-hover path to every value shown on hover. */
 import { useMemo, useState, type PointerEvent } from 'react'
 import { Link } from 'react-router'
-import { ArrowUpRight, BadgeCheck, X } from 'lucide-react'
-import type { SimilarityNode, SpeakerSimilarity } from '@/api/types'
-import { useSpeakerSimilarity } from '@/api/queries'
+import { useQueryClient } from '@tanstack/react-query'
+import { ArrowUpRight, BadgeCheck, Loader2, Pause, Play, X } from 'lucide-react'
+import type { SegmentSummary, SimilarityNode, SpeakerSimilarity } from '@/api/types'
+import { api } from '@/api/client'
+import { qk, useSpeaker, useSpeakerSimilarity } from '@/api/queries'
+import { useSentencePlayer } from '@/hooks/useSentencePlayer'
 import { t } from '@/i18n'
 import { cn } from '@/lib/cn'
 import { fmtHours } from '@/lib/format'
@@ -15,6 +18,8 @@ import { Avatar, Card, CardBody, CardHeader } from '@/components/ui/primitives'
 import { Field, Segmented, Select, Slider } from '@/components/ui/form'
 import { EmptyState, ErrorState, ListSkeleton } from '@/components/ui/states'
 import { speakerName } from '@/components/domain/speakers'
+import { SeekableChars } from '@/components/domain/karaoke'
+import { PlayingText, usePlayFromChar, type SentencePlayer } from '@/components/domain/segment-karaoke'
 import { Waypoints } from 'lucide-react'
 
 const SEX_COLOR = {
@@ -421,8 +426,80 @@ function SimilarityMatrix({ d, threshold, onSelect }: { d: SpeakerSimilarity; th
 
 /* ───────────── side panel ───────────── */
 
+const SAMPLES = 3
+
+/** Round play / pause button for one sentence of the shared player. */
+function PlayButton({ active, player, label, onClick, className }: { active: boolean; player: SentencePlayer; label: string; onClick: () => void; className?: string }) {
+  const on = active && player.status !== 'paused'
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={on ? t('people.speakerDetail.pause') : label}
+      title={on ? t('people.speakerDetail.pause') : label}
+      className={cn(
+        'grid size-7 shrink-0 place-items-center rounded-full transition-colors [&_svg]:size-3',
+        on ? 'bg-primary text-primary-fg' : 'bg-surface-2 text-fg-2 hover:bg-primary-soft hover:text-primary-soft-fg',
+        className,
+      )}
+    >
+      {active && player.status === 'loading' ? <Loader2 className="animate-spin" /> : on ? <Pause /> : <Play className="translate-x-px" />}
+    </button>
+  )
+}
+
+/** The selected speaker's best samples (DNSMOS order), playable in place with character karaoke. */
+function Samples({ id, player }: { id: string; player: SentencePlayer }) {
+  const sp = useSpeaker(id)
+  const playFrom = usePlayFromChar(player)
+  const segs = sp.data?.segments.slice(0, SAMPLES)
+  if (!segs) return <ListSkeleton rows={SAMPLES} />
+  if (!segs.length) return <p className="px-2 py-2 text-[12px] text-fg-3">{t('people.map.noSamples')}</p>
+  return (
+    <ul className="space-y-0.5">
+      {segs.map((x) => {
+        const active = player.id === x.id && player.status !== 'idle'
+        return (
+          <li key={x.id} className={cn('flex items-start gap-2.5 rounded-md px-2 py-1.5', active && 'hl-row-active')}>
+            <PlayButton active={active} player={player} label={t('people.speakerDetail.play')} onClick={() => player.play(x)} />
+            <div className="min-w-0 flex-1">
+              <p className={cn('text-[13px] leading-5 break-cjk', !active && 'line-clamp-2')} title={t('process.media.clickCharHint')}>
+                {active ? <PlayingText s={x} player={player} /> : <SeekableChars text={x.text} onChar={(i) => void playFrom(x, i)} />}
+              </p>
+              <p className="truncate text-[11px] text-fg-3">
+                {x.media_title} · {x.duration.toFixed(1)}s
+              </p>
+            </div>
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
 function SidePanel({ d, selected, onSelect }: { d: SpeakerSimilarity; selected: number | null; onSelect: (i: number | null) => void }) {
   const threshold = d.threshold ?? 0.6
+  const player = useSentencePlayer()
+  const qc = useQueryClient()
+  // a neighbour's play button: its best sample, so two voices can be compared side by side
+  const [pick, setPick] = useState<{ spk: string; seg: string } | null>(null)
+  const playVoice = async (spk: string) => {
+    if (pick?.spk === spk && player.id === pick.seg && player.status !== 'idle') {
+      const seg = qc.getQueryData<{ segments: SegmentSummary[] }>(qk.speaker(spk))?.segments[0]
+      if (seg) player.play(seg)
+      return
+    }
+    try {
+      const sd = await qc.fetchQuery({ queryKey: qk.speaker(spk), queryFn: () => api.speaker(spk), staleTime: 60_000 })
+      const seg = sd.segments[0]
+      if (!seg) return
+      setPick({ spk, seg: seg.id })
+      player.play(seg)
+    } catch {
+      /* the speaker page will show the error */
+    }
+  }
+  const voiceActive = (spk: string) => pick?.spk === spk && player.id === pick.seg && player.status !== 'idle'
   if (selected === null) {
     const pairs = d.edges.slice(0, 10)
     return (
@@ -471,14 +548,18 @@ function SidePanel({ d, selected, onSelect }: { d: SpeakerSimilarity; selected: 
           </Link>
         </Button>
       </div>
+      <div className="px-4 pb-1 pt-4 text-[12px] font-semibold text-fg-2">{t('people.map.samples')}</div>
+      <div className="px-2">
+        <Samples key={n.id} id={n.id} player={player} />
+      </div>
       <div className="px-4 pb-1 pt-4 text-[12px] font-semibold text-fg-2">{t('people.map.similar')}</div>
       <ul className="px-2 pb-2">
         {list.map(({ j, sim }) => (
-          <li key={j}>
+          <li key={j} className="flex items-center gap-1">
             <button
               type="button"
               onClick={() => onSelect(j)}
-              className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-[13px] hover:bg-surface-2"
+              className="flex min-w-0 flex-1 items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-[13px] hover:bg-surface-2"
             >
               <span className="size-2.5 shrink-0 rounded-full" style={{ background: sexColor(d.nodes[j]) }} />
               <span className="min-w-0 flex-1 truncate">{speakerName(d.nodes[j])}</span>
@@ -487,6 +568,13 @@ function SidePanel({ d, selected, onSelect }: { d: SpeakerSimilarity; selected: 
               </span>
               <SimValue v={sim} threshold={threshold} />
             </button>
+            <PlayButton
+              active={voiceActive(d.nodes[j].id)}
+              player={player}
+              label={t('people.map.playVoice', speakerName(d.nodes[j]))}
+              onClick={() => void playVoice(d.nodes[j].id)}
+              className="mr-1"
+            />
           </li>
         ))}
       </ul>
