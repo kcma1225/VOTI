@@ -8,7 +8,7 @@ import { useT } from '@/i18n'
 import { onErr, qk, useSpeaker } from '@/api/queries'
 import { fmtDb, fmtHours, fmtMos } from '@/lib/format'
 import { ageGroupLabel, ageGroupOrder, emotionLabel, sexLabel, voiceQualityLabel } from '@/lib/labels'
-import { useClipPlayer } from '@/hooks/useClipPlayer'
+import { useSentencePlayer } from '@/hooks/useSentencePlayer'
 import { BackLink, Page, useTitle } from '@/components/layout/page'
 import { Button } from '@/components/ui/button'
 import { Avatar, Badge, Card, CardBody, CardHeader, Skeleton } from '@/components/ui/primitives'
@@ -17,6 +17,8 @@ import { ErrorState } from '@/components/ui/states'
 import { HBars, ORDINAL, StackBar } from '@/components/charts/charts'
 import { ReviewBadge } from '@/components/domain/status'
 import { speakerName } from '@/components/domain/speakers'
+import { SeekableChars } from '@/components/domain/karaoke'
+import { PlayingText, usePlayFromChar } from '@/components/domain/segment-karaoke'
 import { cn } from '@/lib/cn'
 
 export default function SpeakerDetail() {
@@ -26,7 +28,8 @@ export default function SpeakerDetail() {
   const s = sp.data
   useTitle(s ? speakerName(s) : undefined)
   const qc = useQueryClient()
-  const player = useClipPlayer()
+  const player = useSentencePlayer()
+  const playFrom = usePlayFromChar(player)
   const [editing, setEditing] = useState(false)
   const [all, setAll] = useState(false)
   const [name, setName] = useState('')
@@ -104,14 +107,17 @@ export default function SpeakerDetail() {
           <CardHeader title={t('people.speakerDetail.samples')} description={t('people.speakerDetail.samplesDesc')} />
           <ul className="mt-3 divide-y divide-border border-t border-border">
             {s.segments.slice(0, all ? 50 : 12).map((x) => {
-              const on = player.playing === x.id
+              const active = player.id === x.id && player.status !== 'idle'
+              const on = active && player.status !== 'paused'
               return (
-                <li key={x.id} className={cn('flex items-start gap-3 px-4 py-3 sm:px-5', on && 'bg-primary-soft/50')}>
-                  <Button size="icon" variant={on ? 'primary' : 'secondary'} className="mt-0.5 rounded-full" aria-label={on ? t('people.speakerDetail.pause') : t('people.speakerDetail.play')} onClick={() => player.toggle(x.id)}>
-                    {player.loading === x.id ? <Loader2 className="animate-spin" /> : on ? <Pause /> : <Play className="translate-x-px" />}
+                <li key={x.id} className={cn('flex items-start gap-3 px-4 py-3 sm:px-5', active && 'hl-row-active')}>
+                  <Button size="icon" variant={on ? 'primary' : 'secondary'} className="mt-0.5 rounded-full" aria-label={on ? t('people.speakerDetail.pause') : t('people.speakerDetail.play')} onClick={() => player.play(x)}>
+                    {active && player.status === 'loading' ? <Loader2 className="animate-spin" /> : on ? <Pause /> : <Play className="translate-x-px" />}
                   </Button>
                   <div className="min-w-0 flex-1">
-                    <p className="text-[13px] leading-5 break-cjk">{x.text}</p>
+                    <p className="text-[13px] leading-5 break-cjk" title={t('process.media.clickCharHint')}>
+                      {active ? <PlayingText s={x} player={player} /> : <SeekableChars text={x.text} onChar={(i) => void playFrom(x, i)} />}
+                    </p>
                     <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-fg-3">
                       <Link to={`/review/${x.id}?media=${x.media_id}&status=all`} className="max-w-full truncate hover:text-primary">
                         {x.media_title}

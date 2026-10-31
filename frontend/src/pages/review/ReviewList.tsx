@@ -3,9 +3,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Link, Navigate, useLocation, useNavigate } from 'react-router'
 import { ArrowRight, Check, ListFilter, Loader2, Pause, Play, RotateCcw, X } from 'lucide-react'
-import { useQueryClient } from '@tanstack/react-query'
-import { api } from '@/api/client'
-import { qk, useChannels, useSegment, useSegments } from '@/api/queries'
+import { useChannels, useSegments } from '@/api/queries'
 import type { SegmentSummary } from '@/api/types'
 import { fmtDb, fmtMos, fmtSec, fmtTimestamp } from '@/lib/format'
 import { flagLabel, textSource } from '@/lib/labels'
@@ -14,7 +12,8 @@ import { cn } from '@/lib/cn'
 import { useT } from '@/i18n'
 import { useIsDesktop } from '@/hooks/useMedia'
 import { useSentencePlayer } from '@/hooks/useSentencePlayer'
-import { KaraokeText, SeekableChars, timeAtChar, toUnits, useClock } from '@/components/domain/karaoke'
+import { SeekableChars } from '@/components/domain/karaoke'
+import { PlayingText, usePlayFromChar, type SentencePlayer } from '@/components/domain/segment-karaoke'
 import { SpeakerDot, localSpeakerName, speakerVars, useSpeakerIndexMany } from '@/components/domain/speaker-color'
 import { speakerName } from '@/components/domain/speakers'
 import { Page, PageHeader, useTitle } from '@/components/layout/page'
@@ -140,17 +139,7 @@ function QualityChips({ s }: { s: SegmentSummary }) {
   )
 }
 
-type Player = ReturnType<typeof useSentencePlayer>
-
-/** The playing row's text: per-character karaoke from the segment's word timings (fetched for this row only),
- * or a sentence-level highlight when the segment has no alignment. Characters seek (click / tap). */
-function PlayingText({ s, player }: { s: SegmentSummary; player: Player }) {
-  const detail = useSegment(s.id)
-  const units = toUnits(detail.data?.words ?? null, s.start_sec, s.end_sec)
-  const time = useClock(player.clock, true)
-  if (units) return <KaraokeText units={units} time={time} onSeek={(at) => player.play(s, at)} />
-  return <span className="hl-sentence rounded-[3px]">{s.text}</span>
-}
+type Player = SentencePlayer
 
 /** A row's speaker: colour dot + 語者 N (+ the candidate speaker's name when it has one). */
 function rowSpeaker(s: SegmentSummary, idx: number | null) {
@@ -178,22 +167,12 @@ function SegmentRow({
   speakerIdx: number | null
 }) {
   const t = useT()
-  const qc = useQueryClient()
   const active = player.id === s.id && player.status !== 'idle'
   const playing = active && player.status !== 'paused'
   const who = rowSpeaker(s, speakerIdx)
   // a click on a character of a row that is not playing: fetch its word timings, play from that character
-  const playFromChar = async (charIdx: number) => {
-    let at: number | undefined
-    try {
-      const d = await qc.fetchQuery({ queryKey: qk.segment(s.id), queryFn: () => api.segment(s.id), staleTime: 60_000 })
-      const units = toUnits(d.words ?? null, s.start_sec, s.end_sec)
-      at = units ? (timeAtChar(units, charIdx) ?? undefined) : undefined
-    } catch {
-      /* no timings: play the sentence from its start */
-    }
-    player.play(s, at)
-  }
+  const playFrom = usePlayFromChar(player)
+  const playFromChar = (charIdx: number) => playFrom(s, charIdx)
   return (
     <li
       id={`rv-${s.id}`}
