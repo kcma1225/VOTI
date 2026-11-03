@@ -1,0 +1,23 @@
+# ML worker (worker-ml / worker-audio). torch + torchaudio are NOT listed here: the Dockerfile installs
+# torch==2.8.0 / torchaudio==2.8.0 from the PyTorch wheel index chosen by TORCH_VARIANT (cpu | cu128).
+# Everything below was released before 2026-10-13 and resolves against torch 2.8.0
+# (pyannote.audio 4.x and speechbrain share the same torch; torchcodec 0.7 is the build matching torch 2.8).
+pyannote.audio==4.0.7          # speaker diarization (pyannote/speaker-diarization-community-1, gated: HF_TOKEN)
+torchcodec==0.7.0              # pyannote 4 audio I/O; must match torch 2.8 (we pass in-memory waveforms anyway)
+speechbrain==1.1.1             # ECAPA speaker embeddings (speechbrain/spkrec-ecapa-voxceleb)
+silero-vad==6.2.3              # Silero VAD (MIT), ships its own JIT/ONNX weights
+# DNSMOS runs on onnxruntime; this CPU wheel works everywhere. The cu128 image swaps in onnxruntime-gpu==1.26.0
+# (newest CUDA-12 build; ~10x faster DNSMOS) — never install both packages.
+onnxruntime==1.31.0
+scipy==1.18.1                  # signal processing (bandwidth spectrum, resampling, filters)
+librosa==1.0.0                 # DNSMOS P.808 mel features exactly as Microsoft's dnsmos_local.py
+pyloudnorm==0.2.0              # EBU R128 integrated loudness per segment
+scikit-learn==1.9.1            # agglomerative clustering
+pypinyin==0.55.0               # Han → toneless pinyin for MMS_FA forced alignment (media.align, voti.pipeline.align)
+# Hard-subtitle OCR (voti.pipeline.ocr, media.ocr): RapidOCR (Apache-2.0) pre/post-processing around PP-OCRv5 ONNX
+# models (Apache-2.0, PaddleOCR; downloaded once into MODEL_CACHE/ocr, sha256-pinned) on the onnxruntime above.
+rapidocr==3.10.0
+opencv-python-headless==5.0.0.93   # headless: no libGL in the image (rapidocr requires opencv-python-headless)
+pyclipper==1.4.0
+shapely==2.2.0
+omegaconf==2.4.0

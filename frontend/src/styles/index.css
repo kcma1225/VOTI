@@ -1,0 +1,333 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/inter';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ─────────────────────────── design tokens ───────────────────────────
+   Every color in the app is a role token. Light values on :root, dark values on .dark
+   (set by theme-init.js / ThemeProvider from the system preference or the manual toggle). */
+:root {
+  color-scheme: light;
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --surface-2: #f2f4f7;
+  --surface-3: #e9ecf1;
+  --overlay: rgba(15, 20, 30, 0.42);
+  --border: #e3e6eb;
+  --border-strong: #cdd2da;
+  --fg: #12161d;
+  --fg-2: #474f5c;
+  --fg-3: #737b89;
+  --fg-inverse: #ffffff;
+
+  /* brand teal from the 島嶼之聲 logo (#2a9d8f), deepened for AA text contrast on buttons/links */
+  --brand: #2a9d8f;
+  --brand-soft: #e4f4f1;
+  --primary: #167a6f;
+  --primary-hover: #11685e;
+  --primary-fg: #ffffff;
+  --primary-soft: #e4f4f1;
+  --primary-soft-fg: #0f5e55;
+  --ring: rgba(22, 122, 111, 0.5);
+
+  --success: #1d8a4a;
+  --success-soft: #e7f6ed;
+  --success-fg: #156b39;
+  --warning: #c17d12;
+  --warning-soft: #fdf4e3;
+  --warning-fg: #855407;
+  --danger: #d03b3b;
+  --danger-soft: #fdeceb;
+  --danger-fg: #a82828;
+  --info: #0b7fab;
+  --info-soft: #e5f4fa;
+  --info-fg: #08617f;
+  /* hard-subtitle OCR text source */
+  --ocr: #6250d6;
+  --ocr-soft: #efedfc;
+  --ocr-fg: #4635b0;
+  --neutral-soft: #eef0f3;
+  --neutral-fg: #4c5461;
+
+  /* chart chrome + categorical series (dataviz reference palette, validated order) */
+  --chart-grid: #e7e9ed;
+  --chart-axis: #c3c8d0;
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #6250d6;
+  --series-8: #e34948;
+  --series-muted: #b9bec8;
+  /* speaker colours (timeline lane, cards, highlights) = the series palette. --spk-pill-N is the karaoke pill:
+     the series colour, nudged darker only where needed so --spk-on-N keeps ≥ 4.5:1 text contrast. */
+  --spk-pill-1: #2468c0; --spk-on-1: #ffffff;
+  --spk-pill-2: var(--series-2); --spk-on-2: #0b0f14;
+  --spk-pill-3: var(--series-3); --spk-on-3: #0b0f14;
+  --spk-pill-4: var(--series-4); --spk-on-4: #0b0f14;
+  --spk-pill-5: var(--series-5); --spk-on-5: #0b0f14;
+  --spk-pill-6: var(--series-6); --spk-on-6: #ffffff;
+  --spk-pill-7: var(--series-7); --spk-on-7: #ffffff;
+  --spk-pill-8: var(--series-8); --spk-on-8: #0b0f14;
+  --spk-soft-mix: 20%;
+  --seq-1: #cde2fb;
+  --seq-3: #86b6ef;
+  --seq-5: #3987e5;
+  --seq-7: #1c5cab;
+
+  --shadow-color: 220 25% 20%;
+}
+
+.dark {
+  color-scheme: dark;
+  --bg: #0c0f14;
+  --surface: #141820;
+  --surface-2: #1a1f28;
+  --surface-3: #222833;
+  --overlay: rgba(0, 0, 0, 0.6);
+  --border: #252b36;
+  --border-strong: #353d4b;
+  --fg: #e9ecf1;
+  --fg-2: #aab1bd;
+  --fg-3: #7d8593;
+  --fg-inverse: #0c0f14;
+
+  --brand: #38b2a2;
+  --brand-soft: rgba(56, 178, 162, 0.14);
+  --primary: #34b3a3;
+  --primary-hover: #45c2b2;
+  --primary-fg: #04201c;
+  --primary-soft: rgba(52, 179, 163, 0.15);
+  --primary-soft-fg: #8be0d3;
+  --ring: rgba(69, 194, 178, 0.6);
+
+  --success: #39b56c;
+  --success-soft: rgba(57, 181, 108, 0.14);
+  --success-fg: #7fd9a3;
+  --warning: #e0a03a;
+  --warning-soft: rgba(224, 160, 58, 0.14);
+  --warning-fg: #f0c47a;
+  --danger: #ec6464;
+  --danger-soft: rgba(236, 100, 100, 0.15);
+  --danger-fg: #f6a0a0;
+  --info: #3aaedb;
+  --info-soft: rgba(58, 174, 219, 0.14);
+  --info-fg: #8fd3ef;
+  --ocr: #9085e9;
+  --ocr-soft: rgba(144, 133, 233, 0.16);
+  --ocr-fg: #c6bff7;
+  --neutral-soft: rgba(255, 255, 255, 0.07);
+  --neutral-fg: #b3bac5;
+
+  --chart-grid: #232935;
+  --chart-axis: #3a4250;
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+  --series-muted: #4a5261;
+  --spk-pill-1: var(--series-1); --spk-on-1: #0b0f14;
+  --spk-pill-2: var(--series-2); --spk-on-2: #0b0f14;
+  --spk-pill-3: var(--series-3); --spk-on-3: #0b0f14;
+  --spk-pill-4: var(--series-4); --spk-on-4: #0b0f14;
+  --spk-pill-5: var(--series-5); --spk-on-5: #0b0f14;
+  --spk-pill-6: var(--series-6); --spk-on-6: #ffffff;
+  --spk-pill-7: var(--series-7); --spk-on-7: #0b0f14;
+  --spk-pill-8: var(--series-8); --spk-on-8: #0b0f14;
+  --spk-soft-mix: 30%;
+  --seq-1: #184f95;
+  --seq-3: #256abf;
+  --seq-5: #3987e5;
+  --seq-7: #86b6ef;
+
+  --shadow-color: 220 40% 2%;
+}
+
+@theme inline {
+  --font-sans: 'Inter Variable', 'PingFang TC', 'Noto Sans TC', 'Noto Sans CJK TC', 'Microsoft JhengHei',
+    system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-overlay: var(--overlay);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-fg: var(--fg);
+  --color-fg-2: var(--fg-2);
+  --color-fg-3: var(--fg-3);
+  --color-fg-inverse: var(--fg-inverse);
+  --color-brand: var(--brand);
+  --color-brand-soft: var(--brand-soft);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-fg: var(--primary-fg);
+  --color-primary-soft: var(--primary-soft);
+  --color-primary-soft-fg: var(--primary-soft-fg);
+  --color-ring: var(--ring);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-success-fg: var(--success-fg);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-warning-fg: var(--warning-fg);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-fg: var(--danger-fg);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-info-fg: var(--info-fg);
+  --color-ocr: var(--ocr);
+  --color-ocr-soft: var(--ocr-soft);
+  --color-ocr-fg: var(--ocr-fg);
+  --color-neutral-soft: var(--neutral-soft);
+  --color-neutral-fg: var(--neutral-fg);
+  --color-series-1: var(--series-1);
+  --color-series-2: var(--series-2);
+  --color-series-3: var(--series-3);
+  --color-series-4: var(--series-4);
+  --color-series-5: var(--series-5);
+  --color-series-6: var(--series-6);
+  --color-series-7: var(--series-7);
+  --color-series-8: var(--series-8);
+  --color-series-muted: var(--series-muted);
+  --color-chart-grid: var(--chart-grid);
+  --color-chart-axis: var(--chart-axis);
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+
+  --shadow-xs: 0 1px 2px hsl(var(--shadow-color) / 0.06);
+  --shadow-sm: 0 1px 2px hsl(var(--shadow-color) / 0.05), 0 1px 3px hsl(var(--shadow-color) / 0.06);
+  --shadow-md: 0 2px 4px hsl(var(--shadow-color) / 0.05), 0 6px 16px hsl(var(--shadow-color) / 0.08);
+  --shadow-lg: 0 4px 8px hsl(var(--shadow-color) / 0.06), 0 16px 40px hsl(var(--shadow-color) / 0.16);
+
+  --text-2xs: 11px;
+  --text-2xs--line-height: 16px;
+
+  --animate-shimmer: shimmer 1.6s ease-in-out infinite;
+  --animate-pulse-dot: pulse-dot 1.6s ease-in-out infinite;
+  --animate-fade-in: fade-in 160ms ease-out;
+  --animate-slide-up: slide-up 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  --animate-slide-in-right: slide-in-right 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  --animate-slide-in-left: slide-in-left 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  --animate-progress-indeterminate: progress-indeterminate 1.4s ease-in-out infinite;
+  --animate-flash: flash 1.8s ease-out;
+}
+
+@keyframes shimmer {
+  0% { opacity: 0.55; }
+  50% { opacity: 1; }
+  100% { opacity: 0.55; }
+}
+@keyframes pulse-dot {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 45%, transparent); }
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, currentColor 0%, transparent); }
+}
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes flash { from { background-color: var(--primary-soft); } }
+@keyframes slide-up { from { opacity: 0; transform: translateY(6px) scale(0.98); } to { opacity: 1; transform: none; } }
+@keyframes slide-in-right { from { transform: translateX(100%); } to { transform: none; } }
+@keyframes slide-in-left { from { transform: translateX(-100%); } to { transform: none; } }
+@keyframes progress-indeterminate {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: 'cv11', 'ss01';
+  }
+  html, body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.55;
+    overflow-x: clip;
+  }
+  #root { min-height: 100dvh; }
+  * { border-color: var(--border); }
+  ::selection { background: color-mix(in srgb, var(--primary) 25%, transparent); }
+  :focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+  button, [role='button'] { cursor: pointer; }
+  button:disabled { cursor: not-allowed; }
+  h1, h2, h3, h4 { letter-spacing: -0.005em; }
+  input, textarea, select { font: inherit; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; }
+  }
+}
+
+@layer utilities {
+  .tabular { font-variant-numeric: tabular-nums; }
+  .scrollbar-thin { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+  .no-scrollbar { scrollbar-width: none; }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+  .text-balance { text-wrap: balance; }
+  .break-cjk { overflow-wrap: anywhere; word-break: normal; line-break: strict; }
+  .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+  .hatch {
+    background-image: repeating-linear-gradient(135deg, currentColor 0 1.5px, transparent 1.5px 6px);
+  }
+}
+
+/* ─────────────── speaker-coloured highlights ───────────────
+   A row/sentence sets --spk, --spk-pill, --spk-on, --spk-soft (speakerVars()); without them everything falls back
+   to the primary colour. Background + box-shadow only, so highlighting never reflows text. */
+@layer components {
+  .hl-current {
+    background-color: var(--spk-pill, var(--primary));
+    color: var(--spk-on, var(--primary-fg));
+    box-shadow: 0 0 0 2px var(--spk-pill, var(--primary));
+  }
+  .hl-sentence {
+    background-color: var(--spk-soft, var(--primary-soft));
+    color: var(--spk-soft-fg, var(--primary-soft-fg));
+    box-shadow: 0 0 0 2px var(--spk-soft, var(--primary-soft));
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+  }
+  /* full-text search match in the media transcript (an underline + tint: still readable under karaoke states) */
+  .hl-match:not(.hl-current) {
+    background-color: var(--warning-soft);
+    box-shadow: 0 0 0 1px color-mix(in oklab, var(--warning) 55%, transparent);
+    color: var(--fg);
+  }
+  /* clickable (seekable) characters */
+  .hl-seek {
+    cursor: pointer;
+    border-radius: 3px;
+  }
+  @media (hover: hover) {
+    .hl-seek:not(.hl-current):hover {
+      background-color: var(--spk-soft, var(--primary-soft));
+      box-shadow: 0 0 0 2px var(--spk-soft, var(--primary-soft));
+      text-decoration: underline;
+      text-decoration-color: var(--spk, var(--primary));
+      text-underline-offset: 4px;
+    }
+  }
+  .hl-seek:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 1px;
+  }
+  .hl-row-active {
+    background-color: color-mix(in oklab, var(--spk, var(--primary)) 8%, transparent);
+    box-shadow: inset 3px 0 0 var(--spk, var(--primary));
+  }
+}

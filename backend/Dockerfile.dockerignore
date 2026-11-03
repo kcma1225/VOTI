@@ -1,0 +1,7 @@
+# Used by BuildKit for backend/Dockerfile instead of the root .dockerignore (keeps the multi-GB .venv-* dirs,
+# data/ and frontend/ out of the build context).
+*
+!backend/requirements/
+!backend/voti/
+**/__pycache__
+**/*.pyc

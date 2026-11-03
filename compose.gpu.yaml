@@ -1,0 +1,31 @@
+# GPU overlay (NVIDIA, needs nvidia-container-toolkit):
+#   TORCH_VARIANT=cu128 docker compose -f compose.yaml -f compose.gpu.yaml up -d --build
+# (set TORCH_VARIANT=cu128 in .env so plain `docker compose` builds/tags the CUDA images too)
+# worker-ml and legacy-ml get GPU ${GPU_DEVICE_IDS:-1} (GPU 0 on this host is used by other work); DEVICE=auto picks cuda:0 inside each container
+# (pin one with DEVICE=cuda:1 or by replacing `count: all` with `device_ids: ["1"]`).
+x-gpu: &gpu
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            device_ids: ["${GPU_DEVICE_IDS:-1}"]
+            capabilities: [gpu]
+
+services:
+  worker-ml:
+    <<: *gpu
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      args:
+        TORCH_VARIANT: cu128
+    image: voti-backend:cu128
+
+  legacy-ml:
+    <<: *gpu
+    build:
+      context: services/legacy-ml
+      args:
+        TORCH_VARIANT: cu128
+    image: voti-legacy-ml:cu128

@@ -1,0 +1,195 @@
+import { useNavigate } from 'react-router'
+import { BadgeCheck, Info } from 'lucide-react'
+import type { Dist, Speaker, VoiceProfile } from '@/api/types'
+import { fmtHours, fmtInt } from '@/lib/format'
+import { ageGroupLabel, emotionLabel, sexLabel, speechFlowLabel, traitLabel, voiceQualityLabel } from '@/lib/labels'
+import { cn } from '@/lib/cn'
+import { t } from '@/i18n'
+import { DataTable, type Column } from '@/components/ui/data-table'
+import { Avatar, Badge } from '@/components/ui/primitives'
+import { Tooltip } from '@/components/ui/overlay'
+
+export const topOf = (d?: Dist | null) => {
+  if (!d) return null
+  let k: string | null = null
+  let v = -1
+  for (const [kk, vv] of Object.entries(d)) if (vv > v) [k, v] = [kk, vv]
+  return k ? { key: k, value: v } : null
+}
+
+export function speakerName(s: { label: string; display_name: string | null }) {
+  return s.display_name || s.label
+}
+
+export function SexSplit({ d, className }: { d?: Dist; className?: string }) {
+  const m = d?.male ?? 0
+  const f = d?.female ?? 0
+  const tot = m + f || 1
+  const lead = m >= f ? 'male' : 'female'
+  return (
+    <Tooltip content={t('people.speakerUi.sexSplit', Math.round((m / tot) * 100), Math.round((f / tot) * 100))}>
+      <div className={cn('flex min-w-0 items-center gap-2', className)}>
+        <div className="flex h-1.5 w-14 shrink-0 gap-px overflow-hidden rounded-full">
+          <span style={{ width: `${(m / tot) * 100}%`, background: 'var(--series-1)' }} />
+          <span style={{ width: `${(f / tot) * 100}%`, background: 'var(--series-2)' }} />
+        </div>
+        <span className="truncate text-xs text-fg-2">{sexLabel[lead]}</span>
+      </div>
+    </Tooltip>
+  )
+}
+
+export function SpeakerList({ items, className }: { items: Speaker[]; className?: string }) {
+  const navigate = useNavigate()
+  const max = Math.max(1, ...items.map((s) => s.total_sec))
+  const columns: Column<Speaker>[] = [
+    {
+      id: 'name',
+      header: t('people.speakerUi.colSpeaker'),
+      cell: (s) => (
+        <div className="flex min-w-0 items-center gap-3">
+          <Avatar name={speakerName(s)} size={32} />
+          <div className="min-w-0">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className="truncate text-[13px] font-medium">{speakerName(s)}</span>
+              {s.verified && <BadgeCheck className="size-4 shrink-0 text-primary" aria-label={t('people.speakerUi.verified')} />}
+            </div>
+            <div className="truncate font-mono text-[11px] text-fg-3">{s.label}</div>
+          </div>
+        </div>
+      ),
+    },
+    {
+      id: 'hours',
+      header: t('people.speakerUi.colHours'),
+      width: 'w-44',
+      cell: (s) => (
+        <div className="flex items-center gap-2">
+          <div className="h-1.5 min-w-0 flex-1 rounded-full bg-surface-3">
+            <div className="h-full rounded-full bg-series-1" style={{ width: `${(s.total_sec / max) * 100}%` }} />
+          </div>
+          <span className="w-16 shrink-0 text-right text-xs tabular text-fg-2">{fmtHours(s.total_sec)}</span>
+        </div>
+      ),
+    },
+    { id: 'segs', header: t('people.speakerUi.colSegments'), width: 'w-20', align: 'right', cell: (s) => <span className="text-fg-2">{fmtInt(s.segment_count)}</span> },
+    { id: 'media', header: t('people.speakerUi.colVideos'), width: 'w-16', align: 'right', hideBelow: 'xl', cell: (s) => <span className="text-fg-2">{fmtInt(s.media_count)}</span> },
+    { id: 'sex', header: t('people.speakerUi.colSex'), width: 'w-28', cell: (s) => <SexSplit d={s.profile.sex} /> },
+    { id: 'age', header: t('people.speakerUi.colAge'), width: 'w-24', hideBelow: 'lg', cell: (s) => <span className="text-fg-2">{s.profile.age_mean ? t('people.speakerUi.ageApprox', Math.round(s.profile.age_mean)) : '—'}</span> },
+    {
+      id: 'emo',
+      header: t('people.speakerUi.colEmotion'),
+      width: 'w-24',
+      hideBelow: 'xl',
+      cell: (s) => {
+        const top = topOf(s.profile.emotion)
+        return <span className="text-fg-2">{top ? traitLabel(emotionLabel, top.key) : '—'}</span>
+      },
+    },
+  ]
+  return (
+    <DataTable
+      className={className}
+      rows={items}
+      columns={columns}
+      onRowClick={(s) => navigate(`/speakers/${s.id}`)}
+      card={(s) => (
+        <div className="flex min-w-0 items-center gap-3">
+          <Avatar name={speakerName(s)} size={40} />
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className="truncate text-sm font-medium">{speakerName(s)}</span>
+              {s.verified && <BadgeCheck className="size-4 shrink-0 text-primary" aria-label={t('people.speakerUi.verified')} />}
+            </div>
+            <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-fg-3">
+              <span className="tabular">{fmtHours(s.total_sec)}</span>
+              <span className="tabular">{t('people.speakerUi.segShort', s.segment_count)}</span>
+              <SexSplit d={s.profile.sex} />
+              {s.profile.age_mean ? <span>{t('people.speakerUi.ageApprox', Math.round(s.profile.age_mean))}</span> : null}
+            </div>
+          </div>
+        </div>
+      )}
+    />
+  )
+}
+
+/* ───────────── Vox-Profile traits ───────────── */
+/** Accepts a flat {label: p} distribution (speaker aggregates) or a per-segment Vox-Profile trait
+ *  {label, probs: {label: p}, …} and keeps only numeric probabilities. */
+function toDist(d: unknown): Dist {
+  if (!d || typeof d !== 'object') return {}
+  const src = 'probs' in d && d.probs && typeof d.probs === 'object' ? (d.probs as Record<string, unknown>) : (d as Record<string, unknown>)
+  return Object.fromEntries(Object.entries(src).filter((e): e is [string, number] => typeof e[1] === 'number' && Number.isFinite(e[1])))
+}
+
+export function DistBars({ d, labels, max = 4, color = 'var(--series-1)' }: { d: unknown; labels: Record<string, string>; max?: number; color?: string }) {
+  const entries = Object.entries(toDist(d))
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, max)
+  const top = entries[0]?.[1] ?? 1
+  return (
+    <ul className="space-y-1.5">
+      {entries.map(([k, v], i) => (
+        <li key={k} className="grid grid-cols-[5.5rem_minmax(0,1fr)_2.5rem] items-center gap-2 text-xs">
+          <span className={cn('truncate', i === 0 ? 'font-medium text-fg' : 'text-fg-2')}>{traitLabel(labels, k)}</span>
+          <div className="h-1.5 rounded-full bg-surface-3">
+            <div className="h-full rounded-full" style={{ width: `${(v / (top || 1)) * 100}%`, background: i === 0 ? color : color === 'var(--series-1)' ? 'var(--seq-3)' : `color-mix(in oklab, ${color} 45%, transparent)` }} />
+          </div>
+          <span className="text-right tabular text-fg-3">{Math.round(v * 100)}%</span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+export function ProfileTraits({ p, compact }: { p: VoiceProfile; compact?: boolean }) {
+  const sexTop = p.sex
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-2">
+        <div className="rounded-lg bg-surface-2/70 px-3 py-2">
+          <div className="text-[11px] text-fg-3">{t('people.speakerUi.sex')}</div>
+          <div className="text-sm font-semibold">
+            {sexTop ? sexLabel[sexTop] : '—'}
+            {p.sex_prob != null && <span className="ml-1 text-xs font-normal text-fg-3">{Math.round(p.sex_prob * 100)}%</span>}
+          </div>
+        </div>
+        <div className="rounded-lg bg-surface-2/70 px-3 py-2">
+          <div className="text-[11px] text-fg-3">{t('people.speakerUi.age')}</div>
+          <div className="text-sm font-semibold">
+            {p.age != null ? t('people.speakerUi.ageApprox', Math.round(p.age)) : '—'}
+            {p.age_group && <span className="ml-1 text-xs font-normal text-fg-3">{ageGroupLabel(p.age_group)}</span>}
+          </div>
+        </div>
+      </div>
+      <div className={cn('grid gap-4', compact ? 'grid-cols-1' : 'sm:grid-cols-2')}>
+        <div className="min-w-0">
+          <div className="mb-1.5 text-[11px] font-medium text-fg-3">{t('people.speakerUi.emotion')}</div>
+          <DistBars d={p.emotion} labels={emotionLabel} />
+        </div>
+        <div className="min-w-0">
+          <div className="mb-1.5 text-[11px] font-medium text-fg-3">{t('people.speakerUi.voiceQuality')}</div>
+          <DistBars d={p.voice_quality} labels={voiceQualityLabel} />
+        </div>
+        <div className="min-w-0">
+          <div className="mb-1.5 text-[11px] font-medium text-fg-3">{t('people.speakerUi.speechFlow')}</div>
+          <DistBars d={p.speech_flow} labels={speechFlowLabel} max={3} />
+        </div>
+        <div className="min-w-0">
+          <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-fg-3">
+            {t('people.speakerUi.accent')}
+            <Badge tone="warning" className="h-[18px] px-1.5 text-[10px]">
+              {t('people.speakerUi.referenceOnly')}
+            </Badge>
+          </div>
+          <DistBars d={p.accent_narrow} labels={{}} max={3} />
+          <p className="mt-1.5 flex gap-1 text-[11px] leading-4 text-fg-3">
+            <Info className="mt-px size-3 shrink-0" /> {t('people.speakerUi.accentNote')}
+          </p>
+        </div>
+      </div>
+      <div className="text-[11px] text-fg-3">Vox-Profile · {p.backbone}</div>
+    </div>
+  )
+}
